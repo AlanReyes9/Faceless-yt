@@ -50,10 +50,9 @@ async function router() {
   const [route, arg] = path.split('/');
   const params = new URLSearchParams(query || '');
   renderNav(route === 'proyecto' ? 'videos' : route);
-  if (route !== 'login') {
-    const me = await api('/api/me').catch(() => ({ authed: false }));
-    if (!me.authed) { location.hash = '#/login'; return; }
-  }
+  const me = await api('/api/me').catch(() => ({ authed: false, setup: [] }));
+  if (me.blocked) return renderSetup(me.setup);
+  if (route !== 'login' && !me.authed) { location.hash = '#/login'; return; }
   main.innerHTML = '<div class="muted"><span class="spinner"></span> Cargando…</div>';
   try { await (routes[route] || routes[''])(arg, params); }
   catch (e) { main.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
@@ -95,6 +94,20 @@ const TYPE_LABEL = { shorts: '✂ Shorts', long: '▶ Completo', ad: '✦ Anunci
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+
+// ---------- Configuración pendiente (Vercel) ----------
+function renderSetup(missing) {
+  const info = {
+    APP_PASSWORD: 'La contraseña con la que entrarás al estudio (elige una larga).',
+    APP_SECRET: 'Clave para cifrar tus claves API: una cadena aleatoria larga, p. ej. el resultado de <code>openssl rand -hex 32</code>.',
+    DATABASE_URL: 'Se crea sola al conectar una base de datos <b>Neon</b> en la pestaña Storage del proyecto.',
+    BLOB_READ_WRITE_TOKEN: 'Se crea sola al conectar un <b>Blob store</b> en la pestaña Storage.',
+  };
+  main.innerHTML = `<div class="card stack" style="max-width:640px;margin:60px auto">
+    <h1>Casi listo 🔧</h1><p class="sub">Por seguridad, el estudio no se abre hasta completar la configuración en Vercel.</p>
+    <ol class="stack">${missing.map(k => `<li><b><code>${k}</code></b><div class="muted">${info[k] || ''}</div></li>`).join('')}</ol>
+    <p class="small muted">En Vercel: Project → <b>Settings → Environment Variables</b> (y <b>Storage</b> para Neon y Blob). Después pulsa <b>Redeploy</b> en el último despliegue.</p></div>`;
+}
 
 // ---------- Login ----------
 routes.login = () => {

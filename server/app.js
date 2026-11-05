@@ -27,9 +27,18 @@ app.use((req, res, next) => { setBaseUrl(baseUrl(req)); next(); });
 
 // ---------- Acceso con contraseña (APP_PASSWORD) ----------
 const PASSWORD = process.env.APP_PASSWORD || '';
+// En Vercel (público en internet) no se abre nada sin contraseña ni clave de cifrado.
+const SETUP_MISSING = IS_VERCEL ? [
+  !PASSWORD && 'APP_PASSWORD', !process.env.APP_SECRET && 'APP_SECRET',
+  !(process.env.DATABASE_URL || process.env.POSTGRES_URL) && 'DATABASE_URL', !process.env.BLOB_READ_WRITE_TOKEN && 'BLOB_READ_WRITE_TOKEN',
+].filter(Boolean) : [];
+const BLOCKED = SETUP_MISSING.includes('APP_PASSWORD') || SETUP_MISSING.includes('APP_SECRET');
 const sign = v => crypto.createHmac('sha256', PASSWORD + internalSecret()).update(v).digest('hex');
 const authed = req => !PASSWORD || req.cookies.session === sign('ok');
 const h = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console.error(req.path, e.message); if (!res.headersSent) res.status(400).json({ error: e.message }); });
+
+app.get('/api/me', (req, res) => res.json({ authed: !BLOCKED && authed(req), passwordRequired: !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED }));
+app.use('/api', (req, res, next) => BLOCKED ? res.status(503).json({ error: 'Configuración pendiente: ' + SETUP_MISSING.join(', ') }) : next());
 
 app.post('/api/login', (req, res) => {
   const a = Buffer.from(String(req.body.password || '')), b = Buffer.from(PASSWORD);
@@ -40,7 +49,6 @@ app.post('/api/login', (req, res) => {
   res.status(401).json({ error: 'Contraseña incorrecta' });
 });
 app.post('/api/logout', (req, res) => { res.clearCookie('session'); res.json({ ok: true }); });
-app.get('/api/me', (req, res) => res.json({ authed: authed(req), passwordRequired: !!PASSWORD }));
 
 // ---------- Worker (procesa la cola en segundo plano) ----------
 async function workerEntry(req, res) {

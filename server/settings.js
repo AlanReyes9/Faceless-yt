@@ -14,18 +14,19 @@ function masterKey() {
   }
   return crypto.createHash('sha256').update(secret).digest();
 }
-const KEY = masterKey();
+let _key = null;
+const key = () => (_key ||= masterKey()); // perezosa: la app arranca aunque falte APP_SECRET
 
 function encrypt(text) {
   const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', KEY, iv);
+  const c = crypto.createCipheriv('aes-256-gcm', key(), iv);
   const enc = Buffer.concat([c.update(text, 'utf8'), c.final()]);
   return 'enc:' + Buffer.concat([iv, c.getAuthTag(), enc]).toString('base64');
 }
 function decrypt(blob) {
   if (!blob?.startsWith('enc:')) return blob;
   const raw = Buffer.from(blob.slice(4), 'base64');
-  const d = crypto.createDecipheriv('aes-256-gcm', KEY, raw.subarray(0, 12));
+  const d = crypto.createDecipheriv('aes-256-gcm', key(), raw.subarray(0, 12));
   d.setAuthTag(raw.subarray(12, 28));
   return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8');
 }
@@ -101,4 +102,4 @@ export async function requireKey(key, what) {
 }
 
 /** Secreto interno para que el worker se llame a sí mismo. */
-export const internalSecret = () => crypto.createHash('sha256').update(KEY).update('worker').digest('hex').slice(0, 40);
+export const internalSecret = () => crypto.createHash('sha256').update(key()).update('worker').digest('hex').slice(0, 40);
