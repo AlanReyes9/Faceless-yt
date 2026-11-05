@@ -1,6 +1,6 @@
 services:
   studio:
-    build: .
+    build: { context: ., dockerfile: deploy/Dockerfile }
     restart: unless-stopped
     ports: ["3000:3000"]
     env_file: .env
