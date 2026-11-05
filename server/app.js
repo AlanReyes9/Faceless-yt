@@ -37,7 +37,10 @@ const sign = v => crypto.createHmac('sha256', PASSWORD + internalSecret()).updat
 const authed = req => !PASSWORD || req.cookies.session === sign('ok');
 const h = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console.error(req.path, e.message); if (!res.headersSent) res.status(400).json({ error: e.message }); });
 
-app.get('/api/me', (req, res) => res.json({ authed: !BLOCKED && authed(req), passwordRequired: !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED }));
+app.get('/api/me', h(async (req, res) => res.json({
+  authed: !BLOCKED && authed(req), passwordRequired: !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED,
+  ...(BLOCKED ? { ffmpeg: await run(FFMPEG, ['-version']).then(() => true, () => false) } : {}),
+})));
 app.use('/api', (req, res, next) => BLOCKED ? res.status(503).json({ error: 'Configuración pendiente: ' + SETUP_MISSING.join(', ') }) : next());
 
 app.post('/api/login', (req, res) => {

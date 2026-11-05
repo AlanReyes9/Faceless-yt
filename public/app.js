@@ -51,7 +51,7 @@ async function router() {
   const params = new URLSearchParams(query || '');
   renderNav(route === 'proyecto' ? 'videos' : route);
   const me = await api('/api/me').catch(() => ({ authed: false, setup: [] }));
-  if (me.blocked) return renderSetup(me.setup);
+  if (me.blocked) return renderSetup(me.setup, me);
   if (route !== 'login' && !me.authed) { location.hash = '#/login'; return; }
   main.innerHTML = '<div class="muted"><span class="spinner"></span> Cargando…</div>';
   try { await (routes[route] || routes[''])(arg, params); }
@@ -96,7 +96,7 @@ const channelsCache = { list: null, async get() { return this.list ||= await api
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
 
 // ---------- Configuración pendiente (Vercel) ----------
-function renderSetup(missing) {
+function renderSetup(missing, me = {}) {
   const info = {
     APP_PASSWORD: 'La contraseña con la que entrarás al estudio (elige una larga).',
     APP_SECRET: 'Clave para cifrar tus claves API: una cadena aleatoria larga, p. ej. el resultado de <code>openssl rand -hex 32</code>.',
@@ -106,7 +106,8 @@ function renderSetup(missing) {
   main.innerHTML = `<div class="card stack" style="max-width:640px;margin:60px auto">
     <h1>Casi listo 🔧</h1><p class="sub">Por seguridad, el estudio no se abre hasta completar la configuración en Vercel.</p>
     <ol class="stack">${missing.map(k => `<li><b><code>${k}</code></b><div class="muted">${info[k] || ''}</div></li>`).join('')}</ol>
-    <p class="small muted">En Vercel: Project → <b>Settings → Environment Variables</b> (y <b>Storage</b> para Neon y Blob). Después pulsa <b>Redeploy</b> en el último despliegue.</p></div>`;
+    <p class="small muted">En Vercel: Project → <b>Settings → Environment Variables</b> (y <b>Storage</b> para Neon y Blob). Después pulsa <b>Redeploy</b> en el último despliegue.</p>
+    <p class="small">Motor de vídeo (ffmpeg): ${me.ffmpeg ? '✅ funcionando' : '⚠ no disponible'}</p></div>`;
 }
 
 // ---------- Login ----------
