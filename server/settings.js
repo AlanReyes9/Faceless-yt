@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, DATA_DIR } from './db.js';
+import { q, DATA_DIR, IS_VERCEL } from './db.js';
 
 // Las claves API se guardan cifradas (AES-256-GCM) con una clave maestra del servidor.
 function masterKey() {
   let secret = process.env.APP_SECRET;
+  if (!secret && IS_VERCEL) throw new Error('Falta la variable de entorno APP_SECRET en Vercel.');
   if (!secret) {
     const f = path.join(DATA_DIR, '.secret');
     if (!fs.existsSync(f)) fs.writeFileSync(f, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
@@ -38,6 +39,7 @@ export const FIELDS = {
   openrouter_key: { secret: true, label: 'OpenRouter API key', group: 'IA de texto / voz / transcripción' },
   elevenlabs_key: { secret: true, label: 'ElevenLabs API key', group: 'Voz' },
   pexels_key: { secret: true, label: 'Pexels API key (vídeos de stock)', group: 'Material' },
+  youtube_api_key: { secret: true, label: 'YouTube Data API key (Analizador)', group: 'Material' },
   google_client_id: { secret: false, label: 'Google OAuth Client ID', group: 'Publicar en YouTube' },
   google_client_secret: { secret: true, label: 'Google OAuth Client Secret', group: 'Publicar en YouTube' },
 
@@ -50,38 +52,53 @@ export const FIELDS = {
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
   elevenlabs_voice_id: { secret: false, default: 'pNInz6obpgDQGcFmaJgB', label: 'ElevenLabs voice ID', group: 'Preferencias' },
+  image_model: { secret: false, default: 'gpt-image-1', label: 'Modelo de imágenes OpenAI', group: 'Preferencias' },
   caption_color: { secret: false, default: '#FFD400', label: 'Color de palabra resaltada', group: 'Preferencias' },
 };
 
-export function getSetting(key) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  const v = row ? (FIELDS[key]?.secret ? decrypt(row.value) : row.value) : null;
+// Caché corta para no consultar la base de datos en cada llamada
+let cache = null, cacheAt = 0;
+async function all() {
+  if (cache && Date.now() - cacheAt < 5000) return cache;
+  const rows = await q('SELECT key, value FROM settings');
+  cache = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  cacheAt = Date.now();
+  return cache;
+}
+
+export async function getSetting(key) {
+  const raw = (await all())[key];
+  let v = null;
+  if (raw) { try { v = FIELDS[key]?.secret ? decrypt(raw) : raw; } catch { v = null; } }
   return v || process.env[key.toUpperCase()] || FIELDS[key]?.default || '';
 }
 
-export function setSettings(obj) {
-  const up = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-  const del = db.prepare('DELETE FROM settings WHERE key = ?');
+export async function setSettings(obj) {
   for (const [k, v] of Object.entries(obj)) {
     if (!FIELDS[k]) continue;
-    if (v === null || v === '') { del.run(k); continue; }
+    if (v === null || v === '') { await q('DELETE FROM settings WHERE key = $1', [k]); continue; }
     if (FIELDS[k].secret && typeof v === 'string' && v.includes('•')) continue; // máscara sin cambios
-    up.run(k, FIELDS[k].secret ? encrypt(String(v).trim()) : String(v).trim());
+    await q('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+      [k, FIELDS[k].secret ? encrypt(String(v).trim()) : String(v).trim()]);
   }
+  cache = null;
 }
 
 // Vista segura para el navegador: los secretos se muestran enmascarados.
-export function publicSettings() {
+export async function publicSettings() {
   const out = {};
   for (const [k, f] of Object.entries(FIELDS)) {
-    const v = getSetting(k);
+    const v = await getSetting(k);
     out[k] = f.secret ? (v ? '••••••••' + v.slice(-4) : '') : v;
   }
   return { values: out, fields: FIELDS };
 }
 
-export function requireKey(key, what) {
-  const v = getSetting(key);
+export async function requireKey(key, what) {
+  const v = await getSetting(key);
   if (!v) throw new Error(`Falta la clave "${FIELDS[key].label}". Añádela en Ajustes y claves${what ? ' para ' + what : ''}.`);
   return v;
 }
+
+/** Secreto interno para que el worker se llame a sí mismo. */
+export const internalSecret = () => crypto.createHash('sha256').update(KEY).update('worker').digest('hex').slice(0, 40);

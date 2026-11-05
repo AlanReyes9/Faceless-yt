@@ -13,20 +13,20 @@ async function post(url, headers, body) {
 
 /** Llama al proveedor de texto configurado. Devuelve el texto de la respuesta. */
 export async function chat(system, user, { json = false, maxTokens = 4000, provider } = {}) {
-  provider = provider || getSetting('llm_provider');
+  provider = provider || await getSetting('llm_provider');
   const sys = json ? system + '\n\nResponde ÚNICAMENTE con JSON válido, sin texto adicional ni bloques de código.' : system;
 
   if (provider === 'anthropic') {
     const res = await post('https://api.anthropic.com/v1/messages', {
-      'x-api-key': requireKey('anthropic_key', 'usar Claude'), 'anthropic-version': '2023-06-01',
-    }, { model: getSetting('anthropic_model'), max_tokens: maxTokens, system: sys, messages: [{ role: 'user', content: user }] });
+      'x-api-key': await requireKey('anthropic_key', 'usar Claude'), 'anthropic-version': '2023-06-01',
+    }, { model: await getSetting('anthropic_model'), max_tokens: maxTokens, system: sys, messages: [{ role: 'user', content: user }] });
     return res.content.filter(b => b.type === 'text').map(b => b.text).join('');
   }
 
   if (provider === 'gemini') {
-    const model = getSetting('gemini_model');
+    const model = await getSetting('gemini_model');
     const res = await post(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      { 'x-goog-api-key': requireKey('gemini_key', 'usar Gemini') }, {
+      { 'x-goog-api-key': await requireKey('gemini_key', 'usar Gemini') }, {
         systemInstruction: { parts: [{ text: sys }] },
         contents: [{ role: 'user', parts: [{ text: user }] }],
         generationConfig: { maxOutputTokens: maxTokens, ...(json ? { responseMimeType: 'application/json' } : {}) },
@@ -37,9 +37,9 @@ export async function chat(system, user, { json = false, maxTokens = 4000, provi
   // OpenAI y OpenRouter comparten el formato chat/completions
   const isOR = provider === 'openrouter';
   const res = await post(isOR ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
-    authorization: 'Bearer ' + requireKey(isOR ? 'openrouter_key' : 'openai_key', 'usar ' + provider),
+    authorization: 'Bearer ' + await requireKey(isOR ? 'openrouter_key' : 'openai_key', 'usar ' + provider),
   }, {
-    model: getSetting(isOR ? 'openrouter_model' : 'openai_model'),
+    model: await getSetting(isOR ? 'openrouter_model' : 'openai_model'),
     max_completion_tokens: maxTokens,
     messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
     ...(json && !isOR ? { response_format: { type: 'json_object' } } : {}),

@@ -1,23 +1,103 @@
-// Cola de trabajos en memoria: los renders pesados se ejecutan de uno en uno.
-const queue = [];
-let running = 0;
-const CONCURRENCY = Number(process.env.JOB_CONCURRENCY || 1);
+// Cola de trabajos persistente en la base de datos.
+// Cada trabajo es un paso corto (< 5 min) para que funcione en funciones serverless de Vercel.
+//  - Local / VPS: un bucle en el propio proceso procesa la cola.
+//  - Vercel: tras encolar, la API se "despierta" a sí misma (POST /api/worker) y procesa en segundo plano.
+import { q, one, IS_VERCEL } from './db.js';
+import { internalSecret } from './settings.js';
 
-export function enqueue(name, fn) {
-  return new Promise((resolve, reject) => {
-    queue.push({ name, fn, resolve, reject });
-    tick();
-  });
+const handlers = {};
+/** Registra un tipo de trabajo. onFail se llama cuando se agotan los reintentos. */
+export function register(type, fn, onFail) { handlers[type] = { fn, onFail }; }
+
+const MAX_ATTEMPTS = 3;
+const STALE = "interval '7 minutes'";
+let baseUrl = process.env.PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '');
+// En producción en Vercel siempre se usa la URL de producción (las URLs de cada despliegue pueden estar protegidas).
+const fixedBase = !!process.env.PUBLIC_URL || (process.env.VERCEL_ENV === 'production' && !!process.env.VERCEL_PROJECT_PRODUCTION_URL);
+export const setBaseUrl = u => { if (u && !fixedBase) baseUrl = u; };
+
+export async function enqueue(type, payload = {}) {
+  const job = await one('INSERT INTO jobs (type, payload) VALUES ($1, $2) RETURNING id', [type, JSON.stringify(payload)]);
+  kick();
+  return job.id;
 }
 
-function tick() {
-  while (running < CONCURRENCY && queue.length) {
-    const job = queue.shift();
-    running++;
-    Promise.resolve().then(job.fn)
-      .then(job.resolve, e => { console.error(`[job ${job.name}]`, e.message); job.reject(e); })
-      .finally(() => { running--; tick(); });
+async function claim() {
+  return one(`UPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1
+    WHERE id = (SELECT id FROM jobs WHERE status = 'queued' OR (status = 'running' AND locked_at < now() - ${STALE})
+                ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
+    RETURNING *`);
+}
+
+/** Procesa un trabajo. Devuelve false si la cola está vacía. */
+export async function runOne() {
+  const job = await claim();
+  if (!job) return false;
+  const h = handlers[job.type];
+  const fail = async msg => {
+    await q("UPDATE jobs SET status = 'failed', error = $1 WHERE id = $2", [msg, job.id]);
+    try { await h?.onFail?.(job.payload, msg); } catch (e) { console.error('onFail', e); }
+  };
+  if (!h) { await fail('Tipo de trabajo desconocido: ' + job.type); return true; }
+  if (job.attempts > MAX_ATTEMPTS) { await fail('Se agotó el tiempo varias veces (el paso tarda demasiado).'); return true; }
+  try {
+    await h.fn(job.payload);
+    await q('DELETE FROM jobs WHERE id = $1', [job.id]);
+  } catch (e) {
+    console.error(`[job ${job.id} ${job.type}]`, e.message);
+    // Errores de configuración (falta clave, 4xx) no se reintentan.
+    const permanent = /Falta la clave|\((400|401|403|404|413|422)\)|no está conectado|No se pudo leer/.test(e.message);
+    if (permanent || job.attempts >= MAX_ATTEMPTS) await fail(e.message);
+    else await q("UPDATE jobs SET status = 'queued', error = $1, locked_at = NULL WHERE id = $2", [e.message, job.id]);
   }
+  return true;
 }
 
-export const queueStatus = () => ({ running, waiting: queue.length });
+/** Procesa trabajos hasta vaciar la cola o hasta el plazo (ms epoch). */
+export async function drain(deadline = Infinity) {
+  while (Date.now() < deadline) {
+    if (!(await runOne())) return true;
+  }
+  return false;
+}
+
+// ---------- Disparadores ----------
+let lastKick = 0;
+/** En Vercel lanza una invocación del worker sin esperar. Fuera de Vercel no hace nada (hay bucle local). */
+export function kick(force = false) {
+  if (!IS_VERCEL || !baseUrl) return;
+  if (!force && Date.now() - lastKick < 1500) return;
+  lastKick = Date.now();
+  const p = fetch(`${baseUrl}/api/worker`, { method: 'POST', headers: { 'x-worker-secret': internalSecret(), ...bypassHeader() } })
+    .then(r => r.text()).catch(e => console.warn('kick:', e.message));
+  import('@vercel/functions').then(({ waitUntil }) => waitUntil(p)).catch(() => {});
+}
+const bypassHeader = () => process.env.VERCEL_AUTOMATION_BYPASS_SECRET ? { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET } : {};
+
+/** Si hay trabajos pendientes y nadie los está procesando, despierta al worker (red de seguridad). */
+export async function ensureWorker() {
+  if (!IS_VERCEL) return;
+  const r = await one(`SELECT
+      COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
+      COUNT(*) FILTER (WHERE status = 'running' AND locked_at > now() - ${STALE})::int AS running,
+      COUNT(*) FILTER (WHERE status = 'running' AND locked_at <= now() - ${STALE})::int AS stale
+    FROM jobs`);
+  if ((r.queued && !r.running) || r.stale) kick(true);
+}
+
+export async function queueStatus() {
+  return one(`SELECT COUNT(*) FILTER (WHERE status = 'queued')::int AS waiting,
+    COUNT(*) FILTER (WHERE status = 'running')::int AS running,
+    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed FROM jobs`);
+}
+
+/** Bucle local (servidor normal / VPS). */
+export function startLocalWorker() {
+  const n = Number(process.env.JOB_CONCURRENCY || 1);
+  for (let i = 0; i < n; i++) (async function loop() {
+    for (;;) {
+      try { if (!(await runOne())) await new Promise(r => setTimeout(r, 1500)); }
+      catch (e) { console.error('worker:', e.message); await new Promise(r => setTimeout(r, 5000)); }
+    }
+  })();
+}

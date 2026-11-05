@@ -29,7 +29,7 @@ function wrap(text, max = 22) {
  * @param words  [{word,start,end}] con tiempos RELATIVOS al inicio del clip
  * @param opts   { hook, hookSeconds, duration, highlight, captionY, wordsPerGroup }
  */
-export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80 } = {}) {
+export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '' } = {}) {
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -40,6 +40,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Hook,${FONT},${hookSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,7,3,8,60,60,190,1
+Style: Big,${FONT},${Math.round(hookSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&HA0000000,1,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
 Style: Cap,${FONT},${capSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,4,2,60,60,${captionMarginV},1
 
 [Events]
@@ -51,6 +52,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const [l1, l2] = wrap(esc(hook.toUpperCase()), 18).split('\\N');
     const txt = `{\\c${assColor(highlight)}}${l1}` + (l2 ? `\\N{\\c&H00FFFFFF&}${l2}` : '');
     lines.push(`Dialogue: 1,${ts(0)},${ts(Math.min(hookSeconds, duration))},Hook,,0,0,0,,{\\fad(150,200)}${txt}`);
+  }
+  if (overlay) {
+    // Texto grande centrado (p. ej. llamada a la acción de un anuncio)
+    lines.push(`Dialogue: 2,${ts(0)},${ts(duration)},Big,,0,0,0,,{\\fad(200,0)\\c${assColor(highlight)}}${wrap(esc(overlay.toUpperCase()), 16)}`);
   }
   if (captions && words.length) {
     const hl = assColor(highlight);

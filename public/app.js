@@ -28,8 +28,10 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 // ---------- Navegación ----------
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
-  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts']]],
+  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'],
+    ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
+  ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
 ];
 function renderNav(route) {
   $('#nav').innerHTML = NAV.map(([h, items]) => `<div class="nav-h">${h}</div>` + items.map(([r, ic, label]) =>
@@ -47,7 +49,7 @@ async function router() {
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const [route, arg] = path.split('/');
   const params = new URLSearchParams(query || '');
-  renderNav(route === 'proyecto' ? (arg && 'shorts') : route);
+  renderNav(route === 'proyecto' ? 'videos' : route);
   if (route !== 'login') {
     const me = await api('/api/me').catch(() => ({ authed: false }));
     if (!me.authed) { location.hash = '#/login'; return; }
@@ -57,6 +59,39 @@ async function router() {
   catch (e) { main.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 window.addEventListener('hashchange', router);
+
+let systemInfo = null;
+const getSystem = async () => (systemInfo ||= await api('/api/system'));
+
+/** Sube un archivo y devuelve su referencia. En Vercel va directo a Blob (archivos grandes). */
+async function uploadFile(file, onProgress = () => {}) {
+  const sys = await getSystem();
+  if (sys.storage === 'blob') {
+    const { upload } = await import('https://esm.sh/@vercel/blob@2.8.2/client');
+    const safe = file.name.replace(/[^\w.-]+/g, '_');
+    const blob = await upload(`uploads/${safe}`, file, {
+      access: 'public', handleUploadUrl: '/api/blob/upload', multipart: file.size > 50e6,
+      onUploadProgress: e => onProgress(Math.round(e.percentage)),
+    });
+    return blob.url;
+  }
+  return new Promise((resolve, reject) => {
+    const fd = new FormData(); fd.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = e => onProgress(Math.round(e.loaded / e.total * 100));
+    xhr.onload = () => { const j = JSON.parse(xhr.responseText || '{}'); xhr.status >= 400 ? reject(new Error(j.error || 'Error al subir')) : resolve(j.ref); };
+    xhr.onerror = () => reject(new Error('Error de red al subir'));
+    xhr.open('POST', '/api/upload'); xhr.send(fd);
+  });
+}
+/** Sube varios archivos mostrando el progreso en un elemento. */
+async function uploadMany(files, el) {
+  const refs = [];
+  for (const [i, f] of [...files].entries()) refs.push(await uploadFile(f, pct => { el.textContent = `Subiendo ${i + 1}/${files.length}: ${f.name} — ${pct}%`; }));
+  el.textContent = '';
+  return refs;
+}
+const TYPE_LABEL = { shorts: '✂ Shorts', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje' };
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -75,7 +110,7 @@ routes.login = () => {
 
 // ---------- Inicio ----------
 routes[''] = async () => {
-  const [s, sys, settings] = await Promise.all([api('/api/stats'), api('/api/system'), api('/api/settings')]);
+  const [s, sys, settings] = await Promise.all([api('/api/stats'), getSystem(), api('/api/settings')]);
   const v = settings.values;
   const hasLLM = v[v.llm_provider + '_key'];
   const steps = [
@@ -87,6 +122,8 @@ routes[''] = async () => {
   main.innerHTML = `
     <h1>Hola 👋</h1><p class="sub">Tu fábrica de contenido faceless con tus propias claves de IA.</p>
     ${!sys.ffmpeg ? '<div class="card err" style="margin-bottom:16px">ffmpeg no está instalado en el servidor. Sin él no se pueden renderizar vídeos.</div>' : ''}
+    ${sys.vercel && sys.db !== 'postgres' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay base de datos conectada: los datos se perderán. En Vercel abre el proyecto → <b>Storage</b> → conecta una base de datos <b>Neon</b> y vuelve a desplegar.</div>' : ''}
+    ${sys.vercel && sys.storage !== 'blob' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay almacenamiento de archivos: conecta un <b>Blob store</b> en Vercel → Storage.</div>' : ''}
     <div class="grid g4" style="margin-bottom:16px">
       <div class="card"><div class="muted small">Canales</div><div class="stat">${s.channels}</div></div>
       <div class="card"><div class="muted small">Proyectos</div><div class="stat">${s.projects}</div></div>
@@ -104,7 +141,7 @@ function projectTable(rows, trash = false) {
   if (!rows.length) return '<p class="muted">Aún no hay proyectos.</p>';
   return `<table><tr><th>Proyecto</th><th>Tipo</th><th>Estado</th><th>Fecha</th><th></th></tr>${rows.map(p => `<tr>
     <td><a href="#/proyecto/${p.id}">${esc(p.title || 'Sin título')}</a>${p.status === 'processing' && p.progress ? `<div class="muted small">${esc(p.progress)}</div>` : ''}</td>
-    <td>${p.type === 'shorts' ? '✂ Shorts' + (p.ready_clips != null ? ` (${p.ready_clips})` : '') : '▶ Completo'}</td>
+    <td>${TYPE_LABEL[p.type] || p.type}${p.type === 'shorts' && p.ready_clips != null ? ` (${p.ready_clips})` : ''}</td>
     <td>${pill(p.status)}</td><td class="muted small">${(p.created_at || '').slice(0, 16)}</td>
     <td style="text-align:right">${trash ? `<button class="btn sm" data-restore="${p.id}">Restaurar</button> <button class="btn sm red" data-purge="${p.id}">Borrar definitivamente</button>` : ''}</td></tr>`).join('')}</table>`;
 }
@@ -114,7 +151,7 @@ routes.canales = async (_, params) => {
   if (params.get('ok')) toast('Canal conectado con YouTube', 'good');
   if (params.get('error')) toast(params.get('error'), 'bad');
   channelsCache.reset();
-  const [list, sys] = await Promise.all([channelsCache.get(), api('/api/system')]);
+  const [list, sys] = await Promise.all([channelsCache.get(), getSystem()]);
   main.innerHTML = `<h1>Mis canales</h1><p class="sub">Cada canal tiene su nicho e idioma. Conéctalo a YouTube para publicar desde aquí.</p>
     ${!sys.youtube ? '<div class="card small" style="margin-bottom:16px">Para publicar en YouTube añade tu <b>Google OAuth Client ID y Secret</b> en <a href="#/ajustes">Ajustes y claves</a> (ver <a href="#/ayuda">Ayuda</a>).</div>' : ''}
     <div class="grid g3">
@@ -163,14 +200,14 @@ routes.papelera = async () => {
 
 // ---------- Convertir a Shorts ----------
 routes.shorts = async () => {
-  const [chs, sys] = await Promise.all([channelsCache.get(), api('/api/system')]);
+  const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
   main.innerHTML = `<h1>Convertir a Shorts</h1><p class="sub">Sube un vídeo largo. La IA lo transcribe, encuentra los mejores momentos y crea Shorts verticales con gancho y subtítulos.</p>
   <form id="f" class="grid g2">
     <div class="card stack">
       <h2>1. Vídeo de origen</h2>
       <div class="drop" id="drop"><div style="font-size:30px">⬆</div><b>Arrastra tu vídeo aquí</b><div class="muted small">o haz clic para elegirlo (mp4, mov, mkv…)</div><div id="fname" class="small" style="margin-top:8px;color:var(--gold)"></div></div>
       <input type="file" name="video" accept="video/*" hidden>
-      <div><label>…o pega un enlace (YouTube, etc.) ${sys.ytdlp ? '' : '<span class="err">— yt-dlp no está instalado en el servidor</span>'}</label><input name="url" placeholder="https://www.youtube.com/watch?v=…" ${sys.ytdlp ? '' : 'disabled'}></div>
+      <div><label>…o pega un enlace (YouTube, etc.) ${sys.ytdlp ? '' : `<span class="muted">— ${sys.vercel ? 'no disponible en Vercel, sube el archivo' : 'yt-dlp no está instalado en el servidor'}</span>`}</label><input name="url" placeholder="https://www.youtube.com/watch?v=…" ${sys.ytdlp ? '' : 'disabled'}></div>
       <div><label>Título del proyecto (opcional)</label><input name="title"></div>
       <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
     </div>
@@ -194,24 +231,17 @@ routes.shorts = async () => {
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); file.files = e.dataTransfer.files; file.onchange(); };
-  f.onsubmit = e => {
+  f.onsubmit = async e => {
     e.preventDefault();
-    const fd = new FormData(f);
-    fd.set('captions', f.captions.checked ? 'true' : 'false');
-    if (!file.files[0]) fd.delete('video');
     if (!file.files[0] && !f.url.value) return toast('Sube un vídeo o pega un enlace', 'bad');
-    // XHR para mostrar progreso de subida de archivos grandes
-    const xhr = new XMLHttpRequest();
-    $('#go').disabled = true;
-    xhr.upload.onprogress = ev => { $('#up').textContent = `Subiendo… ${Math.round(ev.loaded / ev.total * 100)}%`; };
-    xhr.onload = () => {
-      $('#go').disabled = false;
-      const j = JSON.parse(xhr.responseText || '{}');
-      if (xhr.status >= 400) return toast(j.error || 'Error', 'bad');
-      location.hash = '#/proyecto/' + j.id;
-    };
-    xhr.onerror = () => { $('#go').disabled = false; toast('Error de red al subir', 'bad'); };
-    xhr.open('POST', '/api/shorts'); xhr.send(fd);
+    const go = $('#go'); go.disabled = true;
+    try {
+      const d = Object.fromEntries(new FormData(f)); delete d.video;
+      d.captions = f.captions.checked;
+      if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
+      const r = await api('/api/shorts', { method: 'POST', body: d });
+      location.hash = '#/proyecto/' + r.id;
+    } catch (err) { toast(err.message, 'bad'); go.disabled = false; $('#up').textContent = ''; }
   };
   const list = await api('/api/projects?type=shorts');
   $('#list').innerHTML = projectTable(list);
@@ -238,9 +268,9 @@ function shortsGrid(p, chs) {
   if (!p.clips?.length) return p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
   return `<div class="shorts">${p.clips.map(c => {
     const dur = c.end - c.start;
-    const langs = Object.entries(c.variants || {}).filter(([, v]) => v.file);
+    const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
     return `<div class="clip" data-clip="${c.id}">
-      <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.file && c.status !== 'rendering' ? `<video src="/files/${c.file}" controls preload="metadata" playsinline></video>` : c.status === 'error' ? `<div class="err small" style="padding:10px">${esc(c.error || 'Error')}</div>` : '<span class="spinner"></span>'}</div>
+      <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>` : c.status === 'error' ? `<div class="err small" style="padding:10px">${esc(c.error || 'Error')}</div>` : '<span class="spinner"></span>'}</div>
       <div class="body">
         <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'crop' ? 'recorte' : 'fondo difuminado'}</span></div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
@@ -255,7 +285,7 @@ function shortsGrid(p, chs) {
         <details><summary>🌐 Sacarlo en otro idioma</summary><div class="stack" style="margin-top:6px">
           <select data-lang>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
-          ${langs.map(([l, v]) => `<a href="/files/${v.file}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
+          ${langs.map(([l, v]) => `<a href="${v.url}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
         <details><summary>📤 Publicar este Short</summary><div class="stack" style="margin-top:6px">
           ${c.yt_video_id ? `<a class="small" target="_blank" href="https://youtube.com/shorts/${c.yt_video_id}">✓ Publicado en YouTube</a>` : ''}
           <select data-ch>${channelOptions(chs.filter(x => x.connected), p.channel_id, 'Elige canal conectado')}</select>
@@ -300,8 +330,9 @@ function bindClips(p) {
 }
 
 // ---------- Vídeo completo ----------
-routes.completo = async () => {
-  const [chs, settings] = await Promise.all([channelsCache.get(), api('/api/settings')]);
+routes.completo = async (_, params) => {
+  const [chs, settings, chars] = await Promise.all([channelsCache.get(), api('/api/settings'), api('/api/characters')]);
+  const preChar = params.get('personaje');
   main.innerHTML = `<h1>Vídeo completo</h1><p class="sub">De una idea a un vídeo terminado: guion con IA → voz en off → vídeos de stock → subtítulos.</p>
   <div class="grid g2">
     <form class="card stack" id="f">
@@ -311,6 +342,9 @@ routes.completo = async () => {
       <div class="row"><div style="flex:1"><label>Duración (min)</label><input type="number" name="minutes" value="3" min="0.5" max="20" step="0.5"></div>
         <div style="flex:1"><label>Formato</label><select name="format"><option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16 (Short)</option></select></div></div>
       <div><label>Estilo de narración</label><input name="style" value="documental, narrativo, con intriga"></div>
+      <div class="row"><div style="flex:1"><label>Imágenes del vídeo</label><select name="visual">
+          <option value="stock">Vídeos de stock (Pexels)</option><option value="character" ${preChar ? 'selected' : ''}>Imágenes IA con mi personaje</option><option value="none">Fondo liso</option></select></div>
+        <div style="flex:1"><label>Personaje (narrador)</label><select name="characterId"><option value="">Ninguno</option>${chars.map(c => `<option value="${c.id}" ${c.id == preChar ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos</label>
       <div class="muted small">Voz: ${settings.values.tts_provider} · Stock: ${settings.values.pexels_key ? 'Pexels ✓' : '<span class="err">sin clave de Pexels (fondo liso)</span>'}</div>
       <div class="row"><button type="button" class="btn" id="draft">✎ Generar guion para revisar</button><button class="btn gold" id="go">▶ Crear vídeo directamente</button></div>
@@ -319,31 +353,31 @@ routes.completo = async () => {
   </div>
   <h2 style="margin-top:28px">Vídeos completos</h2><div class="card" id="list"></div>`;
   const f = $('#f');
-  const opts = () => { const d = Object.fromEntries(new FormData(f)); d.captions = f.captions.checked; d.minutes = Number(d.minutes); return d; };
+  const opts = () => { const d = Object.fromEntries(new FormData(f)); d.type = 'long'; d.captions = f.captions.checked; d.minutes = Number(d.minutes); d.characterId = Number(d.characterId) || null; if (d.visual === 'character' && !d.characterId) throw new Error('Elige un personaje para usar imágenes IA.'); return d; };
   let script = null;
   const showScript = () => {
     $('#script').innerHTML = `<h2>Guion</h2><div class="stack">
       <div><label>Título</label><input id="st" value="${esc(script.title)}"></div>
       <div><label>Descripción</label><textarea id="sd">${esc(script.description)}</textarea></div>
-      ${script.scenes.map((s, i) => `<div class="scene stack"><div class="small muted">Escena ${i + 1}</div><textarea data-nar="${i}">${esc(s.narration)}</textarea><input data-q="${i}" value="${esc(s.search)}" title="Búsqueda de stock (inglés)"></div>`).join('')}
+      ${script.scenes.map((s, i) => `<div class="scene stack"><div class="small muted">Escena ${i + 1}</div><textarea data-nar="${i}">${esc(s.narration)}</textarea><input data-q="${i}" value="${esc(s.search)}" title="Búsqueda de stock (inglés)"><input data-ip="${i}" value="${esc(s.image_prompt || '')}" title="Descripción de imagen IA (inglés)"></div>`).join('')}
       <button class="btn gold block" id="prod">▶ Producir vídeo con este guion</button></div>`;
     $('#prod').onclick = e => busy(e.target, async () => {
       script.title = $('#st').value; script.description = $('#sd').value;
-      script.scenes.forEach((s, i) => { s.narration = $(`[data-nar="${i}"]`).value; s.search = $(`[data-q="${i}"]`).value; });
-      const r = await api('/api/long', { method: 'POST', body: { ...opts(), script } });
+      script.scenes.forEach((s, i) => { s.narration = $(`[data-nar="${i}"]`).value; s.search = $(`[data-q="${i}"]`).value; s.image_prompt = $(`[data-ip="${i}"]`).value; });
+      const r = await api('/api/compose', { method: 'POST', body: { ...opts(), script } });
       location.hash = '#/proyecto/' + r.id;
     });
   };
-  $('#draft').onclick = e => { if (!f.topic.value) return toast('Escribe un tema', 'bad'); busy(e.target, async () => { script = await api('/api/long/script', { method: 'POST', body: opts() }); showScript(); }); };
-  f.onsubmit = e => { e.preventDefault(); busy($('#go'), async () => { const r = await api('/api/long', { method: 'POST', body: opts() }); location.hash = '#/proyecto/' + r.id; }); };
+  $('#draft').onclick = e => { if (!f.topic.value) return toast('Escribe un tema', 'bad'); busy(e.target, async () => { script = await api('/api/compose/script', { method: 'POST', body: opts() }); showScript(); }); };
+  f.onsubmit = e => { e.preventDefault(); busy($('#go'), async () => { const r = await api('/api/compose', { method: 'POST', body: opts() }); location.hash = '#/proyecto/' + r.id; }); };
   $('#list').innerHTML = projectTable(await api('/api/projects?type=long'));
 };
 
 function longView(p, chs) {
   const s = p.data.script;
   return `<div class="grid g2">
-    <div class="card">${p.output_path ? `<video src="/files/${p.output_path}" controls style="width:100%;border-radius:8px;background:#000"></video>
-      <div class="row" style="margin-top:10px"><a class="btn" href="/files/${p.output_path}" download>⬇ Descargar MP4</a></div>` : '<div class="empty">El vídeo aparecerá aquí cuando termine.</div>'}</div>
+    <div class="card">${p.outputUrl ? `<video src="${p.outputUrl}" controls style="width:100%;max-height:70vh;border-radius:8px;background:#000"></video>
+      <div class="row" style="margin-top:10px"><a class="btn" href="${p.outputUrl}" download="video_${p.id}.mp4" target="_blank">⬇ Descargar MP4</a></div>` : '<div class="empty">El vídeo aparecerá aquí cuando termine.</div>'}</div>
     <div class="card stack"><h2>Publicar en YouTube</h2>
       ${p.data.yt_video_id ? `<a target="_blank" href="https://youtube.com/watch?v=${p.data.yt_video_id}">✓ Publicado en YouTube</a>` : ''}
       <div><label>Título</label><input id="pt" value="${esc(s?.title || p.title)}"></div>
@@ -352,8 +386,11 @@ function longView(p, chs) {
       <div class="row"><select id="pch" style="flex:1">${channelOptions(chs.filter(x => x.connected), p.channel_id, 'Elige canal conectado')}</select>
         <select id="ppriv" style="flex:1"><option value="public">Público</option><option value="unlisted">Oculto</option><option value="private">Privado</option></select></div>
       <div><label>Programar (opcional)</label><input type="datetime-local" id="pat"></div>
-      <button class="btn gold" id="pub" ${p.output_path ? '' : 'disabled'}>Publicar ahora</button></div>
-    ${s?.scenes ? `<div class="card" style="grid-column:1/-1"><h2>Guion</h2>${s.scenes.map((x, i) => `<p><b class="muted">${i + 1}.</b> ${esc(x.narration)}</p>`).join('')}</div>` : ''}
+      <button class="btn gold" id="pub" ${p.output ? '' : 'disabled'}>Publicar ahora</button></div>
+    ${s?.hooks?.length ? `<div class="card" style="grid-column:1/-1"><h2>Ganchos alternativos</h2><ul>${s.hooks.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    ${s?.scenes ? `<div class="card" style="grid-column:1/-1"><h2>Escenas</h2>${s.scenes.map((x, i) => `<div class="row" style="align-items:flex-start;flex-wrap:nowrap;padding:6px 0">
+      ${x.mediaUrl ? (/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(x.mediaUrl) ? `<img src="${x.mediaUrl}" style="width:64px;border-radius:6px">` : '<span class="pill">vídeo</span>') : ''}
+      <div><b class="muted">${i + 1}.</b> ${esc(x.narration || '(sin voz)')}${x.overlay ? ` <span class="pill">${esc(x.overlay)}</span>` : ''}</div></div>`).join('')}</div>` : ''}
   </div>`;
 }
 function bindLong(p) {
@@ -438,6 +475,215 @@ routes.calendario = async (_, params) => {
   });
 };
 
+// ---------- Personaje IA ----------
+routes.personaje = async () => {
+  const list = await api('/api/characters');
+  main.innerHTML = `<h1>Personaje IA</h1><p class="sub">Crea un personaje con aspecto, personalidad y voz propios. Genera imágenes coherentes y úsalo como narrador en tus vídeos.</p>
+  <div class="grid g2">
+    <form class="card stack" id="f"><h2 id="fh">Nuevo personaje</h2><input type="hidden" name="id">
+      <div class="row"><input id="idea" placeholder="Idea rápida: un zorro detective con gabardina…" style="flex:1"><button type="button" class="btn sm" id="suggest">✨ Sugerir</button></div>
+      <div><label>Nombre</label><input name="name" required></div>
+      <div><label>Aspecto (en inglés funciona mejor para las imágenes)</label><textarea name="description" placeholder="A red fox detective wearing a brown trench coat and a fedora, green eyes…"></textarea></div>
+      <div><label>Personalidad y forma de hablar</label><textarea name="personality" placeholder="Sarcástico, curioso, habla con frases cortas…"></textarea></div>
+      <div><label>Estilo visual</label><input name="style" placeholder="3D Pixar style, cinematic lighting"></div>
+      <div><label>Voz (opcional)</label><input name="voice" placeholder="openai:nova · openai:onyx · elevenlabs:VOICE_ID"></div>
+      <button class="btn gold">Guardar personaje</button></form>
+    <div class="stack" id="list">${list.length ? '' : '<div class="empty">Aún no tienes personajes.</div>'}</div>
+  </div>`;
+  const f = $('#f');
+  $('#suggest').onclick = e => busy(e.target, async () => {
+    const r = await api('/api/characters/suggest', { method: 'POST', body: { idea: $('#idea').value } });
+    for (const k of ['name', 'description', 'personality', 'style']) f[k].value = r[k] || '';
+  });
+  f.onsubmit = e => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(f));
+    busy(f.querySelector('.gold'), async () => { await api('/api/characters' + (d.id ? '/' + d.id : ''), { method: d.id ? 'PUT' : 'POST', body: d }); toast('Personaje guardado', 'good'); router(); });
+  };
+  $('#list').insertAdjacentHTML('beforeend', list.map(c => `<div class="card stack" data-c="${c.id}">
+    <div class="row between"><h3>${esc(c.name)}</h3><div class="row"><button class="btn sm" data-edit>Editar</button><button class="btn sm red" data-del>Eliminar</button></div></div>
+    <div class="muted small">${esc(c.personality)}</div>
+    <div class="row" style="gap:8px">${c.imageUrls.map((u, i) => `<div style="position:relative"><img src="${u}" style="width:90px;height:135px;object-fit:cover;border-radius:8px"><button class="btn sm xdel" data-img="${i}" style="position:absolute;top:2px;right:2px;padding:0 6px">✕</button></div>`).join('') || '<span class="muted small">Sin imágenes todavía.</span>'}</div>
+    <div class="row"><input data-prompt placeholder="Escena opcional: en una calle lluviosa de noche…" style="flex:1"><button class="btn sm gold" data-gen>🎨 Generar imagen</button></div>
+    <div class="row"><label class="btn sm" style="margin:0">⬆ Subir imagen de referencia<input type="file" accept="image/*" data-up hidden></label><span class="small muted" data-st></span>
+      <a class="btn sm" href="#/completo?personaje=${c.id}">▶ Crear vídeo con ${esc(c.name)}</a></div></div>`).join(''));
+  main.querySelectorAll('[data-c]').forEach(el => {
+    const c = list.find(x => x.id == el.dataset.c);
+    $('[data-edit]', el).onclick = () => { for (const k of ['id', 'name', 'description', 'personality', 'style', 'voice']) f[k].value = c[k] || ''; $('#fh').textContent = 'Editar personaje'; f.scrollIntoView({ behavior: 'smooth' }); };
+    $('[data-del]', el).onclick = async () => { if (confirm('¿Eliminar el personaje y sus imágenes?')) { await api('/api/characters/' + c.id, { method: 'DELETE' }); router(); } };
+    $('[data-gen]', el).onclick = e => busy(e.target, async () => { await api(`/api/characters/${c.id}/image`, { method: 'POST', body: { prompt: $('[data-prompt]', el).value } }); router(); });
+    $('[data-up]', el).onchange = async e => {
+      try { const ref = await uploadFile(e.target.files[0], p => { $('[data-st]', el).textContent = p + '%'; }); await api(`/api/characters/${c.id}/images`, { method: 'POST', body: { ref } }); router(); }
+      catch (err) { toast(err.message, 'bad'); }
+    };
+    el.querySelectorAll('[data-img]').forEach(b => b.onclick = async () => { if (confirm('¿Quitar esta imagen?')) { await api(`/api/characters/${c.id}/images/${b.dataset.img}`, { method: 'DELETE' }); router(); } });
+  });
+};
+
+// ---------- Creador de anuncios IA ----------
+routes.anuncios = async () => {
+  const chs = await channelsCache.get();
+  main.innerHTML = `<h1>Creador de anuncios IA</h1><p class="sub">Describe tu producto y sube sus fotos: la IA escribe el anuncio (gancho, problema, solución y llamada a la acción) y lo monta en vertical con voz y subtítulos.</p>
+  <div class="grid g2">
+    <form class="card stack" id="f">
+      <div><label>Producto o servicio</label><input name="product" required placeholder="Ej: Botella térmica SmartBottle"></div>
+      <div><label>Descripción y beneficios</label><textarea name="description" placeholder="Mantiene el agua fría 24 h, indica la temperatura en la tapa…"></textarea></div>
+      <div class="row"><div style="flex:1"><label>Público objetivo</label><input name="audience" placeholder="Deportistas de 20-35 años"></div><div style="flex:1"><label>Oferta</label><input name="offer" placeholder="-30% solo hoy"></div></div>
+      <div class="row"><div style="flex:1"><label>Llamada a la acción</label><input name="cta" value="Compra ahora"></div>
+        <div style="flex:1"><label>Duración</label><select name="seconds"><option>15</option><option selected>30</option><option>45</option><option>60</option></select></div></div>
+      <div class="row"><div style="flex:1"><label>Idioma</label><select name="language">${Object.values(LANGS).map(v => `<option>${v}</option>`).join('')}</select></div>
+        <div style="flex:1"><label>Tono</label><input name="tone" value="enérgico y directo"></div></div>
+      <div><label>Fotos o clips del producto (opcional, recomendado)</label><input type="file" id="files" multiple accept="image/*,video/*"></div>
+      <div id="thumbs" class="row"></div>
+      <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
+      <div class="small muted" id="up"></div>
+      <div class="row"><button type="button" class="btn" id="draft">✎ Ver guion primero</button><button class="btn gold" id="go">✦ Crear anuncio</button></div>
+    </form>
+    <div class="card" id="script"><h2>Guion del anuncio</h2><p class="muted">Pide un borrador para revisar los ganchos y las escenas antes de producirlo.</p></div>
+  </div><h2 style="margin-top:28px">Anuncios</h2><div class="card" id="list"></div>`;
+  const f = $('#f');
+  let media = null, script = null;
+  $('#files').onchange = () => { media = null; $('#thumbs').innerHTML = [...$('#files').files].map(x => `<span class="pill">${esc(x.name)}</span>`).join(''); };
+  const getMedia = async () => (media ||= await uploadMany($('#files').files, $('#up')));
+  const opts = async () => { const d = Object.fromEntries(new FormData(f)); d.type = 'ad'; d.seconds = Number(d.seconds); d.format = 'vertical'; d.media = await getMedia(); return d; };
+  $('#draft').onclick = e => { if (!f.product.value) return toast('Escribe el producto', 'bad'); busy(e.target, async () => {
+    script = await api('/api/compose/script', { method: 'POST', body: await opts() });
+    $('#script').innerHTML = `<h2>${esc(script.title || 'Anuncio')}</h2>
+      <div class="small muted">Ganchos alternativos:</div><ul>${(script.hooks || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+      <div class="stack">${script.scenes.map((s, i) => `<div class="scene stack"><div class="small muted">Escena ${i + 1}${Number.isInteger(s.image) ? ` · foto ${s.image + 1}` : s.search ? ` · stock: ${esc(s.search)}` : ''}</div>
+        <textarea data-nar="${i}">${esc(s.narration)}</textarea><input data-ov="${i}" value="${esc(s.overlay || '')}" placeholder="Texto en pantalla (opcional)"></div>`).join('')}
+      <button class="btn gold block" id="prod">✦ Producir este anuncio</button></div>`;
+    $('#prod').onclick = ev => busy(ev.target, async () => {
+      script.scenes.forEach((s, i) => { s.narration = $(`[data-nar="${i}"]`).value; s.overlay = $(`[data-ov="${i}"]`).value; });
+      const r = await api('/api/compose', { method: 'POST', body: { ...(await opts()), script } }); location.hash = '#/proyecto/' + r.id;
+    });
+  }); };
+  f.onsubmit = e => { e.preventDefault(); busy($('#go'), async () => { const r = await api('/api/compose', { method: 'POST', body: await opts() }); location.hash = '#/proyecto/' + r.id; }); };
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=ad'));
+};
+
+// ---------- Montar mi material ----------
+routes.montar = async () => {
+  const chs = await channelsCache.get();
+  main.innerHTML = `<h1>Montar mi material</h1><p class="sub">Sube tus propios clips e imágenes. La IA escribe (o adapta) la narración, añade voz en off y subtítulos y lo monta todo en orden.</p>
+  <form class="grid g2" id="f">
+    <div class="card stack"><h2>1. Tu material</h2>
+      <div class="drop" id="drop"><div style="font-size:30px">⬆</div><b>Arrastra clips o imágenes</b><div class="muted small">Se usarán en este orden, una escena por archivo</div></div>
+      <input type="file" id="files" multiple accept="video/*,image/*" hidden>
+      <div id="items" class="stack"></div>
+    </div>
+    <div class="card stack"><h2>2. Narración</h2>
+      <div><label>Tema del vídeo</label><input name="topic" placeholder="Ej: Mi viaje por Japón en 7 días"></div>
+      <div><label>…o pega tu propio guion (se repartirá entre las escenas)</label><textarea name="ownScript" placeholder="Opcional"></textarea></div>
+      <label class="check"><input type="checkbox" name="voice" checked> Añadir voz en off con IA (si lo desactivas se conserva el audio original de los clips)</label>
+      <div class="row"><div style="flex:1"><label>Formato</label><select name="format"><option value="vertical">Vertical 9:16</option><option value="horizontal">Horizontal 16:9</option></select></div>
+        <div style="flex:1"><label>Idioma</label><select name="language">${Object.values(LANGS).map(v => `<option>${v}</option>`).join('')}</select></div></div>
+      <div><label>Estilo</label><input name="style" value="cercano y dinámico"></div>
+      <label class="check"><input type="checkbox" name="captions" checked> Subtítulos</label>
+      <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
+      <div class="small muted" id="up"></div>
+      <button class="btn gold" id="go">⧉ Montar vídeo</button>
+    </div></form><h2 style="margin-top:28px">Montajes</h2><div class="card" id="list"></div>`;
+  let files = [];
+  const draw = () => { $('#items').innerHTML = files.map((x, i) => `<div class="scene row" style="flex-wrap:nowrap"><b>${i + 1}</b><span class="small" style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(x.name)}</span>
+      <input data-note="${i}" placeholder="¿Qué se ve? (opcional)" style="flex:2" value="${esc(x.note || '')}"><button type="button" class="btn sm" data-rm="${i}">✕</button></div>`).join('');
+    $('#items').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { files.splice(+b.dataset.rm, 1); draw(); });
+    $('#items').querySelectorAll('[data-note]').forEach(i => i.oninput = () => { files[+i.dataset.note].note = i.value; }); };
+  const add = list => { files.push(...[...list]); draw(); };
+  const drop = $('#drop');
+  drop.onclick = () => $('#files').click();
+  $('#files').onchange = e => add(e.target.files);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); add(e.dataTransfer.files); };
+  $('#f').onsubmit = e => {
+    e.preventDefault();
+    const f = e.target;
+    if (!files.length) return toast('Sube al menos un archivo', 'bad');
+    if (f.voice.checked && !f.topic.value && !f.ownScript.value) return toast('Escribe un tema o tu guion', 'bad');
+    busy($('#go'), async () => {
+      const d = Object.fromEntries(new FormData(f));
+      d.type = 'montage'; d.voice = f.voice.checked; d.captions = f.captions.checked;
+      d.notes = files.map(x => x.note || '');
+      d.media = await uploadMany(files, $('#up'));
+      // Sin voz no hace falta IA: una escena por archivo con su audio original
+      const body = d.voice ? d : { ...d, script: { title: d.topic || 'Montaje', scenes: files.map(() => ({ narration: '' })) } };
+      const r = await api('/api/compose', { method: 'POST', body });
+      location.hash = '#/proyecto/' + r.id;
+    });
+  };
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=montage'));
+};
+
+// ---------- Analizador ----------
+const fmtN = n => Number(n || 0).toLocaleString('es');
+routes.analizador = async (id) => {
+  const hist = await api('/api/analyses');
+  main.innerHTML = `<h1>Analizador</h1><p class="sub">Analiza cualquier canal o vídeo de YouTube: qué funciona, frecuencia, mejores días y recomendaciones de la IA.</p>
+    <form class="card row" id="f"><input name="target" placeholder="https://youtube.com/@canal · URL de un vídeo · ID" style="flex:1" required><button class="btn gold">◔ Analizar</button></form>
+    <div id="res" style="margin-top:16px"></div>
+    ${hist.length ? `<h2 style="margin-top:24px">Análisis anteriores</h2><div class="card">${hist.map(a => `<div class="row between" style="padding:5px 0"><a href="#/analizador/${a.id}">${a.kind === 'video' ? '🎬' : '📺'} ${esc(a.target)}</a><span class="row"><span class="muted small">${String(a.created_at).slice(0, 10)}</span><button class="btn sm red" data-del="${a.id}">✕</button></span></div>`).join('')}</div>` : ''}`;
+  main.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('/api/analyses/' + b.dataset.del, { method: 'DELETE' }); location.hash = '#/analizador'; router(); });
+  const show = r => {
+    const ai = r.ai || {};
+    const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join('');
+    if (r.kind === 'video') {
+      const v = r.stats.video;
+      $('#res').innerHTML = `<div class="grid g2">
+        <div class="card stack"><div class="row" style="flex-wrap:nowrap">${v.thumbnail ? `<img src="${v.thumbnail}" style="width:160px;border-radius:8px">` : ''}<div><h2>${esc(v.title)}</h2><a class="small" target="_blank" href="https://youtube.com/watch?v=${v.id}">Ver en YouTube</a></div></div>
+          <div class="grid g4"><div><div class="muted small">Vistas</div><div class="stat">${fmtN(v.views)}</div></div><div><div class="muted small">Vistas/día</div><div class="stat">${fmtN(r.stats.viewsPerDay)}</div></div>
+          <div><div class="muted small">% likes</div><div class="stat">${r.stats.likeRate}</div></div><div><div class="muted small">Nota del título</div><div class="stat">${esc(ai.title_score)}</div></div></div>
+          <p>${esc(ai.summary)}</p><p class="small"><b>Audiencia:</b> ${esc(ai.audience_sentiment)}</p></div>
+        <div class="card"><h3>Títulos mejores</h3><ul>${li(ai.better_titles)}</ul><h3>SEO</h3><ul>${li(ai.seo)}</ul></div>
+        <div class="card"><h3>Lo que pide la audiencia</h3><ul>${li(ai.audience_requests)}</ul><h3>Ideas de Shorts</h3><ul>${li(ai.shorts_ideas)}</ul></div>
+        <div class="card"><h3>Recomendaciones</h3><ul>${li(ai.recommendations)}</ul></div></div>`;
+      return;
+    }
+    const st = r.stats, c = st.channel;
+    $('#res').innerHTML = `<div class="card row" style="margin-bottom:16px">${c.thumbnail ? `<img src="${c.thumbnail}" style="width:56px;border-radius:50%">` : ''}<div style="flex:1"><h2 style="margin:0">${esc(c.title)}</h2><div class="muted small">${esc(ai.niche || '')} · creado ${String(c.created).slice(0, 10)}</div></div>
+      <a class="btn sm" target="_blank" href="https://youtube.com/channel/${c.id}">Abrir canal</a></div>
+      <div class="grid g4" style="margin-bottom:16px">
+        <div class="card"><div class="muted small">Suscriptores</div><div class="stat">${fmtN(c.subscribers)}</div></div>
+        <div class="card"><div class="muted small">Vídeos / semana</div><div class="stat">${st.perWeek}</div></div>
+        <div class="card"><div class="muted small">Mediana Shorts</div><div class="stat">${fmtN(st.shorts.medianViews)}</div><div class="muted small">${st.shorts.count} shorts</div></div>
+        <div class="card"><div class="muted small">Mediana largos</div><div class="stat">${fmtN(st.longs.medianViews)}</div><div class="muted small">${st.longs.count} largos</div></div>
+      </div>
+      <div class="grid g2">
+        <div class="card stack"><h3>Diagnóstico</h3><p>${esc(ai.summary)}</p><p class="small"><b>Replicable como faceless:</b> ${esc(ai.faceless_score)}</p>
+          <h3>Fortalezas</h3><ul>${li(ai.strengths)}</ul><h3>Debilidades</h3><ul>${li(ai.weaknesses)}</ul></div>
+        <div class="card stack"><h3>Recomendaciones</h3><ul>${li(ai.recommendations)}</ul><h3>Patrones de títulos</h3><ul>${li(ai.title_patterns)}</ul></div>
+        <div class="card"><h3>Vídeos más vistos</h3><table>${st.top.map(v => `<tr><td><a target="_blank" href="https://youtube.com/watch?v=${v.id}">${esc(v.title)}</a></td><td class="muted small" style="white-space:nowrap">${fmtN(v.views)}</td></tr>`).join('')}</table></div>
+        <div class="card"><h3>Mejores días para publicar</h3><table>${st.bestDays.map(d => `<tr><td>${d.day}</td><td class="muted small">${fmtN(d.medianViews)} vistas (mediana) · ${d.count} vídeos</td></tr>`).join('')}</table>
+          <h3 style="margin-top:14px">Ideas de vídeos</h3><ul>${li(ai.video_ideas)}</ul></div>
+      </div>`;
+  };
+  $('#f').onsubmit = e => { e.preventDefault(); busy(e.target.querySelector('button'), async () => { const r = await api('/api/analyze', { method: 'POST', body: { target: e.target.target.value } }); show(r); }); };
+  if (id) show(await api('/api/analyses/' + id));
+};
+
+// ---------- Estado del servidor ----------
+routes.servidor = async () => {
+  const [a, sys] = await Promise.all([api('/api/admin'), api('/api/system')]);
+  const JOB = { 'shorts.start': 'Preparar vídeo', 'shorts.transcribe': 'Transcribir', 'shorts.pick': 'Elegir clips', 'clip.render': 'Render de Short', 'clip.translate': 'Traducir Short',
+    'compose.script': 'Guion', 'compose.scene': 'Escena', 'compose.concat': 'Unir escenas' };
+  main.innerHTML = `<h1>Estado del servidor</h1><p class="sub">Infraestructura y cola de trabajos.</p>
+    <div class="grid g4" style="margin-bottom:16px">
+      <div class="card"><div class="muted small">Alojamiento</div><div class="stat" style="font-size:20px">${a.vercel ? 'Vercel' : 'Servidor propio'}</div></div>
+      <div class="card"><div class="muted small">Base de datos</div><div class="stat" style="font-size:20px">${a.db === 'postgres' ? 'Postgres (Neon)' : 'Local (PGlite)'}</div></div>
+      <div class="card"><div class="muted small">Archivos</div><div class="stat" style="font-size:20px">${a.storage === 'blob' ? 'Vercel Blob' : 'Disco local'}</div></div>
+      <div class="card"><div class="muted small">ffmpeg</div><div class="stat" style="font-size:20px">${sys.ffmpeg ? '✓ OK' : '✕ No'}</div></div>
+    </div>
+    <div class="card"><div class="row between"><h2>Cola de trabajos</h2><div class="row"><span class="pill">${a.queue.waiting} en espera</span><span class="pill processing">${a.queue.running} en curso</span><span class="pill error">${a.queue.failed} fallidos</span>
+      <button class="btn sm" id="kick">▶ Procesar cola</button>${a.queue.failed ? '<button class="btn sm red" id="clean">Limpiar fallidos</button>' : ''}</div></div>
+      ${a.jobs.length ? `<table><tr><th>#</th><th>Paso</th><th>Proyecto</th><th>Estado</th><th>Intentos</th><th>Error</th><th></th></tr>${a.jobs.map(j => `<tr><td>${j.id}</td><td>${JOB[j.type] || j.type}</td>
+        <td>${j.payload.id ? `<a href="#/proyecto/${j.payload.id}">#${j.payload.id}</a>` : j.payload.clipId ? 'clip ' + j.payload.clipId : ''}</td><td>${pill(j.status === 'queued' ? 'pending' : j.status === 'running' ? 'processing' : 'error')}</td>
+        <td>${j.attempts}</td><td class="small err">${esc((j.error || '').slice(0, 160))}</td><td>${j.status === 'failed' ? `<button class="btn sm" data-retry="${j.id}">Reintentar</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">La cola está vacía.</p>'}</div>`;
+  $('#kick').onclick = e => busy(e.target, async () => { await api('/api/admin/kick', { method: 'POST' }); toast('Procesando…'); setTimeout(router, 1500); });
+  const c = $('#clean'); if (c) c.onclick = async () => { await api('/api/admin/jobs', { method: 'DELETE' }); router(); };
+  main.querySelectorAll('[data-retry]').forEach(b => b.onclick = async () => { await api(`/api/admin/jobs/${b.dataset.retry}/retry`, { method: 'POST' }); router(); });
+  if (a.queue.waiting || a.queue.running) poll(router, 4000);
+};
+
 // ---------- Ajustes y claves ----------
 routes.ajustes = async () => {
   const { values, fields } = await api('/api/settings');
@@ -468,9 +714,17 @@ routes.ajustes = async () => {
 routes.ayuda = () => {
   main.innerHTML = `<h1>Ayuda</h1><p class="sub">Cómo sacar partido a tu estudio.</p><div class="grid g2">
   <div class="card stack"><h2>¿Qué claves necesito?</h2>
-    <p><b>Mínimo para Shorts:</b> una clave de <b>OpenAI</b> (transcribe con Whisper y escribe títulos/ganchos). Alternativa más barata: <b>Groq</b> para transcribir + Claude/Gemini/OpenRouter para el texto.</p>
-    <p><b>Vídeo completo:</b> IA de texto + voz (<b>OpenAI TTS</b> o <b>ElevenLabs</b>) + <b>Pexels</b> (gratis) para vídeos de stock.</p>
+    <p><b>Mínimo para Shorts:</b> una clave de <b>OpenAI</b> (transcribe con Whisper y escribe títulos y ganchos). Alternativa más barata: <b>Groq</b> para transcribir + Claude/Gemini/OpenRouter para el texto.</p>
+    <p><b>Vídeo completo, anuncios y montajes:</b> IA de texto + voz (<b>OpenAI TTS</b> o <b>ElevenLabs</b>) + <b>Pexels</b> (gratis) para vídeos de stock.</p>
+    <p><b>Personaje IA:</b> OpenAI (modelo de imágenes gpt-image-1).</p>
+    <p><b>Analizador:</b> una <b>YouTube Data API key</b> (gratis en Google Cloud) o un canal conectado.</p>
     <p><b>Publicar:</b> credenciales OAuth de Google (gratis).</p></div>
+  <div class="card stack"><h2>Herramientas</h2><ul>
+    <li><b>Personaje IA:</b> crea un personaje con aspecto, personalidad y voz. Genera imágenes coherentes (usa su primera imagen como referencia) y úsalo como narrador en "Vídeo completo".</li>
+    <li><b>Creador de anuncios IA:</b> producto + fotos → anuncio vertical con gancho, voz, subtítulos y llamada a la acción.</li>
+    <li><b>Montar mi material:</b> tus clips e imágenes en orden + narración con IA (o tu propio guion) → vídeo terminado. Sin voz conserva el audio original.</li>
+    <li><b>Analizador:</b> pega un canal o vídeo de YouTube para ver estadísticas, mejores días, patrones de títulos e ideas.</li>
+    <li><b>Estado del servidor:</b> mira la cola de trabajos y reintenta los que fallen.</li></ul></div>
   <div class="card stack"><h2>Convertir a Shorts</h2><ol>
     <li>Sube un vídeo largo (o pega un enlace si el servidor tiene yt-dlp).</li>
     <li>Se transcribe con marcas de tiempo por palabra.</li>

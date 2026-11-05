@@ -1,14 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ffmpeg, probe } from '../video/ffmpeg.js';
+import crypto from 'node:crypto';
+import { ffmpeg } from '../video/ffmpeg.js';
 import { getSetting, requireKey } from '../settings.js';
+import { WORK_DIR } from '../db.js';
 import { apiError } from './llm.js';
 
-const CHUNK_SECONDS = 20 * 60; // 20 min de mp3 mono 32 kbps ≈ 4,8 MB (< 25 MB límite de Whisper)
+// 15 min de mp3 mono 32 kbps ≈ 3,6 MB (< 25 MB límite de Whisper) y cabe en un paso de 300 s
+export const CHUNK_SECONDS = 15 * 60;
 
-async function transcribeFile(file, provider, language) {
+async function whisper(file, language) {
+  const provider = await getSetting('transcribe_provider');
   const isGroq = provider === 'groq';
-  const key = requireKey(isGroq ? 'groq_key' : 'openai_key', 'transcribir el audio');
+  const key = await requireKey(isGroq ? 'groq_key' : 'openai_key', 'transcribir el audio');
   const form = new FormData();
   form.append('file', new Blob([fs.readFileSync(file)], { type: 'audio/mpeg' }), path.basename(file));
   form.append('model', isGroq ? 'whisper-large-v3-turbo' : 'whisper-1');
@@ -24,38 +28,45 @@ async function transcribeFile(file, provider, language) {
 }
 
 /**
- * Transcribe un vídeo/audio completo con marcas de tiempo por palabra.
- * Devuelve { language, segments:[{start,end,text}], words:[{word,start,end}] }
+ * Transcribe un trozo [offset, offset+len] de un vídeo/audio (ruta o URL).
+ * Devuelve { language, segments:[{start,end,text}], words:[{word,start,end}] } con tiempos absolutos.
  */
-export async function transcribe(mediaPath, workDir, { language, onProgress } = {}) {
-  const provider = getSetting('transcribe_provider');
-  fs.mkdirSync(workDir, { recursive: true });
-  const { duration } = await probe(mediaPath);
-  const chunks = Math.max(1, Math.ceil(duration / CHUNK_SECONDS));
-  const result = { language: language || '', segments: [], words: [] };
+export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language } = {}) {
+  const out = path.join(WORK_DIR, `audio_${crypto.randomBytes(5).toString('hex')}.mp3`);
+  try {
+    await ffmpeg(['-ss', String(offset), '-t', String(len), '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out]);
+    const r = await whisper(out, language);
+    const segments = (r.segments || []).map(s => ({ start: s.start + offset, end: s.end + offset, text: s.text.trim() }));
+    let words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start + offset, end: w.end + offset }));
+    if (!words.length) words = approximateWords(segments);
+    return { language: r.language || language || '', segments, words };
+  } finally { fs.rmSync(out, { force: true }); }
+}
 
-  for (let i = 0; i < chunks; i++) {
-    const offset = i * CHUNK_SECONDS;
-    onProgress?.(`Transcribiendo audio (${i + 1}/${chunks})…`);
-    const out = path.join(workDir, `audio_${i}.mp3`);
-    await ffmpeg(['-ss', String(offset), '-t', String(CHUNK_SECONDS), '-i', mediaPath, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out]);
-    const r = await transcribeFile(out, provider, language);
-    if (!result.language && r.language) result.language = r.language;
-    for (const s of r.segments || []) result.segments.push({ start: s.start + offset, end: s.end + offset, text: s.text.trim() });
-    for (const w of r.words || []) result.words.push({ word: w.word.trim(), start: w.start + offset, end: w.end + offset });
-    fs.rmSync(out, { force: true });
-  }
-  // Si el proveedor no da palabras, las aproximamos repartiendo cada segmento.
-  if (!result.words.length) result.words = approximateWords(result.segments);
-  return result;
+/** Tiempos por palabra de una locución corta; si no hay clave de transcripción, se aproximan. */
+export async function wordTimings(audioFile, text, duration) {
+  try {
+    const provider = await getSetting('transcribe_provider');
+    if (await getSetting(provider === 'groq' ? 'groq_key' : 'openai_key')) {
+      const r = await whisper(audioFile);
+      const words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start, end: w.end }));
+      if (words.length) return words;
+    }
+  } catch (e) { console.warn('wordTimings:', e.message); }
+  return approximateWords([{ start: 0, end: duration, text }]);
 }
 
 export function approximateWords(segments) {
   const words = [];
   for (const s of segments) {
     const parts = s.text.split(/\s+/).filter(Boolean);
-    const step = (s.end - s.start) / Math.max(1, parts.length);
-    parts.forEach((w, i) => words.push({ word: w, start: s.start + i * step, end: s.start + (i + 1) * step }));
+    const total = parts.reduce((a, w) => a + w.length + 1, 0) || 1;
+    let t = s.start;
+    for (const w of parts) {
+      const d = (s.end - s.start) * (w.length + 1) / total;
+      words.push({ word: w, start: t, end: t + d });
+      t += d;
+    }
   }
   return words;
 }
