@@ -12,6 +12,16 @@ function ts(t) {
 }
 const esc = s => String(s).replace(/\\/g, '').replace(/[{}]/g, '').replace(/\n/g, '\\N');
 
+/** Estilos de subtítulos disponibles. */
+export const CAPTION_STYLES = {
+  clasico: { label: 'Clásico (palabra resaltada)', wpg: 3, size: 80, upper: true, mode: 'color' },
+  marcador: { label: 'Marcador (palabra con fondo de color)', wpg: 3, size: 80, upper: true, mode: 'box' },
+  impacto: { label: 'Impacto (grande, 2 palabras, con pop)', wpg: 2, size: 104, upper: true, mode: 'pop', outline: 10 },
+  minimal: { label: 'Minimalista (frase completa, discreto)', wpg: 6, size: 58, upper: false, mode: 'none', outline: 4 },
+};
+const norm = w => String(w).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
+export { norm as normWord };
+
 /** Divide un texto largo en 2 líneas equilibradas. */
 function wrap(text, max = 22) {
   if (text.length <= max) return text;
@@ -29,7 +39,7 @@ function wrap(text, max = 22) {
  * @param words  [{word,start,end}] con tiempos RELATIVOS al inicio del clip
  * @param opts   { hook, hookSeconds, duration, highlight, captionY, wordsPerGroup }
  */
-export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '' } = {}) {
+export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E' } = {}) {
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -58,9 +68,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     lines.push(`Dialogue: 2,${ts(0)},${ts(duration)},Big,,0,0,0,,{\\fad(200,0)\\c${assColor(highlight)}}${wrap(esc(overlay.toUpperCase()), 16)}`);
   }
   if (captions && words.length) {
-    const hl = assColor(highlight);
+    const st = CAPTION_STYLES[style] || CAPTION_STYLES.clasico;
+    const hl = assColor(highlight), kw = assColor(keywordColor);
+    const kwSet = new Set((keywords || []).map(norm).filter(Boolean));
+    const isKw = w => kwSet.has(norm(w));
+    const per = style === 'clasico' || !CAPTION_STYLES[style] ? wordsPerGroup : st.wpg;
+    // Agrupa palabras: corta por número, por signos de puntuación o por pausas largas
     const groups = [];
-    for (let i = 0; i < words.length; i += wordsPerGroup) groups.push(words.slice(i, i + wordsPerGroup));
+    let cur = [];
+    words.forEach((w, i) => {
+      cur.push(w);
+      const next = words[i + 1];
+      if (cur.length >= per || /[.!?…,;:]$/.test(w.word) || (next && next.start - w.end > 0.6) || !next) { groups.push(cur); cur = []; }
+    });
+    const baseTag = st.size !== capSize ? `{\\fs${st.size}${st.outline != null ? `\\bord${st.outline}` : ''}}` : '';
     groups.forEach((g, gi) => {
       const nextStart = groups[gi + 1]?.[0]?.start ?? g[g.length - 1].end + 0.4;
       g.forEach((w, wi) => {
@@ -68,10 +89,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         let end = wi < g.length - 1 ? g[wi + 1].start : Math.min(nextStart, w.end + 0.5);
         if (end <= start) end = start + 0.08;
         const text = g.map((x, xi) => {
-          const t = esc(x.word.toUpperCase());
-          return xi === wi ? `{\\c${hl}\\fscx108\\fscy108}${t}{\\c&H00FFFFFF&\\fscx100\\fscy100}` : t;
+          const t = esc(st.upper ? x.word.toUpperCase() : x.word);
+          const active = xi === wi && st.mode !== 'none';
+          const color = isKw(x.word) ? kw : active ? hl : null;
+          if (active && st.mode === 'box') return `{\\3c${hl}\\bord16\\shad0}${t}{\\3c&H00000000&\\bord${st.outline ?? 8}\\shad4}`;
+          if (active) return `{${color ? `\\c${color}` : ''}\\fscx110\\fscy110}${t}{\\c&H00FFFFFF&\\fscx100\\fscy100}`;
+          if (color) return `{\\c${color}}${t}{\\c&H00FFFFFF&}`;
+          return t;
         }).join(' ');
-        lines.push(`Dialogue: 0,${ts(start)},${ts(Math.min(end, duration))},Cap,,0,0,0,,${text}`);
+        // "impacto": cada grupo entra con un pequeño "pop"
+        const pop = st.mode === 'pop' && wi === 0 ? '{\\fscx75\\fscy75\\t(0,110,\\fscx100\\fscy100)}' : '';
+        lines.push(`Dialogue: 0,${ts(start)},${ts(Math.min(end, duration))},Cap,,0,0,0,,${baseTag}${pop}${text}`);
       });
     });
   }

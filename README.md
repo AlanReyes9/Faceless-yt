@@ -7,6 +7,7 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 | Sección | Función |
 |---|---|
 | **Convertir a Shorts** | Subes un vídeo largo (o pegas un enlace). Se transcribe con Whisper y la IA elige los mejores momentos, con nota del 1 al 10 y una frase de gancho. Se renderiza cada Short en 1080×1920 con **fondo difuminado** o recorte, el gancho arriba durante 4 s y subtítulos palabra a palabra. Puedes ajustar inicio/fin ±1 s, editar el gancho, *Aplicar cambios*, traducir a otro idioma, publicar en YouTube o descargar un **.zip**. |
+| **Clips virales (en Convertir a Shorts)** | Puntuación combinada: criterios de la IA (gancho, historia, emoción, valor, final) + señales medidas (picos de energía del audio, risas, ritmo de habla, cambios de plano). Encuadre **"Seguir la cara"**, que detecta a quien habla (UltraFace, en WASM) y mueve el recorte vertical con cortes o desplazamientos suaves. **4 estilos de subtítulos** (Clásico, Marcador, Impacto, Minimalista), palabras clave en color y **emojis animados** sincronizados con la palabra. |
 | **Vídeo completo** | Tema → guion con IA (editable) → voz en off (OpenAI TTS / ElevenLabs) → vídeos de stock de Pexels → subtítulos → MP4 horizontal o vertical. |
 | **Buscador de nichos** | La IA propone nichos rentables con RPM estimado, competencia e ideas de vídeos. |
 | **Mis canales** | Canales con nicho e idioma, conectados a YouTube mediante OAuth para publicar. |

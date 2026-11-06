@@ -10,6 +10,7 @@ import { publicSettings, setSettings, internalSecret } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
 import { run, FFMPEG } from './video/ffmpeg.js';
+import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
@@ -39,7 +40,7 @@ const h = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console
 
 app.get('/api/me', h(async (req, res) => res.json({
   authed: !BLOCKED && authed(req), passwordRequired: !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED,
-  ...(BLOCKED ? { ffmpeg: await run(FFMPEG, ['-version']).then(() => true, () => false) } : {}),
+  ...(BLOCKED ? { ffmpeg: await run(FFMPEG, ['-version']).then(() => true, () => false), faces: await (await import('./video/face.js')).faceSelfTest() } : {}),
 })));
 app.use('/api', (req, res, next) => BLOCKED ? res.status(503).json({ error: 'Configuración pendiente: ' + SETUP_MISSING.join(', ') }) : next());
 
@@ -182,8 +183,8 @@ app.post('/api/shorts', h(async (req, res) => {
   if (!b.source && !b.url) throw new Error('Sube un vídeo o pega un enlace.');
   const options = {
     count: Math.min(30, Number(b.count) || 10), minSec: Number(b.minSec) || 20, maxSec: Number(b.maxSec) || 60,
-    layout: b.layout === 'crop' ? 'crop' : 'blur', language: b.language || '', titleLanguage: b.titleLanguage || '',
-    captions: b.captions !== false,
+    layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
+    captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false,
   };
   const p = await insert('projects', { type: 'shorts', title: b.title || b.filename?.replace(/\.[^.]+$/, '') || b.url, channel_id: Number(b.channel_id) || null,
     source: b.source || null, source_url: b.url || null, data: { options }, progress: 'En cola…' });
@@ -262,10 +263,24 @@ app.get('/api/projects/:id/zip', h(async (req, res) => {
 }));
 
 // ---------- Clips (Shorts) ----------
+/** "💰 dinero, 🚨 policía" → [{emoji:'💰', word:'dinero'}, ...] */
+function parseEmojis(v) {
+  if (Array.isArray(v)) return v.filter(e => e?.emoji && e?.word).slice(0, 6);
+  return String(v || '').split(',').map(x => x.trim()).filter(Boolean).map(x => {
+    const m = x.match(/^(\S+)\s+(.+)$/u);
+    return m ? { emoji: m[1], word: m[2].trim() } : null;
+  }).filter(Boolean).slice(0, 6);
+}
+app.get('/api/caption-styles', (req, res) => res.json(Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v.label]))));
 app.patch('/api/clips/:id', h(async (req, res) => {
   const c = await getClip(req.params.id);
   const f = {};
-  for (const k of ['title', 'hook', 'layout']) if (k in req.body) f[k] = String(req.body[k]);
+  for (const k of ['title', 'hook']) if (k in req.body) f[k] = String(req.body[k]);
+  if (['face', 'blur', 'crop'].includes(req.body.layout)) f.layout = req.body.layout;
+  if (CAPTION_STYLES[req.body.style]) f.style = req.body.style;
+  if ('keywords' in req.body) f.keywords = (Array.isArray(req.body.keywords) ? req.body.keywords : String(req.body.keywords).split(','))
+    .map(x => String(x).trim()).filter(Boolean).slice(0, 10);
+  if ('emojis' in req.body) f.emojis = parseEmojis(req.body.emojis);
   for (const k of ['start', 'end']) if (k in req.body) f[k] = Math.max(0, Number(req.body[k]));
   if ('include_zip' in req.body) f.include_zip = !!req.body.include_zip;
   if ((f.end ?? c.end) - (f.start ?? c.start) < 2) throw new Error('El clip debe durar al menos 2 segundos.');

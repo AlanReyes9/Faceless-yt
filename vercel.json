@@ -4,9 +4,19 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 300,
-      "includeFiles": "{fonts/**,node_modules/ffmpeg-static/ffmpeg,node_modules/ffmpeg-static/package.json,node_modules/ffmpeg-static/index.js}"
+      "includeFiles": "{fonts/**,models/**,node_modules/ffmpeg-static/ffmpeg,node_modules/ffmpeg-static/package.json,node_modules/ffmpeg-static/index.js,node_modules/onnxruntime-web/dist/ort.node.min.js,node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs,node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm}"
     }
   },
-  "rewrites": [{ "source": "/api/:path*", "destination": "/api" }],
-  "crons": [{ "path": "/api/worker/cron", "schedule": "0 8 * * *" }]
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/worker/cron",
+      "schedule": "0 8 * * *"
+    }
+  ]
 }

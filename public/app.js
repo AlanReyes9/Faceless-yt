@@ -4,6 +4,10 @@ const main = $('#main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const mmss = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; };
 const LANGS = { es: 'Español', en: 'Inglés', pt: 'Portugués', fr: 'Francés', de: 'Alemán', it: 'Italiano' };
+const LAYOUTS = { face: 'Seguir la cara', blur: 'Fondo difuminado', crop: 'Recorte centrado' };
+const CAP_STYLES = { clasico: 'Clásico (palabra resaltada)', marcador: 'Marcador (palabra con fondo)', impacto: 'Impacto (grande, con pop)', minimal: 'Minimalista (discreto)' };
+const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v}</option>`).join('');
+const emojisToText = list => (list || []).map(e => `${e.emoji} ${e.word}`).join(', ');
 
 async function api(url, opts = {}) {
   const o = { ...opts, headers: { ...(opts.body && !(opts.body instanceof FormData) ? { 'content-type': 'application/json' } : {}) } };
@@ -107,7 +111,7 @@ function renderSetup(missing, me = {}) {
     <h1>Casi listo 🔧</h1><p class="sub">Por seguridad, el estudio no se abre hasta completar la configuración en Vercel.</p>
     <ol class="stack">${missing.map(k => `<li><b><code>${k}</code></b><div class="muted">${info[k] || ''}</div></li>`).join('')}</ol>
     <p class="small muted">En Vercel: Project → <b>Settings → Environment Variables</b> (y <b>Storage</b> para Neon y Blob). Después pulsa <b>Redeploy</b> en el último despliegue.</p>
-    <p class="small">Motor de vídeo (ffmpeg): ${me.ffmpeg ? '✅ funcionando' : '⚠ no disponible'}</p></div>`;
+    <p class="small">Motor de vídeo (ffmpeg): ${me.ffmpeg ? '✅ funcionando' : '⚠ no disponible'} · Detector de caras: ${me.faces ? '✅ funcionando' : '⚠ no disponible'}</p></div>`;
 }
 
 // ---------- Login ----------
@@ -230,10 +234,14 @@ routes.shorts = async () => {
       <div class="row"><div style="flex:1"><label>Nº de Shorts</label><input type="number" name="count" value="10" min="1" max="30"></div>
         <div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="20" min="5"></div>
         <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="180"></div></div>
-      <div><label>Encuadre</label><select name="layout"><option value="blur">Fondo difuminado (vídeo completo centrado)</option><option value="crop">Recorte centrado (pantalla completa)</option></select></div>
+      <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
+          <option value="face">Seguir la cara (recomendado para podcasts y entrevistas)</option>
+          <option value="blur">Fondo difuminado (vídeo completo centrado)</option><option value="crop">Recorte centrado (pantalla completa)</option></select></div>
+        <div style="flex:1"><label>Estilo de subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       <div class="row"><div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar automáticamente</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
+      <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
       <div id="up" class="small muted"></div>
       <button class="btn gold block" id="go">✂ Crear Shorts</button>
     </div>
@@ -251,7 +259,7 @@ routes.shorts = async () => {
     const go = $('#go'); go.disabled = true;
     try {
       const d = Object.fromEntries(new FormData(f)); delete d.video;
-      d.captions = f.captions.checked;
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked;
       if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
       const r = await api('/api/shorts', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
@@ -286,16 +294,21 @@ function shortsGrid(p, chs) {
     return `<div class="clip" data-clip="${c.id}">
       <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>` : c.status === 'error' ? `<div class="err small" style="padding:10px">${esc(c.error || 'Error')}</div>` : '<span class="spinner"></span>'}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'crop' ? 'recorte' : 'fondo difuminado'}</span></div>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${(LAYOUTS[c.layout] || c.layout).toLowerCase()}</span></div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
         <div><label>Frase de gancho (sale 4 s arriba)</label><input data-f="hook" value="${esc(c.hook)}"></div>
         <div class="muted" data-time>${mmss(c.start)} → ${mmss(c.end)} · ${Math.round(dur)} s</div>
         <div class="nudge"><span class="muted">Inicio</span><button class="btn" data-n="start:-1">−1 s</button><button class="btn" data-n="start:1">+1 s</button>
           <span class="muted">Fin</span><button class="btn" data-n="end:-1">−1 s</button><button class="btn" data-n="end:1">+1 s</button></div>
-        <select data-f="layout"><option value="blur" ${c.layout !== 'crop' ? 'selected' : ''}>Fondo difuminado</option><option value="crop" ${c.layout === 'crop' ? 'selected' : ''}>Recorte centrado</option></select>
+        <select data-f="layout" title="Encuadre">${opts(LAYOUTS, c.layout)}</select>
+        <select data-f="style" title="Estilo de subtítulos">${opts(CAP_STYLES, c.style || 'clasico')}</select>
+        <details><summary>✨ Palabras clave y emojis</summary><div class="stack" style="margin-top:6px">
+          <div><label>Palabras resaltadas (separadas por comas)</label><input data-f="keywords" value="${esc((c.keywords || []).join(', '))}"></div>
+          <div><label>Emojis: "emoji palabra", separados por comas</label><input data-f="emojis" value="${esc(emojisToText(c.emojis))}" placeholder="💰 dinero, 🚨 policía"></div>
+          <div class="small muted">Se aplican al pulsar "Aplicar cambios".</div></div></details>
         <button class="btn gold" data-apply>Aplicar cambios</button>
-        ${c.reason ? `<details><summary>¿Por qué este momento?</summary><div class="muted">${esc(c.reason)}</div></details>` : ''}
+        ${c.reason || c.signals ? `<details><summary>¿Por qué este momento?</summary><div class="muted">${esc(c.reason || '')}</div>${viralBreakdown(c.signals)}</details>` : ''}
         <details><summary>🌐 Sacarlo en otro idioma</summary><div class="stack" style="margin-top:6px">
           <select data-lang>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
@@ -312,6 +325,16 @@ function shortsGrid(p, chs) {
   }).join('')}</div>`;
 }
 
+/** Desglose de la nota viral: criterios de la IA + señales medidas. */
+function viralBreakdown(sg) {
+  if (!sg) return '';
+  const names = { hook: 'Gancho', story: 'Historia', emotion: 'Emoción', value: 'Valor', ending: 'Final' };
+  const bar = (label, v) => `<div class="row" style="gap:6px;flex-wrap:nowrap"><span style="width:70px">${label}</span><div style="flex:1;height:6px;background:var(--line);border-radius:3px"><div style="width:${v * 10}%;height:100%;background:var(--gold);border-radius:3px"></div></div><b>${v}</b></div>`;
+  const tags = [sg.peaks ? `🔊 ${sg.peaks} picos de energía` : '', sg.laugh ? '😂 risas' : '', sg.cuts ? `🎬 ${sg.cuts} cambios de plano` : '', sg.rate ? `⚡ ${sg.rate} palabras/s` : ''].filter(Boolean);
+  return `<div class="stack small" style="margin-top:8px">${Object.entries(sg.scores || {}).map(([k, v]) => bar(names[k] || k, v)).join('')}
+    ${bar('Señales', sg.measured)}<div class="muted">IA ${sg.llm}/10 · señales medidas ${sg.measured}/10${tags.length ? ' · ' + tags.join(' · ') : ''}</div></div>`;
+}
+
 function bindClips(p) {
   main.querySelectorAll('[data-clip]').forEach(el => {
     const c = p.clips.find(x => x.id == el.dataset.clip);
@@ -323,7 +346,8 @@ function bindClips(p) {
       upd();
     });
     $('[data-apply]', el).onclick = e => busy(e.target, async () => {
-      await api('/api/clips/' + c.id, { method: 'PATCH', body: { ...st, title: $('[data-f=title]', el).value, hook: $('[data-f=hook]', el).value, layout: $('[data-f=layout]', el).value } });
+      await api('/api/clips/' + c.id, { method: 'PATCH', body: { ...st, title: $('[data-f=title]', el).value, hook: $('[data-f=hook]', el).value,
+        layout: $('[data-f=layout]', el).value, style: $('[data-f=style]', el).value, keywords: $('[data-f=keywords]', el).value, emojis: $('[data-f=emojis]', el).value } });
       await api(`/api/clips/${c.id}/render`, { method: 'POST' });
       toast('Renderizando de nuevo…'); router();
     });
@@ -743,7 +767,8 @@ routes.ayuda = () => {
     <li>Sube un vídeo largo (o pega un enlace si el servidor tiene yt-dlp).</li>
     <li>Se transcribe con marcas de tiempo por palabra.</li>
     <li>La IA elige los mejores momentos, les pone nota del 1 al 10 y escribe un gancho.</li>
-    <li>Se renderiza cada Short 1080×1920 con fondo difuminado, gancho 4 s arriba y subtítulos.</li>
+    <li>La nota viral combina el criterio de la IA (gancho, historia, emoción, valor, final) con señales medidas: picos de energía, risas, ritmo de habla y cambios de plano.</li>
+    <li>Cada Short sale en 1080×1920 con <b>Seguir la cara</b> (el recorte sigue a quien habla), fondo difuminado o recorte, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
   <div class="card stack"><h2>Conectar YouTube</h2><ol>

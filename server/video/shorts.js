@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VERCEL } from '../db.js';
 import { ffmpeg, probe, run, assFilter } from './ffmpeg.js';
-import { buildASS, sliceWords } from './ass.js';
+import { buildASS, sliceWords, normWord } from './ass.js';
+import { trackFaces, cropPlan, cropExpr } from './face.js';
+import { sceneCuts, buildSignals } from './signals.js';
+import { emojiImage } from './emoji.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
 import { getSetting } from '../settings.js';
@@ -29,11 +32,14 @@ register('shorts.start', async ({ id }) => {
   }
   const info = await probe(inputPath(source));
   if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
+  await updateProject(id, { progress: 'Analizando cambios de plano…' });
+  const cuts = await sceneCuts(inputPath(source)).catch(() => []);
+  p.data = { ...p.data, cuts, width: info.width, height: info.height };
   if (p.data.transcript?.words?.length) { // ya transcrito (reintento): saltar a la selección
-    await updateProject(id, { duration: info.duration });
+    await updateProject(id, { duration: info.duration, data: p.data });
     return enqueue('shorts.pick', { id });
   }
-  await updateProject(id, { duration: info.duration, data: { ...p.data, transcript: { language: '', segments: [], words: [] } } });
+  await updateProject(id, { duration: info.duration, data: { ...p.data, transcript: { language: '', segments: [], words: [], energy: [] } } });
   await enqueue('shorts.transcribe', { id, chunk: 0 });
 }, projectFail);
 
@@ -48,6 +54,7 @@ register('shorts.transcribe', async ({ id, chunk }) => {
   const from = chunk * CHUNK_SECONDS;
   t.segments = t.segments.filter(s => s.start < from).concat(r.segments);
   t.words = t.words.filter(w => w.start < from).concat(r.words);
+  t.energy = (t.energy || []).filter(e => e.t < from).concat(r.energy || []);
   t.language ||= r.language;
   await updateProject(id, { data: { ...p.data, transcript: t } });
   if (chunk + 1 < chunks) await enqueue('shorts.transcribe', { id, chunk: chunk + 1 });
@@ -55,16 +62,30 @@ register('shorts.transcribe', async ({ id, chunk }) => {
 }, projectFail);
 
 // ---------- Paso 3: la IA elige los clips ----------
-async function pickClips(transcript, { count, minSec, maxSec, language }) {
-  const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`).join('\n');
-  const system = `Eres un editor experto en YouTube Shorts, TikTok y Reels. Encuentras los momentos con más potencial viral de un vídeo largo: historias con giro, frases polémicas, momentos graciosos, revelaciones, consejos accionables. Cada clip debe entenderse solo (sin contexto previo), empezar con algo que enganche y terminar en una frase completa.`;
+async function pickClips(transcript, sig, { count, minSec, maxSec, language }) {
+  const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`).join('\n');
+  const system = `Eres el mejor editor de vídeos cortos virales (YouTube Shorts, TikTok, Reels). Sabes exactamente qué momentos de un vídeo largo retienen a la audiencia y se comparten.
+Criterios (de más a menos importante):
+1. GANCHO: los primeros 3 segundos deben atrapar (frase impactante, pregunta, conflicto, dato sorprendente). Si la mejor frase está a mitad, empieza el clip ahí.
+2. HISTORIA COMPLETA: se entiende sin contexto y tiene planteamiento → tensión → remate o revelación.
+3. EMOCIÓN: humor, sorpresa, polémica, indignación, inspiración o vulnerabilidad.
+4. VALOR: consejo accionable, secreto, dato que la gente quiera guardar o enviar.
+5. FINAL: termina en una frase completa y contundente, sin cortar a media idea.
+Las etiquetas entre corchetes son señales medidas del audio y el vídeo: 🔊 energía alta (gritos, risas, emoción), ⚡ habla rápida, 🎬 cambio de plano, 😂 risas. Úsalas como pista, pero manda el contenido.`;
   const user = `Transcripción con marcas de tiempo en segundos:
 ${lines}
 
-Devuelve hasta ${count} clips que NO se solapen, de entre ${minSec} y ${maxSec} segundos cada uno, ordenados por potencial viral.
-Formato JSON: {"clips":[{"start":número,"end":número,"title":"título corto para YouTube (máx 70 caracteres, con gancho)","hook":"frase de gancho de 3 a 7 palabras que se mostrará arriba los primeros 4 segundos","score":entero 1-10,"reason":"por qué funcionará"}]}
-Escribe title y hook en el idioma: ${language || 'el mismo del vídeo'}.`;
-  const res = await chatJSON(system, user, { maxTokens: 6000 });
+Devuelve hasta ${count} clips que NO se solapen, de entre ${minSec} y ${maxSec} segundos cada uno, ordenados de más a menos viral.
+JSON: {"clips":[{"start":número,"end":número,
+ "title":"título para YouTube con gancho (máx 70 caracteres)",
+ "hook":"frase de gancho de 3 a 7 palabras para mostrar arriba los primeros 4 segundos",
+ "scores":{"hook":1-10,"story":1-10,"emotion":1-10,"value":1-10,"ending":1-10},
+ "score":entero 1-10 (potencial viral global),
+ "keywords":["3 a 6 palabras EXACTAS que se dicen en el clip y conviene resaltar en los subtítulos"],
+ "emojis":[{"word":"palabra exacta que se dice","emoji":"un emoji"}] (2 a 4, solo donde aporten),
+ "reason":"por qué funcionará, en una frase"}]}
+Escribe title, hook y reason en el idioma: ${language || 'el mismo del vídeo'}. keywords y emojis.word deben aparecer tal cual en la transcripción del clip.`;
+  const res = await chatJSON(system, user, { maxTokens: 8000 });
   return Array.isArray(res) ? res : (res.clips || []);
 }
 
@@ -78,8 +99,9 @@ register('shorts.pick', async ({ id }) => {
   const p = await getProject(id);
   if (!p.data.transcript?.segments?.length) throw new Error('No se detectó voz en el vídeo. (400)');
   await updateProject(id, { progress: 'La IA está buscando los mejores momentos…' });
-  const opts = { count: 10, minSec: 20, maxSec: 60, layout: 'blur', ...p.data.options };
-  const picked = await pickClips(p.data.transcript, { ...opts, language: opts.titleLanguage });
+  const opts = { count: 10, minSec: 20, maxSec: 60, layout: 'face', ...p.data.options };
+  const sig = buildSignals({ energy: p.data.transcript.energy, words: p.data.transcript.words, cuts: p.data.cuts || [] });
+  const picked = await pickClips(p.data.transcript, sig, { ...opts, language: opts.titleLanguage });
   if (!picked.length) throw new Error('La IA no encontró clips en la transcripción.');
   for (const old of await q('SELECT file FROM clips WHERE project_id = $1', [id])) await removeFile(old.file);
   await q('DELETE FROM clips WHERE project_id = $1', [id]);
@@ -88,10 +110,19 @@ register('shorts.pick', async ({ id }) => {
     let { start, end } = snap(p.data.transcript.words, Number(c.start), Number(c.end));
     end = Math.min(end, p.duration || end);
     if (!(end - start > 3)) continue;
-    const clip = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering') RETURNING id`,
+    // Nota final: 75 % criterio de la IA + 25 % señales medidas (si hay datos de audio)
+    const llm = Math.max(1, Math.min(10, Number(c.score) || 5));
+    const measured = sig.score(start, end);
+    const final = sig.hasAudioData ? Math.round(llm * 0.75 + measured.score * 0.25) : Math.round(llm);
+    const signals = { llm, measured: measured.score, scores: c.scores || {}, peaks: measured.peaks, rate: +measured.rate.toFixed(2), cuts: measured.cuts, laugh: measured.laugh };
+    const clipWords = new Set(sliceWords(p.data.transcript.words, start, end).map(w => normWord(w.word)));
+    const keywords = (c.keywords || []).map(String).filter(k => clipWords.has(normWord(k))).slice(0, 6);
+    const emojis = (c.emojis || []).filter(e => e?.emoji && clipWords.has(normWord(e.word))).slice(0, 4);
+    const clip = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13) RETURNING id`,
       [id, ++n, start, end, String(c.title || '').slice(0, 100), String(c.hook || '').slice(0, 80),
-        Math.max(1, Math.min(10, Math.round(Number(c.score) || 5))), c.reason || '', opts.layout]);
+        Math.max(1, Math.min(10, final)), c.reason || '', opts.layout, opts.captionStyle || 'clasico',
+        JSON.stringify(keywords), JSON.stringify(opts.emojis === false ? [] : emojis), JSON.stringify(signals)]);
     await enqueue('clip.render', { clipId: clip.id });
   }
   await updateProject(id, { progress: `Renderizando ${n} Shorts…` });
@@ -112,16 +143,55 @@ export async function renderClip(clipId, { lang } = {}) {
   try {
     fs.writeFileSync(assFile, buildASS(words, {
       hook, duration: dur, highlight: await getSetting('caption_color'),
-      captionMarginV: clip.layout === 'crop' ? 420 : 560,
+      captionMarginV: clip.layout === 'blur' ? 560 : 420,
       captions: p.data.options?.captions !== false,
+      style: clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
     }));
     const ass = assFilter(assFile);
-    // Fondo: se reduce, se difumina y se amplía (mucho más rápido que difuminar a 1080x1920)
-    const vf = clip.layout === 'crop'
-      ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[v]`
-      : `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
-        `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[v]`;
-    await ffmpeg(['-ss', clip.start.toFixed(3), '-i', inputPath(p.source), '-t', dur.toFixed(3),
+    const input = inputPath(p.source);
+    // Encuadre "face": la ventana vertical sigue a la persona que habla
+    let layout = clip.layout, facePlan = null;
+    if (layout === 'face') {
+      const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
+      const cached = clip.track && clip.track.start === clip.start && clip.track.end === clip.end ? clip.track : null;
+      facePlan = cached ? cached.plan : null;
+      if (!cached) {
+        try {
+          const samples = await trackFaces(input, clip.start, dur);
+          facePlan = cropPlan(samples, W, H);
+        } catch (e) { console.warn('caras:', e.message); }
+        await updateClip(clipId, { track: { start: clip.start, end: clip.end, plan: facePlan } });
+      }
+      if (facePlan) facePlan.H = H;
+      else layout = 'blur'; // sin caras detectadas: fondo difuminado
+    }
+    let vf;
+    if (layout === 'face') vf = `[0:v]crop=w=${facePlan.cw}:h=${facePlan.H}:x=${cropExpr(facePlan)}:y=0,scale=1080:1920,setsar=1,${ass}[base]`;
+    else if (layout === 'crop') vf = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[base]`;
+    else vf = `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
+      `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
+
+    // Emojis animados sobre los subtítulos cuando se dice la palabra
+    const extra = [];
+    let last = 'base';
+    const emojiList = lang ? [] : (clip.emojis || []);
+    const capY = clip.layout === 'blur' ? 1920 - 560 : 1920 - 420; // misma altura que los subtítulos
+    let k = 0;
+    for (const e of emojiList) {
+      const w = words.find(x => normWord(x.word) === normWord(e.word));
+      if (!w) continue;
+      const img = await emojiImage(e.emoji).catch(() => null);
+      if (!img) continue;
+      const i = 1 + k++;
+      extra.push('-loop', '1', '-i', img);
+      const t0 = Math.max(0, w.start - 0.05).toFixed(2), t1 = (w.start + 1.3).toFixed(2);
+      // aparece con un pequeño rebote de escala
+      vf += `;[${i}:v]format=rgba,scale=170:170,fade=in:st=${t0}:d=0.12:alpha=1,fade=out:st=${(w.start + 1.1).toFixed(2)}:d=0.2:alpha=1[e${i}];` +
+        `[${last}][e${i}]overlay=x=(W-w)/2:y=${capY - 300}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
+      last = `o${i}`;
+    }
+    vf += `;[${last}]null[v]`;
+    await ffmpeg(['-ss', clip.start.toFixed(3), '-i', input, ...extra, '-t', dur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', '0:a?',
       '-c:v', 'libx264', '-preset', process.env.X264_PRESET || 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out]);

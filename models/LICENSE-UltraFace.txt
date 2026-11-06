@@ -1,0 +1,3 @@
+Modelo: Ultra-Light-Fast-Generic-Face-Detector-1MB (version-RFB-320.onnx)
+Autor: Linzaer — https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB
+Licencia: MIT

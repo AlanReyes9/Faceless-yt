@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS clips (
   variants JSONB DEFAULT '{}'::jsonb, yt_video_id TEXT, created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS clips_project ON clips(project_id);
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS style TEXT;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS keywords JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS emojis JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS track JSONB;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS signals JSONB;
 CREATE TABLE IF NOT EXISTS calendar (
   id SERIAL PRIMARY KEY, date TEXT NOT NULL, title TEXT NOT NULL, notes TEXT,
   channel_id INT, kind TEXT DEFAULT 'short', done BOOLEAN DEFAULT false

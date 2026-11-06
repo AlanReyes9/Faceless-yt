@@ -36,7 +36,7 @@ export async function chat(system, user, { json = false, maxTokens = 4000, provi
 
   // OpenAI y OpenRouter comparten el formato chat/completions
   const isOR = provider === 'openrouter';
-  const res = await post(isOR ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions', {
+  const res = await post(isOR ? 'https://openrouter.ai/api/v1/chat/completions' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/chat/completions', {
     authorization: 'Bearer ' + await requireKey(isOR ? 'openrouter_key' : 'openai_key', 'usar ' + provider),
   }, {
     model: await getSetting(isOR ? 'openrouter_model' : 'openai_model'),

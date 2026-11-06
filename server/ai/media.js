@@ -16,7 +16,7 @@ export async function tts(text, outFile, { voice: voiceOverride } = {}) {
       body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' }),
     });
   } else {
-    r = await fetch('https://api.openai.com/v1/audio/speech', {
+    r = await fetch((process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/audio/speech', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + await requireKey('openai_key', 'generar la voz'), 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: forcedVoice || await getSetting('openai_voice'), input: text, response_format: 'mp3' }),
@@ -68,9 +68,9 @@ export async function generateImage(prompt, { size = '1024x1536', references = [
     form.append('prompt', prompt);
     form.append('size', size);
     references.slice(0, 4).forEach((b, i) => form.append('image[]', new Blob([b], { type: 'image/png' }), `ref${i}.png`));
-    r = await fetch('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form });
+    r = await fetch((process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/images/edits', { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form });
   } else {
-    r = await fetch('https://api.openai.com/v1/images/generations', {
+    r = await fetch((process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/images/generations', {
       method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
       body: JSON.stringify({ model, prompt, size, n: 1 }),
     });
