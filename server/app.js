@@ -57,8 +57,7 @@ app.post('/api/logout', (req, res) => { res.clearCookie('session'); res.json({ o
 // ---------- Worker (procesa la cola en segundo plano) ----------
 async function workerEntry(req, res) {
   res.status(202).json({ ok: true });
-  const deadline = Date.now() + Number(process.env.WORKER_BUDGET_MS || 240000);
-  const work = drain(deadline).then(empty => { if (!empty) kick(true); }).catch(e => console.error('drain', e));
+  const work = drain().then(empty => { if (!empty) kick(true); }).catch(e => console.error('drain', e)); // sin relanzar en error: evita bucles si la BD falla
   if (IS_VERCEL) (await import('@vercel/functions')).waitUntil(work);
 }
 app.post('/api/worker', h(async (req, res) => {
@@ -154,6 +153,17 @@ app.get('/api/youtube/callback', async (req, res) => {
 });
 
 // ---------- Proyectos ----------
+/** Porcentaje global: en la fase de render se calcula con el avance de cada clip. */
+function projectPercent(p, clips = []) {
+  if (p.status === 'ready') return 100;
+  const rendering = clips.filter(c => c.status === 'rendering');
+  if (p.type === 'shorts' && clips.length && rendering.length) {
+    const avg = clips.reduce((a, c) => a + (c.status === 'rendering' ? (c.progress || 0) : 100), 0) / clips.length;
+    return Math.round(55 + 0.45 * avg);
+  }
+  return p.percent || 0;
+}
+
 function projectOut(p) {
   const { transcript, ...data } = p.data || {};
   if (data.options?.media) data.options.mediaUrls = data.options.media.map(publicUrl);
@@ -165,18 +175,20 @@ const clipOut = c => ({ ...c, url: publicUrl(c.file), variants: Object.fromEntri
 app.get('/api/projects', h(async (req, res) => {
   const trash = req.query.trash === '1';
   const params = req.query.type ? [req.query.type] : [];
-  const rows = await q(`SELECT p.id, p.type, p.title, p.status, p.progress, p.error, p.created_at, p.duration, p.output,
+  const rows = await q(`SELECT p.id, p.type, p.title, p.status, p.progress, p.error, p.created_at, p.duration, p.output, p.percent,
+      (SELECT ROUND(55 + 0.45 * AVG(CASE WHEN c.status = 'rendering' THEN COALESCE(c.progress, 0) ELSE 100 END))::int FROM clips c WHERE c.project_id = p.id) AS clip_percent,
+      (SELECT COUNT(*)::int FROM clips c WHERE c.project_id = p.id AND c.status = 'rendering') AS rendering,
       (SELECT COUNT(*)::int FROM clips c WHERE c.project_id = p.id AND c.status = 'ready') ready_clips
     FROM projects p WHERE deleted_at IS ${trash ? 'NOT ' : ''}NULL ${req.query.type ? 'AND type = $1' : ''} ORDER BY id DESC LIMIT 200`, params);
   if (rows.some(r => ['pending', 'processing'].includes(r.status))) ensureWorker().catch(() => {});
-  res.json(rows);
+  res.json(rows.map(r => ({ ...r, percent: r.status === 'ready' ? 100 : (r.type === 'shorts' && r.rendering ? r.clip_percent : r.percent) || 0 })));
 }));
 app.get('/api/projects/:id', h(async (req, res) => {
   const p = await getProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'No existe' });
   const clips = await q('SELECT * FROM clips WHERE project_id = $1 ORDER BY idx', [p.id]);
   if (['pending', 'processing'].includes(p.status) || clips.some(c => c.status === 'rendering')) ensureWorker().catch(() => {});
-  res.json({ ...projectOut(p), clips: clips.map(clipOut) });
+  res.json({ ...projectOut(p), percent: projectPercent(p, clips), clips: clips.map(clipOut) });
 }));
 app.post('/api/shorts', h(async (req, res) => {
   const b = req.body;
@@ -215,7 +227,17 @@ app.post('/api/compose', h(async (req, res) => {
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
-  await updateProject(p.id, { status: 'pending', error: null, progress: 'En cola…' });
+  // Shorts ya transcritos: solo se vuelven a renderizar los clips que fallaron (no se repite ni se paga la transcripción)
+  const failed = p.type === 'shorts' ? await q("SELECT id FROM clips WHERE project_id = $1 AND status <> 'ready'", [p.id]) : [];
+  if (p.type === 'shorts' && p.data.transcript?.words?.length && failed.length) {
+    await updateProject(p.id, { status: 'processing', error: null, progress: `Renderizando ${failed.length} Shorts…` });
+    for (const c of failed) {
+      await updateClip(c.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
+      await enqueue('clip.render', { clipId: c.id });
+    }
+    return res.json({ ok: true, clips: failed.length });
+  }
+  await updateProject(p.id, { status: 'pending', error: null, progress: 'En cola…', percent: 0 });
   await enqueue(p.type === 'shorts' ? 'shorts.start' : 'compose.script', { id: p.id });
   res.json({ ok: true });
 }));
@@ -288,15 +310,15 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   res.json({ ok: true });
 }));
 app.post('/api/clips/:id/render', h(async (req, res) => {
-  await updateClip(req.params.id, { status: 'rendering' });
-  await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', progress: 'Renderizando cambios…' });
+  await updateClip(req.params.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
+  await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', error: null, progress: 'Renderizando cambios…' });
   await enqueue('clip.render', { clipId: Number(req.params.id) });
   res.json({ ok: true });
 }));
 app.post('/api/clips/:id/translate', h(async (req, res) => {
   if (!req.body.lang) throw new Error('Elige un idioma.');
-  await updateClip(req.params.id, { status: 'rendering' });
-  await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', progress: 'Traduciendo…' });
+  await updateClip(req.params.id, { status: 'rendering', error: null, progress: 0, stage: 'Traduciendo…' });
+  await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', error: null, progress: 'Traduciendo…' });
   await enqueue('clip.translate', { clipId: Number(req.params.id), lang: req.body.lang });
   res.json({ ok: true });
 }));

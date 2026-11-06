@@ -82,3 +82,11 @@ details > summary { cursor: pointer; color: #c6c9d1; font-size: 13px; padding: 4
   .cal { grid-template-columns: 1fr; } .cal .wd, .cal .d.out { display: none; } .cal .d { min-height: 0; }
   .shorts { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
 }
+
+/* Barras de progreso */
+.pbar { width: 100%; }
+.pbar-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 5px; color: var(--text); }
+.pbar-top span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pbar-top b { color: var(--gold); }
+.pbar-track { height: 8px; background: #2a2e37; border-radius: 99px; overflow: hidden; }
+.pbar-fill { height: 100%; background: linear-gradient(90deg, var(--gold-d), var(--gold)); border-radius: 99px; transition: width .6s ease; }

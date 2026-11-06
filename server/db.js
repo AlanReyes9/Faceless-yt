@@ -41,6 +41,9 @@ ALTER TABLE clips ADD COLUMN IF NOT EXISTS keywords JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS emojis JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS track JSONB;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS signals JSONB;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS stage TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS percent INT DEFAULT 0;
 CREATE TABLE IF NOT EXISTS calendar (
   id SERIAL PRIMARY KEY, date TEXT NOT NULL, title TEXT NOT NULL, notes TEXT,
   channel_id INT, kind TEXT DEFAULT 'short', done BOOLEAN DEFAULT false
@@ -65,7 +68,21 @@ async function connect() {
   let client;
   if (DB_MODE === 'postgres') {
     const { default: pg } = await import('pg');
-    const pool = new pg.Pool({ connectionString: DB_URL, max: IS_VERCEL ? 3 : 10, ssl: /sslmode=disable|localhost|127\.0\.0\.1/.test(DB_URL) ? false : { rejectUnauthorized: false } });
+    const local = /sslmode=disable|localhost|127\.0\.0\.1/.test(DB_URL);
+    // El SSL se configura aquí; se quita sslmode de la URL para evitar el aviso de pg
+    const url = DB_URL.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+    const pool = new pg.Pool({
+      connectionString: url, ssl: local ? false : { rejectUnauthorized: false },
+      max: IS_VERCEL ? 3 : 10,
+      idleTimeoutMillis: IS_VERCEL ? 5000 : 30000, // en serverless no conviene dejar conexiones dormidas
+      connectionTimeoutMillis: 15000,               // Neon puede tardar unos segundos en despertar
+      keepAlive: true,
+    });
+    pool.on('error', e => console.warn('pg pool:', e.message)); // una conexión rota no debe tumbar el proceso
+    if (IS_VERCEL) {
+      // Cierra las conexiones libres antes de que Vercel congele la función
+      try { (await import('@vercel/functions')).attachDatabasePool(pool); } catch (e) { console.warn('attachDatabasePool:', e.message); }
+    }
     client = { query: (s, p) => pool.query(s, p), exec: s => pool.query(s) };
   } else {
     const { PGlite } = await import('@electric-sql/pglite');
@@ -79,9 +96,18 @@ async function connect() {
 const conn = () => (ready ||= connect().catch(e => { ready = null; throw e; }));
 
 /** Ejecuta SQL y devuelve las filas. */
+const TRANSIENT = /timed out|timeout|ECONNRESET|ECONNREFUSED|Connection terminated|terminating connection|EPIPE|socket hang up|08P01|57P01|Client has encountered a connection error/i;
 export async function q(sql, params = []) {
-  const c = await conn();
-  return (await c.query(sql, params)).rows;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const c = await conn();
+      return (await c.query(sql, params)).rows;
+    } catch (e) {
+      // Errores de conexión pasajeros (Neon despertando, conexión cortada): reintentar
+      if (attempt >= 4 || !TRANSIENT.test(`${e.message} ${e.code || ''}`)) throw e;
+      await new Promise(r => setTimeout(r, 400 * attempt * attempt));
+    }
+  }
 }
 export const one = async (sql, params) => (await q(sql, params))[0];
 

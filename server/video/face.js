@@ -50,19 +50,30 @@ export async function detectFaces(rgb, threshold = 0.7) {
   return keep.filter(f => f.x2 - f.x1 > 0.02);
 }
 
-/** Lee fotogramas reducidos de [start, start+dur] a `fps` imágenes por segundo. */
-function frames(input, start, dur, fps) {
+/**
+ * Lee fotogramas reducidos de [start, start+dur].
+ * keyOnly: solo fotogramas clave (muy rápido: no decodifica el resto). Devuelve [{t, img}].
+ */
+function frames(input, start, dur, { fps = 2, keyOnly = false, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-ss', String(start), '-i', input, '-t', String(dur),
-      '-vf', `fps=${fps},scale=${IW}:${IH}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+    const args = ['-hide_banner', '-loglevel', keyOnly ? 'info' : 'error',
+      ...(keyOnly ? ['-skip_frame', 'nokey'] : []), '-ss', String(start), '-i', input, '-t', String(dur),
+      '-vf', keyOnly ? `scale=${IW}:${IH},showinfo` : `fps=${fps},scale=${IW}:${IH}`,
+      ...(keyOnly ? ['-fps_mode', 'passthrough'] : []), '-an', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'];
+    const p = spawn(FFMPEG, args);
     const chunks = []; let err = '';
+    const timer = timeoutMs ? setTimeout(() => p.kill('SIGKILL'), timeoutMs) : null;
     p.stdout.on('data', d => chunks.push(d));
-    p.stderr.on('data', d => { err += d; });
+    p.stderr.on('data', d => { err += d; if (err.length > 2e6) err = err.slice(-1e6); });
     p.on('error', reject);
     p.on('close', code => {
+      clearTimeout(timer);
       if (code !== 0) return reject(new Error('ffmpeg (caras): ' + err.slice(-500)));
       const buf = Buffer.concat(chunks), size = IW * IH * 3, list = [];
-      for (let o = 0; o + size <= buf.length; o += size) list.push(buf.subarray(o, o + size));
+      const times = keyOnly ? [...err.matchAll(/pts_time:\s*([\d.]+)/g)].map(m => parseFloat(m[1])) : [];
+      for (let o = 0, i = 0; o + size <= buf.length; o += size, i++) {
+        list.push({ t: keyOnly ? Math.max(0, (times[i] ?? i) - (times[0] ?? 0)) : i / fps, img: buf.subarray(o, o + size) });
+      }
       resolve(list);
     });
   });
@@ -71,13 +82,15 @@ function frames(input, start, dur, fps) {
 /**
  * Analiza un tramo y devuelve muestras [{t, cx, cy, size}] (t relativo al inicio, coordenadas normalizadas)
  * eligiendo en cada instante a la persona principal (la cara más grande, con continuidad para no saltar).
+ * onProgress(0..1). Primero intenta con fotogramas clave; si hay pocos, decodifica a 2 fps.
  */
-export async function trackFaces(input, start, dur, { fps = 2 } = {}) {
-  const imgs = await frames(input, start, dur, fps);
+export async function trackFaces(input, start, dur, { fps = 2, onProgress, timeoutMs } = {}) {
+  let imgs = await frames(input, start, dur, { keyOnly: true, timeoutMs }).catch(() => []);
+  if (imgs.length < Math.max(3, dur / 2.5)) imgs = await frames(input, start, dur, { fps, timeoutMs });
   const samples = [];
   let prev = null;
   for (let i = 0; i < imgs.length; i++) {
-    const faces = await detectFaces(imgs[i]);
+    const faces = await detectFaces(imgs[i].img);
     let pick = null;
     if (faces.length) {
       const area = f => (f.x2 - f.x1) * (f.y2 - f.y1);
@@ -88,10 +101,13 @@ export async function trackFaces(input, start, dur, { fps = 2 } = {}) {
         if (near) pick = near;
       }
     }
-    const s = pick ? { t: i / fps, cx: (pick.x1 + pick.x2) / 2, cy: (pick.y1 + pick.y2) / 2, size: pick.x2 - pick.x1 } : { t: i / fps, cx: null };
-    if (pick) prev = s;
-    samples.push(s);
+    const t = imgs[i].t;
+    const smp = pick ? { t, cx: (pick.x1 + pick.x2) / 2, cy: (pick.y1 + pick.y2) / 2, size: pick.x2 - pick.x1 } : { t, cx: null };
+    if (pick) prev = smp;
+    samples.push(smp);
+    if (i % 5 === 0) onProgress?.(i / imgs.length);
   }
+  onProgress?.(1);
   return samples;
 }
 

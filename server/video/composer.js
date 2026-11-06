@@ -70,7 +70,7 @@ function fitFilter(W, H, iw, ih, input = '[0:v]') {
 // ---------- Paso: guion ----------
 register('compose.script', async ({ id }) => {
   const p = await getProject(id);
-  await updateProject(id, { status: 'processing', error: null, progress: 'Escribiendo el guion con IA…' });
+  await updateProject(id, { status: 'processing', error: null, progress: 'Escribiendo el guion con IA…', percent: 3 });
   let script = p.data.script;
   const o = p.data.options || {};
   if (!script?.scenes?.length) {
@@ -91,7 +91,7 @@ register('compose.script', async ({ id }) => {
 }, ({ id }, msg) => updateProject(id, { status: 'error', error: msg, progress: null }));
 
 // ---------- Paso: una escena ----------
-register('compose.scene', async ({ id, i }) => {
+register('compose.scene', async ({ id, i }, ctx) => {
   const p = await getProject(id);
   const o = p.data.options || {};
   const scenes = p.data.script.scenes;
@@ -101,7 +101,8 @@ register('compose.scene', async ({ id, i }) => {
   const tag = `p${id}_s${i}_${Date.now()}`;
   const tmp = [];
   const t = f => { const x = path.join(WORK_DIR, `${tag}_${f}`); tmp.push(x); return x; };
-  await updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: voz y material…` });
+  const pct = n => Math.round(10 + 80 * (i + n) / scenes.length);
+  await updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: voz y material…`, percent: pct(0) });
   try {
     const character = o.characterId ? await one('SELECT * FROM characters WHERE id = $1', [o.characterId]) : null;
     const useVoice = o.voice !== false && s.narration?.trim();
@@ -166,9 +167,13 @@ register('compose.scene', async ({ id, i }) => {
     v += `,fps=30,trim=end_frame=${frames},${assFilter(assFile)}[v]`;
     const a = `[1:a]apad,atrim=0:${dur.toFixed(3)},aresample=44100,aformat=channel_layouts=stereo[a]`;
     const out = t('part.mp4');
+    let lastW = 0;
     await ffmpeg([...args, '-filter_complex', `${v};${a}`, '-map', '[v]', '-map', '[a]', '-t', dur.toFixed(3),
       '-c:v', 'libx264', '-preset', process.env.X264_PRESET || 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-r', '30',
-      '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', out]);
+      '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', out], {
+      onProgress: sec => { if (Date.now() - lastW > 2500) { lastW = Date.now(); updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: renderizando…`, percent: pct(Math.min(0.95, sec / dur)) }).catch(() => {}); } },
+      timeoutMs: ctx?.remaining ? ctx.remaining() - 15000 : undefined,
+    });
     const ref = await saveFile(out, `part_${tag}.mp4`);
 
     const fresh = await getProject(id);
@@ -186,7 +191,7 @@ register('compose.scene', async ({ id, i }) => {
 // ---------- Paso: unir escenas ----------
 register('compose.concat', async ({ id }) => {
   const p = await getProject(id);
-  await updateProject(id, { progress: 'Uniendo escenas…' });
+  await updateProject(id, { progress: 'Uniendo escenas…', percent: 92 });
   const dir = path.join(WORK_DIR, `concat_${id}_${Date.now()}`);
   fs.mkdirSync(dir, { recursive: true });
   try {
@@ -200,7 +205,7 @@ register('compose.concat', async ({ id }) => {
     const ref = await saveFile(out, `video_${id}.mp4`);
     await removeFile(p.output);
     for (const part of p.data.parts || []) await removeFile(part);
-    await updateProject(id, { status: 'ready', output: ref, duration: info.duration, progress: 'Vídeo listo', data: { ...p.data, parts: [] } });
+    await updateProject(id, { status: 'ready', output: ref, duration: info.duration, progress: 'Vídeo listo', percent: 100, data: { ...p.data, parts: [] } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

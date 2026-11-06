@@ -47,7 +47,7 @@ export const FIELDS = {
   llm_provider: { secret: false, default: 'openai', label: 'Proveedor de texto', options: ['openai', 'anthropic', 'gemini', 'openrouter'], group: 'Preferencias' },
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },
   anthropic_model: { secret: false, default: 'claude-sonnet-5-5', label: 'Modelo Claude', group: 'Preferencias' },
-  gemini_model: { secret: false, default: 'gemini-2.5-flash', label: 'Modelo Gemini', group: 'Preferencias' },
+  gemini_model: { secret: false, default: 'gemini-3.8-flash', label: 'Modelo Gemini', group: 'Preferencias' },
   openrouter_model: { secret: false, default: 'openai/gpt-4.1-mini', label: 'Modelo OpenRouter', group: 'Preferencias' },
   transcribe_provider: { secret: false, default: 'openai', label: 'Transcripción', options: ['openai', 'groq'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
@@ -67,17 +67,22 @@ async function all() {
   return cache;
 }
 
+// Modelos retirados por los proveedores → se usa el sustituto automáticamente
+const RETIRED = { 'gemini-2.5-flash': 'gemini-3.8-flash', 'gemini-2.0-flash': 'gemini-3.8-flash', 'gemini-1.5-flash': 'gemini-3.8-flash' };
+
 export async function getSetting(key) {
   const raw = (await all())[key];
   let v = null;
   if (raw) { try { v = FIELDS[key]?.secret ? decrypt(raw) : raw; } catch { v = null; } }
-  return v || process.env[key.toUpperCase()] || FIELDS[key]?.default || '';
+  v = v || process.env[key.toUpperCase()] || FIELDS[key]?.default || '';
+  return RETIRED[v] || v;
 }
 
 export async function setSettings(obj) {
   for (const [k, v] of Object.entries(obj)) {
     if (!FIELDS[k]) continue;
-    if (v === null || v === '') { await q('DELETE FROM settings WHERE key = $1', [k]); continue; }
+    // Vacío o igual al valor por defecto: no se guarda (así los futuros cambios de valor por defecto se aplican)
+    if (v === null || v === '' || (!FIELDS[k].secret && String(v).trim() === FIELDS[k].default)) { await q('DELETE FROM settings WHERE key = $1', [k]); continue; }
     if (FIELDS[k].secret && typeof v === 'string' && v.includes('•')) continue; // máscara sin cambios
     await q('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
       [k, FIELDS[k].secret ? encrypt(String(v).trim()) : String(v).trim()]);

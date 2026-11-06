@@ -27,6 +27,9 @@ async function busy(btn, fn) {
   try { return await fn(); } catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; btn.innerHTML = old; }
 }
 const statusLabel = s => ({ pending: 'En cola', processing: 'Procesando', rendering: 'Renderizando', ready: 'Listo', error: 'Error' }[s] || s);
+/** Barra de progreso con porcentaje. */
+const pbar = (pct, label = '') => `<div class="pbar"><div class="pbar-top"><span>${esc(label)}</span><b>${Math.round(pct || 0)}%</b></div>
+  <div class="pbar-track"><div class="pbar-fill" style="width:${Math.max(2, Math.min(100, pct || 0))}%"></div></div></div>`;
 const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pending'].includes(s) ? '<span class="spinner"></span> ' : ''}${statusLabel(s)}</span>`;
 
 // ---------- Navegación ----------
@@ -158,7 +161,7 @@ routes[''] = async () => {
 function projectTable(rows, trash = false) {
   if (!rows.length) return '<p class="muted">Aún no hay proyectos.</p>';
   return `<table><tr><th>Proyecto</th><th>Tipo</th><th>Estado</th><th>Fecha</th><th></th></tr>${rows.map(p => `<tr>
-    <td><a href="#/proyecto/${p.id}">${esc(p.title || 'Sin título')}</a>${p.status === 'processing' && p.progress ? `<div class="muted small">${esc(p.progress)}</div>` : ''}</td>
+    <td><a href="#/proyecto/${p.id}">${esc(p.title || 'Sin título')}</a>${['pending', 'processing'].includes(p.status) ? `<div style="max-width:320px;margin-top:4px">${pbar(p.percent, p.progress || 'En cola…')}</div>` : p.status === 'error' && p.error ? `<div class="err small">${esc(p.error.slice(0, 120))}</div>` : ''}</td>
     <td>${TYPE_LABEL[p.type] || p.type}${p.type === 'shorts' && p.ready_clips != null ? ` (${p.ready_clips})` : ''}</td>
     <td>${pill(p.status)}</td><td class="muted small">${(p.created_at || '').slice(0, 16)}</td>
     <td style="text-align:right">${trash ? `<button class="btn sm" data-restore="${p.id}">Restaurar</button> <button class="btn sm red" data-purge="${p.id}">Borrar definitivamente</button>` : ''}</td></tr>`).join('')}</table>`;
@@ -278,13 +281,35 @@ routes.proyecto = async id => {
     <div class="row">${p.type === 'shorts' && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
       ${p.status === 'error' ? '<button class="btn" id="retry">↻ Reintentar</button>' : ''}<button class="btn red" id="del">Eliminar</button></div></div>
     ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
-    ${['pending', 'processing'].includes(p.status) ? `<div class="progress" style="margin-bottom:16px"><span class="spinner"></span> ${esc(p.progress || 'Procesando…')} <span class="muted small">— puedes cerrar esta página, el servidor sigue trabajando.</span></div>` : ''}`;
+    ${['pending', 'processing'].includes(p.status) ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
+      <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
   main.innerHTML = head + (p.type === 'shorts' ? shortsGrid(p, chs) : longView(p, chs));
   const r = $('#retry'); if (r) r.onclick = () => busy(r, async () => { await api(`/api/projects/${p.id}/retry`, { method: 'POST' }); router(); });
   $('#del').onclick = async () => { if (confirm('¿Mover a la papelera?')) { await api('/api/projects/' + p.id, { method: 'DELETE' }); location.hash = '#/videos'; } };
   if (p.type === 'shorts') bindClips(p); else bindLong(p);
-  if (working) poll(() => { if (!document.activeElement || !main.contains(document.activeElement) || document.activeElement.tagName === 'BUTTON') router(); else poll(router, 3000); }, 3500);
+  if (working) livePoll(p);
 };
+
+// Firma de lo que cambia la estructura de la página (si no cambia, solo se actualizan las barras)
+const projSig = p => [p.status, p.error, p.output, ...(p.clips || []).map(c => `${c.id}:${c.status}:${c.file}:${Object.keys(c.variants || {}).join(',')}`)].join('|');
+function livePoll(prev) {
+  const sig = projSig(prev);
+  poll(async () => {
+    if (!location.hash.startsWith('#/proyecto/' + prev.id)) return;
+    let p;
+    try { p = await api('/api/projects/' + prev.id); } catch { return livePoll(prev); }
+    const editing = document.activeElement && main.contains(document.activeElement) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    if (projSig(p) !== sig && !editing) return router(); // algo terminó o cambió: redibujar
+    // Solo actualizar las barras de progreso, sin tocar los vídeos que se estén viendo
+    const top = main.querySelector('.progress .pbar');
+    if (top) top.outerHTML = pbar(p.percent, p.progress || 'Procesando…');
+    for (const c of p.clips || []) {
+      const box = main.querySelector(`[data-clip="${c.id}"] .vid .pbar`);
+      if (box && c.status === 'rendering') box.outerHTML = pbar(c.progress, c.stage || 'En cola…');
+    }
+    livePoll(projSig(p) === sig ? p : prev);
+  }, 3000);
+}
 
 function shortsGrid(p, chs) {
   if (!p.clips?.length) return p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
@@ -292,7 +317,9 @@ function shortsGrid(p, chs) {
     const dur = c.end - c.start;
     const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
     return `<div class="clip" data-clip="${c.id}">
-      <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>` : c.status === 'error' ? `<div class="err small" style="padding:10px">${esc(c.error || 'Error')}</div>` : '<span class="spinner"></span>'}</div>
+      <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>`
+        : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div><button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
+        : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
         <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${(LAYOUTS[c.layout] || c.layout).toLowerCase()}</span></div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
@@ -335,6 +362,14 @@ function viralBreakdown(sg) {
     ${bar('Señales', sg.measured)}<div class="muted">IA ${sg.llm}/10 · señales medidas ${sg.measured}/10${tags.length ? ' · ' + tags.join(' · ') : ''}</div></div>`;
 }
 
+/** Mensaje de error legible para el usuario (los detalles técnicos quedan en Estado del servidor). */
+function friendlyError(e = '') {
+  if (/tiempo máximo|tiempo límite|agotó el tiempo/i.test(e)) return 'Tardó demasiado en renderizar. Pulsa Reintentar: se usará un modo más rápido.';
+  if (/Falta la clave/i.test(e)) return e;
+  if (/ffmpeg/i.test(e)) return 'No se pudo procesar el vídeo. Pulsa Reintentar; si vuelve a fallar, prueba con otro encuadre.';
+  return e.length > 160 ? e.slice(0, 160) + '…' : e || 'Error';
+}
+
 function bindClips(p) {
   main.querySelectorAll('[data-clip]').forEach(el => {
     const c = p.clips.find(x => x.id == el.dataset.clip);
@@ -353,6 +388,8 @@ function bindClips(p) {
     });
     $('[data-f=title]', el).onchange = e => api('/api/clips/' + c.id, { method: 'PATCH', body: { title: e.target.value } }).catch(err => toast(err.message, 'bad'));
     $('[data-zip]', el).onchange = e => api('/api/clips/' + c.id, { method: 'PATCH', body: { include_zip: e.target.checked } });
+    const rb = $('[data-retry]', el);
+    if (rb) rb.onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/render`, { method: 'POST' }); toast('Reintentando…'); router(); });
     $('[data-x]', el).onclick = async () => { if (confirm('¿Eliminar este clip?')) { await api('/api/clips/' + c.id, { method: 'DELETE' }); router(); } };
     $('[data-tr]', el).onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/translate`, { method: 'POST', body: { lang: $('[data-lang]', el).value } }); toast('Traduciendo y renderizando…'); router(); });
     $('[data-pub]', el).onclick = e => busy(e.target, async () => {

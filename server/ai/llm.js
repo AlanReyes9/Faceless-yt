@@ -5,10 +5,25 @@ export function apiError(text) {
 }
 
 async function post(url, headers, body) {
-  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`Error de la API (${r.status}): ${apiError(text)}`);
-  return JSON.parse(text);
+  // Reintenta los errores temporales del proveedor (saturación, límites de uso, fallos de red)
+  for (let attempt = 1; ; attempt++) {
+    let r, text;
+    try {
+      r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+      text = await r.text();
+    } catch (e) {
+      if (attempt >= 4) throw new Error('No se pudo conectar con la API de IA: ' + e.message);
+      await new Promise(res => setTimeout(res, 1500 * attempt));
+      continue;
+    }
+    if (r.ok) return JSON.parse(text);
+    if ([429, 500, 502, 503, 504, 529].includes(r.status) && attempt < 4) {
+      const wait = Number(r.headers.get('retry-after')) * 1000 || 2000 * attempt * attempt;
+      await new Promise(res => setTimeout(res, Math.min(wait, 20000)));
+      continue;
+    }
+    throw new Error(`Error de la API (${r.status}): ${apiError(text)}`);
+  }
 }
 
 /** Llama al proveedor de texto configurado. Devuelve el texto de la respuesta. */

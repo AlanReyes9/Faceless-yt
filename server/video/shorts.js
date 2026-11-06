@@ -17,7 +17,7 @@ const projectFail = async ({ id }, msg) => updateProject(id, { status: 'error', 
 // ---------- Paso 1: preparar origen ----------
 register('shorts.start', async ({ id }) => {
   const p = await getProject(id);
-  await updateProject(id, { status: 'processing', error: null, progress: 'Preparando el vídeo…' });
+  await updateProject(id, { status: 'processing', error: null, progress: 'Preparando el vídeo…', percent: 1 });
   let source = p.source;
   if (!source && p.source_url) {
     if (IS_VERCEL) throw new Error('En Vercel no se pueden descargar enlaces (YouTube bloquea los servidores en la nube). Sube el archivo de vídeo directamente. (400)');
@@ -32,7 +32,7 @@ register('shorts.start', async ({ id }) => {
   }
   const info = await probe(inputPath(source));
   if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
-  await updateProject(id, { progress: 'Analizando cambios de plano…' });
+  await updateProject(id, { progress: 'Analizando cambios de plano…', percent: 3 });
   const cuts = await sceneCuts(inputPath(source)).catch(() => []);
   p.data = { ...p.data, cuts, width: info.width, height: info.height };
   if (p.data.transcript?.words?.length) { // ya transcrito (reintento): saltar a la selección
@@ -47,7 +47,7 @@ register('shorts.start', async ({ id }) => {
 register('shorts.transcribe', async ({ id, chunk }) => {
   const p = await getProject(id);
   const chunks = Math.max(1, Math.ceil(p.duration / CHUNK_SECONDS));
-  await updateProject(id, { progress: `Transcribiendo audio (${chunk + 1}/${chunks})…` });
+  await updateProject(id, { progress: `Transcribiendo audio (${chunk + 1}/${chunks})…`, percent: Math.round(5 + 45 * chunk / chunks) });
   const r = await transcribeChunk(inputPath(p.source), { offset: chunk * CHUNK_SECONDS, len: CHUNK_SECONDS, language: p.data.options?.language });
   const t = p.data.transcript || { segments: [], words: [] };
   // Evita duplicar si este paso se reintenta
@@ -98,7 +98,7 @@ function snap(words, start, end) {
 register('shorts.pick', async ({ id }) => {
   const p = await getProject(id);
   if (!p.data.transcript?.segments?.length) throw new Error('No se detectó voz en el vídeo. (400)');
-  await updateProject(id, { progress: 'La IA está buscando los mejores momentos…' });
+  await updateProject(id, { progress: 'La IA está buscando los mejores momentos…', percent: 50 });
   const opts = { count: 10, minSec: 20, maxSec: 60, layout: 'face', ...p.data.options };
   const sig = buildSignals({ energy: p.data.transcript.energy, words: p.data.transcript.words, cuts: p.data.cuts || [] });
   const picked = await pickClips(p.data.transcript, sig, { ...opts, language: opts.titleLanguage });
@@ -125,15 +125,35 @@ register('shorts.pick', async ({ id }) => {
         JSON.stringify(keywords), JSON.stringify(opts.emojis === false ? [] : emojis), JSON.stringify(signals)]);
     await enqueue('clip.render', { clipId: clip.id });
   }
-  await updateProject(id, { progress: `Renderizando ${n} Shorts…` });
+  await updateProject(id, { progress: `Renderizando ${n} Shorts…`, percent: 55 });
 }, projectFail);
 
 // ---------- Paso 4: render de cada clip ----------
-export async function renderClip(clipId, { lang } = {}) {
+// Calidad según el intento: si un render se pasa de tiempo, el siguiente intento es más rápido.
+function quality(attempt = 1) {
+  const base = process.env.X264_PRESET || (IS_VERCEL ? 'superfast' : 'veryfast');
+  if (attempt <= 1) return { preset: base, crf: 22, W: 1080, H: 1920 };
+  if (attempt === 2) return { preset: 'ultrafast', crf: 24, W: 1080, H: 1920 };
+  return { preset: 'ultrafast', crf: 25, W: 720, H: 1280 };
+}
+
+/** Guarda el progreso de un clip (como mucho cada 2 s para no saturar la base de datos). */
+function progressWriter(clipId) {
+  let last = 0;
+  return async (stage, pct, force = false) => {
+    if (!force && Date.now() - last < 2000) return;
+    last = Date.now();
+    await updateClip(clipId, { stage, progress: Math.max(0, Math.min(100, Math.round(pct))) }).catch(() => {});
+  };
+}
+
+export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, remaining: () => Infinity }) {
   const clip = await getClip(clipId);
   if (!clip) return;
   const p = await getProject(clip.project_id);
+  const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
+  await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
   const dur = clip.end - clip.start;
   const words = lang ? (clip.variants[lang]?.words || []) : sliceWords(p.data.transcript?.words || [], clip.start, clip.end);
   const hook = lang ? (clip.variants[lang]?.hook || '') : clip.hook;
@@ -157,15 +177,26 @@ export async function renderClip(clipId, { lang } = {}) {
       facePlan = cached ? cached.plan : null;
       if (!cached) {
         try {
-          const samples = await trackFaces(input, clip.start, dur);
+          const samples = await trackFaces(input, clip.start, dur, {
+            onProgress: f => prog('Detectando caras', f * 100),
+            timeoutMs: Math.max(30000, Math.min(150000, ctx.remaining() - 20000)),
+          });
           facePlan = cropPlan(samples, W, H);
         } catch (e) { console.warn('caras:', e.message); }
         await updateClip(clipId, { track: { start: clip.start, end: clip.end, plan: facePlan } });
+        // En Vercel el render va en un paso nuevo para tener el tiempo completo
+        if (ctx.remaining() < 200000) {
+          await prog('En cola para renderizar', 0, true);
+          await enqueue('clip.render', { clipId, lang });
+          return 'requeued';
+        }
       }
       if (facePlan) facePlan.H = H;
       else layout = 'blur'; // sin caras detectadas: fondo difuminado
     }
     let vf;
+    // Los subtítulos y emojis se diseñan a 1080x1920; en modo rápido se escala al final
+    const Q = quality(ctx.attempt);
     if (layout === 'face') vf = `[0:v]crop=w=${facePlan.cw}:h=${facePlan.H}:x=${cropExpr(facePlan)}:y=0,scale=1080:1920,setsar=1,${ass}[base]`;
     else if (layout === 'crop') vf = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[base]`;
     else vf = `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
@@ -190,21 +221,31 @@ export async function renderClip(clipId, { lang } = {}) {
         `[${last}][e${i}]overlay=x=(W-w)/2:y=${capY - 300}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
       last = `o${i}`;
     }
-    vf += `;[${last}]null[v]`;
-    await ffmpeg(['-ss', clip.start.toFixed(3), '-i', input, ...extra, '-t', dur.toFixed(3),
+    vf += Q.W !== 1080 ? `;[${last}]scale=${Q.W}:${Q.H}[v]` : `;[${last}]null[v]`;
+    if (ctx.remaining() < 45000) { // no empezar un render sin tiempo suficiente: va a una ejecución nueva
+      await prog('En cola para renderizar', 0, true);
+      await enqueue('clip.render', { clipId, lang });
+      return 'requeued';
+    }
+    await prog('Renderizando', 0, true);
+    await ffmpeg(['-threads', '0', '-ss', clip.start.toFixed(3), '-i', input, ...extra, '-t', dur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', '0:a?',
-      '-c:v', 'libx264', '-preset', process.env.X264_PRESET || 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-r', '30',
-      '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out]);
+      '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
+      '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
+      onProgress: sec => prog('Renderizando', (sec / dur) * 95),
+      timeoutMs: ctx.remaining() - 15000, // parar antes de que el servidor corte la función
+    });
+    await prog('Guardando', 97, true);
     const ref = await saveFile(out, `short_${tag}.mp4`);
     const fresh = await getClip(clipId);
     if (lang) {
       const old = fresh.variants[lang]?.file;
       fresh.variants[lang] = { ...fresh.variants[lang], file: ref };
-      await updateClip(clipId, { variants: fresh.variants, status: 'ready' });
+      await updateClip(clipId, { variants: fresh.variants, status: 'ready', progress: 100, stage: null });
       await removeFile(old);
     } else {
       await removeFile(fresh.file);
-      await updateClip(clipId, { file: ref, status: 'ready' });
+      await updateClip(clipId, { file: ref, status: 'ready', progress: 100, stage: null });
     }
   } finally {
     fs.rmSync(assFile, { force: true }); fs.rmSync(out, { force: true });
@@ -213,19 +254,26 @@ export async function renderClip(clipId, { lang } = {}) {
 }
 
 async function checkDone(projectId) {
-  const r = await one(`SELECT COUNT(*) FILTER (WHERE status IN ('rendering','pending'))::int AS busy, COUNT(*) FILTER (WHERE status = 'ready')::int AS ready FROM clips WHERE project_id = $1`, [projectId]);
-  if (!r.busy) await updateProject(projectId, { status: 'ready', progress: `${r.ready} Shorts listos` });
+  const r = await one(`SELECT COUNT(*) FILTER (WHERE status IN ('rendering','pending'))::int AS busy,
+      COUNT(*) FILTER (WHERE status = 'ready')::int AS ready, COUNT(*) FILTER (WHERE status = 'error')::int AS failed
+    FROM clips WHERE project_id = $1`, [projectId]);
+  if (r.busy) return;
+  if (!r.ready && r.failed) {
+    await updateProject(projectId, { status: 'error', error: `No se pudo renderizar ningún Short (${r.failed} con error). Pulsa "Reintentar" para volver a renderizarlos.`, progress: null });
+  } else {
+    await updateProject(projectId, { status: 'ready', error: null, percent: 100, progress: `${r.ready} Shorts listos${r.failed ? ` · ${r.failed} con error` : ''}` });
+  }
 }
 const clipFail = async ({ clipId }, msg) => {
-  await updateClip(clipId, { status: 'error', error: msg });
+  await updateClip(clipId, { status: 'error', error: msg, stage: null });
   const c = await getClip(clipId);
   if (c) await checkDone(c.project_id);
 };
 
-register('clip.render', ({ clipId, lang }) => renderClip(clipId, { lang }), clipFail);
+register('clip.render', ({ clipId, lang }, ctx) => renderClip(clipId, { lang }, ctx), clipFail);
 
 // ---------- Traducción ----------
-register('clip.translate', async ({ clipId, lang }) => {
+register('clip.translate', async ({ clipId, lang }, ctx) => {
   const clip = await getClip(clipId);
   const p = await getProject(clip.project_id);
   const segs = (p.data.transcript?.segments || []).filter(s => s.end > clip.start && s.start < clip.end)
@@ -244,5 +292,5 @@ ${segs.map((s, i) => `${i + 1}. ${s.text}`).join('\n')}`);
   });
   clip.variants[lang] = { ...clip.variants[lang], hook: res.hook || '', title: res.title || '', words };
   await updateClip(clipId, { variants: clip.variants });
-  await renderClip(clipId, { lang });
+  await enqueue('clip.render', { clipId, lang }); // el render va en su propio paso
 }, clipFail);

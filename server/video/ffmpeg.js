@@ -9,18 +9,48 @@ try { staticPath = require('ffmpeg-static'); } catch {}
 export const FFMPEG = process.env.FFMPEG_PATH || staticPath || 'ffmpeg';
 export const FONTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'fonts');
 
-export function run(cmd, args, { onStderr, allowFail = false } = {}) {
+export class TimeoutError extends Error {}
+
+/**
+ * Ejecuta un proceso. timeoutMs: lo detiene a tiempo (antes de que el servidor corte la función).
+ * onStdout recibe cada trozo de salida estándar (se usa para el progreso de ffmpeg).
+ */
+export function run(cmd, args, { onStderr, onStdout, allowFail = false, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
+    if (timeoutMs !== undefined && timeoutMs <= 0) return reject(new TimeoutError('No queda tiempo en esta ejecución del servidor.'));
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
-    p.stdout.on('data', d => { out += d; });
+    let out = '', err = '', timedOut = false;
+    const timer = timeoutMs > 0 && Number.isFinite(timeoutMs) ? setTimeout(() => { timedOut = true; p.kill('SIGKILL'); }, timeoutMs) : null;
+    p.stdout.on('data', d => { if (onStdout) onStdout(String(d)); else { out += d; if (out.length > 200000) out = out.slice(-100000); } });
     p.stderr.on('data', d => { err += d; if (err.length > 40000) err = err.slice(-20000); onStderr?.(String(d)); });
-    p.on('error', e => reject(new Error(`No se pudo ejecutar ${cmd}: ${e.message}`)));
-    p.on('close', code => (code === 0 || allowFail) ? resolve({ out, err, code }) : reject(new Error(`${path.basename(cmd)} falló (código ${code}): ${err.slice(-1500)}`)));
+    p.on('error', e => { clearTimeout(timer); reject(new Error(`No se pudo ejecutar ${cmd}: ${e.message}`)); });
+    p.on('close', code => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new TimeoutError('El render superó el tiempo límite del servidor.'));
+      (code === 0 || allowFail) ? resolve({ out, err, code }) : reject(new Error(`${path.basename(cmd)} falló (código ${code}): ${err.slice(-1500)}`));
+    });
   });
 }
 
-export const ffmpeg = (args, opts) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', ...args], opts);
+/**
+ * ffmpeg con progreso opcional: onProgress(segundosProcesados) usando "-progress pipe:1".
+ */
+export function ffmpeg(args, { onProgress, ...opts } = {}) {
+  const base = ['-hide_banner', '-loglevel', 'error', '-y'];
+  if (!onProgress) return run(FFMPEG, [...base, ...args], opts);
+  let buf = '';
+  return run(FFMPEG, [...base, '-progress', 'pipe:1', '-nostats', ...args], {
+    ...opts,
+    onStdout: chunk => {
+      buf += chunk;
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const l of lines) {
+        const m = l.match(/^out_time_(?:us|ms)=(\d+)/);
+        if (m) onProgress(Number(m[1]) / 1e6);
+      }
+    },
+  });
+}
 
 /** Duración, tamaño y audio leyendo la salida de "ffmpeg -i" (no necesita ffprobe). Acepta URLs. */
 export async function probe(input) {
