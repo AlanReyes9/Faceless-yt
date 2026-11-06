@@ -4,7 +4,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 300,
-      "includeFiles": "{fonts/**,models/**,node_modules/ffmpeg-static/ffmpeg,node_modules/ffmpeg-static/package.json,node_modules/ffmpeg-static/index.js,node_modules/onnxruntime-web/dist/ort.node.min.js,node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs,node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm}"
+      "includeFiles": "{fonts/**,models/**,node_modules/ffmpeg-static/{ffmpeg,index.js,package.json},node_modules/onnxruntime-web/dist/{ort.node.min.js,ort-wasm-simd-threaded.mjs,ort-wasm-simd-threaded.wasm}}"
     }
   },
   "rewrites": [
