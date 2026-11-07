@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { ffmpeg } from '../video/ffmpeg.js';
+import { ffmpeg, run, FFMPEG } from '../video/ffmpeg.js';
 import { getSetting, requireKey } from '../settings.js';
 import { WORK_DIR } from '../db.js';
 import { apiError } from './llm.js';
@@ -35,12 +35,17 @@ async function whisper(file, language) {
 export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language } = {}) {
   const out = path.join(WORK_DIR, `audio_${crypto.randomBytes(5).toString('hex')}.mp3`);
   try {
-    await ffmpeg(['-ss', String(offset), '-t', String(len), '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out]);
+    // Una sola lectura del vídeo: extrae el audio y, a la vez, detecta cambios de plano en los fotogramas clave
+    const { err } = await run(FFMPEG, ['-hide_banner', '-loglevel', 'info', '-y', '-skip_frame:v', 'nokey',
+      '-ss', String(offset), '-t', String(len), '-i', input,
+      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out,
+      '-map', '0:v:0?', '-an', '-vf', 'scale=160:90,select=gt(scene\\,0.35),showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-']);
+    const cuts = [...err.matchAll(/Parsed_showinfo.*?pts_time:\s*([\d.]+)/g)].map(m => +(parseFloat(m[1]) + offset).toFixed(2));
     const [r, energy] = await Promise.all([whisper(out, language), audioEnergy(out, offset).catch(() => [])]);
     const segments = (r.segments || []).map(s => ({ start: s.start + offset, end: s.end + offset, text: s.text.trim() }));
     let words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start + offset, end: w.end + offset }));
     if (!words.length) words = approximateWords(segments);
-    return { language: r.language || language || '', segments, words, energy };
+    return { language: r.language || language || '', segments, words, energy, cuts };
   } finally { fs.rmSync(out, { force: true }); }
 }
 

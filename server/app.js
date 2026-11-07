@@ -16,7 +16,8 @@ import { generateScript, generateAdScript, generateMontageScript } from './video
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
 import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl } from './jobs.js';
-import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile } from './storage.js';
+import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey } from './storage.js';
+import { s3Configured, presign, putBucketCors, S3 } from './s3.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -31,7 +32,7 @@ const PASSWORD = process.env.APP_PASSWORD || '';
 // En Vercel (público en internet) no se abre nada sin contraseña ni clave de cifrado.
 const SETUP_MISSING = IS_VERCEL ? [
   !PASSWORD && 'APP_PASSWORD', !process.env.APP_SECRET && 'APP_SECRET',
-  !(process.env.DATABASE_URL || process.env.POSTGRES_URL) && 'DATABASE_URL', !process.env.BLOB_READ_WRITE_TOKEN && 'BLOB_READ_WRITE_TOKEN',
+  !(process.env.DATABASE_URL || process.env.POSTGRES_URL) && 'DATABASE_URL', !(s3Configured() || process.env.BLOB_READ_WRITE_TOKEN) && 'ALMACENAMIENTO',
 ].filter(Boolean) : [];
 const BLOCKED = SETUP_MISSING.includes('APP_PASSWORD') || SETUP_MISSING.includes('APP_SECRET');
 const sign = v => crypto.createHmac('sha256', PASSWORD + internalSecret()).update(v).digest('hex');
@@ -94,6 +95,28 @@ app.post('/api/blob/upload', h(async (req, res) => {
   res.json(result);
 }));
 
+// ---------- Almacenamiento S3 (Cloudflare R2 / Backblaze B2) ----------
+// Reproducir/descargar: comprueba la sesión y redirige a una URL firmada (la descarga va directa del proveedor)
+app.get(/^\/api\/f\/(.+)$/, (req, res) => {
+  if (!s3Configured()) return res.status(404).end();
+  const key = req.params[0].split('/').map(decodeURIComponent).join('/');
+  if (key.includes('..')) return res.status(400).end();
+  res.set('cache-control', 'private, max-age=3000');
+  res.redirect(302, signedGetUrl(key, 3600 * 6));
+});
+// Subida directa del navegador al bucket (URL firmada de PUT)
+app.post('/api/s3/presign', h(async (req, res) => {
+  if (!s3Configured()) throw new Error('El almacenamiento S3 no está configurado.');
+  const key = newKey(req.body.filename || 'archivo', 'uploads');
+  res.json({ ref: 's3:' + key, url: presign('PUT', key, { expires: 3600 * 3 }) });
+}));
+app.post('/api/admin/s3-cors', h(async (req, res) => {
+  if (!s3Configured()) throw new Error('El almacenamiento S3 no está configurado.');
+  const origins = [...new Set([baseUrl(req), process.env.PUBLIC_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`].filter(Boolean))];
+  await putBucketCors(origins);
+  res.json({ ok: true, origins });
+}));
+
 // ---------- Sistema ----------
 const has = (cmd, flag = '--version') => run(cmd, [flag]).then(() => true, () => false);
 app.get('/api/system', h(async (req, res) => res.json({
@@ -109,7 +132,7 @@ app.get('/api/stats', h(async (req, res) => res.json({
   recent: await q('SELECT id, type, title, status, progress, created_at FROM projects WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 6'),
 })));
 app.get('/api/admin', h(async (req, res) => res.json({
-  db: DB_MODE, storage: STORAGE_MODE, vercel: IS_VERCEL, ffmpeg: FFMPEG, node: process.version,
+  db: DB_MODE, storage: STORAGE_MODE, s3: s3Configured() ? { endpoint: S3.endpoint.replace(/^https?:\/\//, ''), bucket: S3.bucket } : null, vercel: IS_VERCEL, ffmpeg: FFMPEG, node: process.version,
   queue: await queueStatus(),
   jobs: await q("SELECT id, type, payload, status, attempts, error, locked_at, created_at FROM jobs ORDER BY id DESC LIMIT 50"),
 })));

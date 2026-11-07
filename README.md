@@ -44,6 +44,20 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 
 Límites en Vercel: cada paso tiene un máximo de 300 s y no se pueden importar vídeos desde enlaces de YouTube (sube el archivo).
 
+## Almacenamiento gratuito con Cloudflare R2 (recomendado)
+
+Vercel Blob cobra cada descarga, y los vídeos de móvil son muy pesados. **Cloudflare R2** ofrece 10 GB gratis y **descargas ilimitadas gratis**. También sirve cualquier almacenamiento compatible con S3 (Backblaze B2, MinIO…).
+
+1. En Cloudflare: **R2 Object Storage** → **Create bucket** (por ejemplo `faceless-studio`).
+2. **R2 → Manage API tokens → Create API token**: permiso **Object Read & Write** sobre ese bucket (o *Admin Read & Write* si quieres que la app configure CORS sola). Copia el *Access Key ID*, el *Secret Access Key* y el endpoint `https://<ID_DE_CUENTA>.r2.cloudflarestorage.com`.
+3. En el bucket: **Settings → CORS policy** y pega (cambia el dominio por el tuyo):
+   ```json
+   [{"AllowedOrigins":["https://TU-APP.vercel.app"],"AllowedMethods":["GET","PUT","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag","Content-Length"],"MaxAgeSeconds":3600}]
+   ```
+4. En Vercel → Settings → Environment Variables añade `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` y `S3_SECRET_ACCESS_KEY` (para Backblaze B2 añade también `S3_REGION`, por ejemplo `us-west-004`). Después haz **Redeploy**.
+
+Si S3 está configurado, tiene prioridad sobre Vercel Blob. Los proyectos antiguos guardados en Blob siguen funcionando.
+
 ## Instalación local
 
 Requisitos: Node.js ≥ 22.13, `ffmpeg` y, opcionalmente, `yt-dlp` para importar desde enlaces.

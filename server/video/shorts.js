@@ -4,7 +4,7 @@ import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VE
 import { ffmpeg, probe, run, assFilter } from './ffmpeg.js';
 import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, cropPlan, cropExpr } from './face.js';
-import { sceneCuts, buildSignals } from './signals.js';
+import { buildSignals } from './signals.js';
 import { emojiImage } from './emoji.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
@@ -32,9 +32,8 @@ register('shorts.start', async ({ id }) => {
   }
   const info = await probe(inputPath(source));
   if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
-  await updateProject(id, { progress: 'Analizando cambios de plano…', percent: 3 });
-  const cuts = await sceneCuts(inputPath(source)).catch(() => []);
-  p.data = { ...p.data, cuts, width: info.width, height: info.height };
+  // Los cambios de plano se detectan durante la transcripción (misma lectura del vídeo)
+  p.data = { ...p.data, cuts: p.data.cuts || [], width: info.width, height: info.height };
   if (p.data.transcript?.words?.length) { // ya transcrito (reintento): saltar a la selección
     await updateProject(id, { duration: info.duration, data: p.data });
     return enqueue('shorts.pick', { id });
@@ -55,6 +54,7 @@ register('shorts.transcribe', async ({ id, chunk }) => {
   t.segments = t.segments.filter(s => s.start < from).concat(r.segments);
   t.words = t.words.filter(w => w.start < from).concat(r.words);
   t.energy = (t.energy || []).filter(e => e.t < from).concat(r.energy || []);
+  p.data.cuts = (p.data.cuts || []).filter(c => c < from).concat(r.cuts || []);
   t.language ||= r.language;
   await updateProject(id, { data: { ...p.data, transcript: t } });
   if (chunk + 1 < chunks) await enqueue('shorts.transcribe', { id, chunk: chunk + 1 });

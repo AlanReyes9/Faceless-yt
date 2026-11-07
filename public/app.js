@@ -72,6 +72,20 @@ const getSystem = async () => (systemInfo ||= await api('/api/system'));
 /** Sube un archivo y devuelve su referencia. En Vercel va directo a Blob (archivos grandes). */
 async function uploadFile(file, onProgress = () => {}) {
   const sys = await getSystem();
+  if (sys.storage === 's3') {
+    // Subida directa al bucket (Cloudflare R2 / Backblaze B2) con una URL firmada
+    const { ref, url } = await api('/api/s3/presign', { method: 'POST', body: { filename: file.name } });
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = e => onProgress(Math.round(e.loaded / e.total * 100));
+      xhr.onload = () => xhr.status < 300 ? resolve() : reject(new Error(`El almacenamiento rechazó la subida (${xhr.status}). Revisa la configuración CORS del bucket en Estado del servidor.`));
+      xhr.onerror = () => reject(new Error('No se pudo subir al almacenamiento. Casi siempre es la configuración CORS del bucket: pulsa "Configurar CORS" en Estado del servidor.'));
+      xhr.open('PUT', url);
+      xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+      xhr.send(file);
+    });
+    return ref;
+  }
   if (sys.storage === 'blob') {
     const { upload } = await import('https://esm.sh/@vercel/blob@2.8.2/client');
     const safe = file.name.replace(/[^\w.-]+/g, '_');
@@ -109,6 +123,7 @@ function renderSetup(missing, me = {}) {
     APP_SECRET: 'Clave para cifrar tus claves API: una cadena aleatoria larga, p. ej. el resultado de <code>openssl rand -hex 32</code>.',
     DATABASE_URL: 'Se crea sola al conectar una base de datos <b>Neon</b> en la pestaña Storage del proyecto.',
     BLOB_READ_WRITE_TOKEN: 'Se crea sola al conectar un <b>Blob store</b> en la pestaña Storage.',
+    ALMACENAMIENTO: 'Dónde se guardan los vídeos. Recomendado (gratis): <b>Cloudflare R2</b> con las variables <code>S3_ENDPOINT</code>, <code>S3_BUCKET</code>, <code>S3_ACCESS_KEY_ID</code> y <code>S3_SECRET_ACCESS_KEY</code> (ver Ayuda). También sirve un Blob store de Vercel.',
   };
   main.innerHTML = `<div class="card stack" style="max-width:640px;margin:60px auto">
     <h1>Casi listo 🔧</h1><p class="sub">Por seguridad, el estudio no se abre hasta completar la configuración en Vercel.</p>
@@ -745,7 +760,8 @@ routes.servidor = async () => {
     <div class="grid g4" style="margin-bottom:16px">
       <div class="card"><div class="muted small">Alojamiento</div><div class="stat" style="font-size:20px">${a.vercel ? 'Vercel' : 'Servidor propio'}</div></div>
       <div class="card"><div class="muted small">Base de datos</div><div class="stat" style="font-size:20px">${a.db === 'postgres' ? 'Postgres (Neon)' : 'Local (PGlite)'}</div></div>
-      <div class="card"><div class="muted small">Archivos</div><div class="stat" style="font-size:20px">${a.storage === 'blob' ? 'Vercel Blob' : 'Disco local'}</div></div>
+      <div class="card"><div class="muted small">Archivos</div><div class="stat" style="font-size:20px">${a.storage === 's3' ? 'S3 · ' + esc(/r2\.cloudflarestorage/.test(a.s3?.endpoint) ? 'Cloudflare R2' : /backblaze/.test(a.s3?.endpoint) ? 'Backblaze B2' : a.s3?.endpoint) : a.storage === 'blob' ? 'Vercel Blob' : 'Disco local'}</div>
+        ${a.storage === 's3' ? `<div class="small muted">Bucket: ${esc(a.s3.bucket)}</div><button class="btn sm" id="cors" style="margin-top:6px">Configurar CORS</button>` : ''}</div>
       <div class="card"><div class="muted small">ffmpeg</div><div class="stat" style="font-size:20px">${sys.ffmpeg ? '✓ OK' : '✕ No'}</div></div>
     </div>
     <div class="card"><div class="row between"><h2>Cola de trabajos</h2><div class="row"><span class="pill">${a.queue.waiting} en espera</span><span class="pill processing">${a.queue.running} en curso</span><span class="pill error">${a.queue.failed} fallidos</span>
@@ -753,6 +769,11 @@ routes.servidor = async () => {
       ${a.jobs.length ? `<table><tr><th>#</th><th>Paso</th><th>Proyecto</th><th>Estado</th><th>Intentos</th><th>Error</th><th></th></tr>${a.jobs.map(j => `<tr><td>${j.id}</td><td>${JOB[j.type] || j.type}</td>
         <td>${j.payload.id ? `<a href="#/proyecto/${j.payload.id}">#${j.payload.id}</a>` : j.payload.clipId ? 'clip ' + j.payload.clipId : ''}</td><td>${pill(j.status === 'queued' ? 'pending' : j.status === 'running' ? 'processing' : 'error')}</td>
         <td>${j.attempts}</td><td class="small err">${esc((j.error || '').slice(0, 160))}</td><td>${j.status === 'failed' ? `<button class="btn sm" data-retry="${j.id}">Reintentar</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">La cola está vacía.</p>'}</div>`;
+  const cb = $('#cors');
+  if (cb) cb.onclick = e => busy(e.target, async () => {
+    try { const r = await api('/api/admin/s3-cors', { method: 'POST' }); toast('CORS configurado para ' + r.origins.join(', '), 'good'); }
+    catch (err) { toast('No se pudo configurar automáticamente (el token no tiene permiso de administración). Configúralo a mano: ver Ayuda → Cloudflare R2.', 'bad'); }
+  });
   $('#kick').onclick = e => busy(e.target, async () => { await api('/api/admin/kick', { method: 'POST' }); toast('Procesando…'); setTimeout(router, 1500); });
   const c = $('#clean'); if (c) c.onclick = async () => { await api('/api/admin/jobs', { method: 'DELETE' }); router(); };
   main.querySelectorAll('[data-retry]').forEach(b => b.onclick = async () => { await api(`/api/admin/jobs/${b.dataset.retry}/retry`, { method: 'POST' }); router(); });
@@ -808,6 +829,12 @@ routes.ayuda = () => {
     <li>Cada Short sale en 1080×1920 con <b>Seguir la cara</b> (el recorte sigue a quien habla), fondo difuminado o recorte, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
+  <div class="card stack"><h2>Almacenamiento gratis: Cloudflare R2</h2>
+    <p class="small">Vercel Blob cobra cada descarga de vídeo; R2 da 10 GB gratis y <b>descargas ilimitadas gratis</b>.</p><ol>
+    <li>En Cloudflare: <b>R2 Object Storage → Create bucket</b>.</li>
+    <li><b>Manage API tokens → Create API token</b> con permiso <i>Object Read &amp; Write</i> sobre ese bucket. Copia Access Key ID, Secret y el endpoint <code>https://&lt;cuenta&gt;.r2.cloudflarestorage.com</code>.</li>
+    <li>En el bucket: <b>Settings → CORS policy</b> y pega:<br><code style="word-break:break-all">[{"AllowedOrigins":["${location.origin}"],"AllowedMethods":["GET","PUT","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag","Content-Length"],"MaxAgeSeconds":3600}]</code></li>
+    <li>En Vercel añade <code>S3_ENDPOINT</code>, <code>S3_BUCKET</code>, <code>S3_ACCESS_KEY_ID</code>, <code>S3_SECRET_ACCESS_KEY</code> y haz Redeploy.</li></ol></div>
   <div class="card stack"><h2>Conectar YouTube</h2><ol>
     <li>Entra en <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a> y crea un proyecto.</li>
     <li>Activa <b>YouTube Data API v3</b>.</li>
