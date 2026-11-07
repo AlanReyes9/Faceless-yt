@@ -4,7 +4,7 @@ const main = $('#main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const mmss = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; };
 const LANGS = { es: 'Español', en: 'Inglés', pt: 'Portugués', fr: 'Francés', de: 'Alemán', it: 'Italiano' };
-const LAYOUTS = { face: 'Seguir la cara', blur: 'Fondo difuminado', crop: 'Recorte centrado' };
+const LAYOUTS = { face: 'Recorte centrado en quien habla (automático)', crop: 'Recorte centrado fijo', blur: 'Fondo difuminado' };
 const CAP_STYLES = { clasico: 'Clásico (palabra resaltada)', marcador: 'Marcador (palabra con fondo)', impacto: 'Impacto (grande, con pop)', minimal: 'Minimalista (discreto)' };
 const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v}</option>`).join('');
 const emojisToText = list => (list || []).map(e => `${e.emoji} ${e.word}`).join(', ');
@@ -253,8 +253,8 @@ routes.shorts = async () => {
         <div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="20" min="5"></div>
         <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="180"></div></div>
       <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
-          <option value="face">Seguir la cara (recomendado para podcasts y entrevistas)</option>
-          <option value="blur">Fondo difuminado (vídeo completo centrado)</option><option value="crop">Recorte centrado (pantalla completa)</option></select></div>
+          <option value="face">Recorte centrado en quien habla (automático, recomendado)</option>
+          <option value="crop">Recorte centrado fijo (centro de la imagen)</option><option value="blur">Fondo difuminado (vídeo completo centrado)</option></select></div>
         <div style="flex:1"><label>Estilo de subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       <div class="row"><div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar automáticamente</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
@@ -342,7 +342,7 @@ function shortsGrid(p, chs) {
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div><button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${(LAYOUTS[c.layout] || c.layout).toLowerCase()}</span></div>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : 'fondo difuminado'}</span></div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
         <div><label>Frase de gancho (sale 4 s arriba)</label><input data-f="hook" value="${esc(c.hook)}"></div>
@@ -856,7 +856,7 @@ routes.ayuda = () => {
     <li>Se transcribe con marcas de tiempo por palabra.</li>
     <li>La IA elige los mejores momentos, les pone nota del 1 al 10 y escribe un gancho.</li>
     <li>La nota viral combina el criterio de la IA (gancho, historia, emoción, valor, final) con señales medidas: picos de energía, risas, ritmo de habla y cambios de plano.</li>
-    <li>Cada Short sale en 1080×1920 con <b>Seguir la cara</b> (el recorte sigue a quien habla), fondo difuminado o recorte, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
+    <li>Cada Short sale en 1080×1920 con <b>Recorte centrado en quien habla</b> (si hay varias personas en plano, detecta quién habla por el movimiento de la boca y corta a esa persona), recorte fijo o fondo difuminado, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
   <div class="card stack"><h2>Almacenamiento gratis: Cloudflare R2</h2>

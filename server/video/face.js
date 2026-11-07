@@ -104,13 +104,161 @@ export async function trackFaces(input, start, dur, { fps = 2, onProgress, timeo
       }
     }
     const t = imgs[i].t;
-    const smp = pick ? { t, cx: (pick.x1 + pick.x2) / 2, cy: (pick.y1 + pick.y2) / 2, size: pick.x2 - pick.x1 } : { t, cx: null };
+    const smp = pick ? { t, n: faces.length, cx: (pick.x1 + pick.x2) / 2, cy: (pick.y1 + pick.y2) / 2, size: pick.x2 - pick.x1 } : { t, n: 0, cx: null };
     if (pick) prev = smp;
     samples.push(smp);
     if (i % 5 === 0) onProgress?.(i / imgs.length);
   }
   onProgress?.(1);
   return samples;
+}
+
+// ---------------------------------------------------------------------------
+// Hablante activo: con varias personas en plano, se encuadra a la que está hablando.
+// Se mide el movimiento de la boca de cada cara entre fotogramas consecutivos (restando el de la frente,
+// para no confundirlo con movimientos de cabeza o de cámara) y solo cuenta mientras hay voz.
+// ---------------------------------------------------------------------------
+const AW = 640, AH = 360; // resolución de análisis (más detalle en la boca que 320x240)
+
+/** Lee fotogramas AW×AH uno a uno (sin cargar el clip entero en memoria) y llama a onFrame(t, rgb). */
+async function streamFrames(input, start, dur, fps, onFrame, timeoutMs) {
+  input = await localUrl(input);
+  return new Promise((resolve, reject) => {
+    const p = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-ss', String(start), '-i', input, '-t', String(dur),
+      '-vf', `fps=${fps},scale=${AW}:${AH}`, '-an', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+    const size = AW * AH * 3;
+    let buf = Buffer.alloc(0), i = 0, err = '', chain = Promise.resolve(), failed = null;
+    const timer = timeoutMs ? setTimeout(() => p.kill('SIGKILL'), timeoutMs) : null;
+    p.stdout.on('data', d => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= size) {
+        const frame = Buffer.from(buf.subarray(0, size)); buf = buf.subarray(size);
+        const t = i++ / fps;
+        p.stdout.pause();
+        chain = chain.then(() => onFrame(t, frame)).catch(e => { failed = e; }).finally(() => p.stdout.resume());
+      }
+    });
+    p.stderr.on('data', d => { err += d; if (err.length > 1e5) err = err.slice(-5e4); });
+    p.on('error', reject);
+    p.on('close', code => {
+      clearTimeout(timer);
+      chain.then(() => (code !== 0 && !i) ? reject(new Error('ffmpeg (hablante): ' + err.slice(-300))) : failed ? reject(failed) : resolve(i));
+    });
+  });
+}
+
+/** Reduce un fotograma AW×AH a 320×240 (vecino más cercano) para el detector. */
+function toDetector(rgb) {
+  const out = new Uint8Array(IW * IH * 3);
+  for (let y = 0; y < IH; y++) {
+    const sy = Math.floor(y * AH / IH) * AW;
+    for (let x = 0; x < IW; x++) {
+      const si = (sy + Math.floor(x * AW / IW)) * 3, di = (y * IW + x) * 3;
+      out[di] = rgb[si]; out[di + 1] = rgb[si + 1]; out[di + 2] = rgb[si + 2];
+    }
+  }
+  return out;
+}
+const toGray = rgb => { const g = new Uint8Array(AW * AH); for (let i = 0; i < g.length; i++) g[i] = (rgb[i * 3] * 77 + rgb[i * 3 + 1] * 150 + rgb[i * 3 + 2] * 29) >> 8; return g; };
+
+/** Diferencia media de gris entre dos fotogramas dentro de un rectángulo normalizado. */
+function regionDiff(a, b, x1, y1, x2, y2) {
+  const X1 = Math.max(0, Math.floor(x1 * AW)), X2 = Math.min(AW, Math.ceil(x2 * AW));
+  const Y1 = Math.max(0, Math.floor(y1 * AH)), Y2 = Math.min(AH, Math.ceil(y2 * AH));
+  let sum = 0, n = 0;
+  for (let y = Y1; y < Y2; y++) for (let x = X1; x < X2; x++) { const k = y * AW + x; sum += Math.abs(a[k] - b[k]); n++; }
+  return n ? sum / n : 0;
+}
+
+/**
+ * Sigue a todas las caras y decide quién habla en cada momento.
+ * words: palabras con tiempos relativos al inicio del tramo (para saber cuándo hay voz).
+ * Devuelve muestras [{t, cx, cy, size, speaker}] listas para cropPlan, o null si no hay suficiente información.
+ */
+export async function trackSpeakers(input, start, dur, { words = [], fps = 8, onProgress, timeoutMs } = {}) {
+  const tracks = [];        // { id, cx, cy, w, h, x1, y1, x2, y2, seen, score: Map(segundo -> puntuación) }
+  let prevGray = null, nextId = 1;
+  const frames = [];        // por fotograma: { t, pos: Map(id -> {cx, cy, size}) }
+  const total = Math.max(1, Math.round(dur * fps));
+  const speaking = t => words.some(w => t >= w.start - 0.15 && t <= w.end + 0.15);
+
+  await streamFrames(input, start, dur, fps, async (t, rgb) => {
+    const gray = toGray(rgb);
+    const faces = await detectFaces(toDetector(rgb), 0.65);
+    const pos = new Map();
+    const used = new Set();
+    for (const f of faces) {
+      const cx = (f.x1 + f.x2) / 2, cy = (f.y1 + f.y2) / 2, w = f.x2 - f.x1;
+      // emparejar con la pista más cercana (misma persona en el fotograma anterior)
+      let best = null, bd = Infinity;
+      for (const tr of tracks) {
+        if (used.has(tr.id) || t - tr.seen > 1.5) continue;
+        const d = Math.hypot(tr.cx - cx, tr.cy - cy);
+        if (d < Math.max(0.08, tr.w * 0.8) && d < bd) { bd = d; best = tr; }
+      }
+      const fresh = !best;
+      const tr = best || { id: nextId++, score: new Map(), frames: 0 };
+      if (fresh) tracks.push(tr);
+      used.add(tr.id);
+      const wasSeenLast = !fresh && t - tr.seen < 1.5 / fps + 0.01;
+      Object.assign(tr, { cx, cy, w, x1: f.x1, y1: f.y1, x2: f.x2, y2: f.y2, seen: t });
+      tr.frames++;
+      pos.set(tr.id, { cx, cy, size: w });
+      // movimiento de boca (parte baja de la cara) menos movimiento de frente (parte alta)
+      if (prevGray && wasSeenLast && speaking(t)) {
+        const h = f.y2 - f.y1, mx1 = cx - w * 0.28, mx2 = cx + w * 0.28;
+        const mouth = regionDiff(prevGray, gray, mx1, f.y1 + h * 0.62, mx2, f.y1 + h * 0.95);
+        const brow = regionDiff(prevGray, gray, mx1, f.y1 + h * 0.08, mx2, f.y1 + h * 0.30);
+        const sc = Math.max(0, mouth - brow * 1.1);
+        const sec = Math.floor(t);
+        tr.score.set(sec, (tr.score.get(sec) || 0) + sc);
+      }
+    }
+    prevGray = gray;
+    frames.push({ t, pos });
+    if (frames.length % 10 === 0) onProgress?.(Math.min(0.99, frames.length / total));
+  }, timeoutMs);
+  onProgress?.(1);
+
+  if (process.env.DEBUG_SPEAKER) for (const tr of tracks) console.log("pista", tr.id, "cx", tr.cx.toFixed(2), "fotogramas", tr.frames, "boca/s:", [...Array(Math.ceil(dur)).keys()].map(s => (tr.score.get(s) || 0).toFixed(1)).join(" "));
+  // Personas relevantes: presentes en al menos el 20 % del tramo
+  const people = tracks.filter(tr => tr.frames >= frames.length * 0.2);
+  if (!frames.length || !people.length) return null;
+  if (people.length === 1) {
+    const only = people[0].id;
+    return frames.map(f => ({ t: f.t, ...(f.pos.get(only) || { cx: null }), speaker: only }));
+  }
+
+  // Decisión por segundos con histéresis: solo se cambia si la otra persona habla claramente más
+  const secs = Math.ceil(dur);
+  const totalScore = id => [...people.find(p => p.id === id).score.values()].reduce((a, b) => a + b, 0);
+  let current = people.reduce((a, b) => totalScore(b.id) > totalScore(a.id) ? b : a).id; // quien más habla en general
+  // empezar por quien habla en los primeros segundos, si hay señal
+  const firstSecs = id => [0, 1, 2].reduce((a, s) => a + (people.find(p => p.id === id).score.get(s) || 0), 0);
+  const opener = people.reduce((a, b) => firstSecs(b.id) > firstSecs(a.id) ? b : a);
+  if (firstSecs(opener.id) > 0) current = opener.id;
+  const speakerAt = new Array(secs).fill(current);
+  let challenger = null, streak = 0;
+  for (let sec = 0; sec < secs; sec++) {
+    const sc = id => people.find(p => p.id === id).score.get(sec) || 0;
+    const cur = sc(current);
+    const top = people.reduce((a, b) => sc(b.id) > sc(a.id) ? b : a);
+    const strong = sc(top.id) > Math.max(cur * 1.6, 1.5); // dominio claro y por encima del ruido
+    if (top.id !== current && strong) {
+      streak = challenger === top.id ? streak + 1 : 1;
+      challenger = top.id;
+      if (streak >= 2 || sc(top.id) > cur * 4 + 3) { current = top.id; challenger = null; streak = 0; }
+    } else { challenger = null; streak = 0; }
+    speakerAt[sec] = current;
+  }
+  // Muestras: posición de la persona elegida en cada fotograma (si no se ve, se mantiene la última)
+  const lastPos = new Map();
+  return frames.map(f => {
+    for (const [id, pp] of f.pos) lastPos.set(id, pp);
+    const id = speakerAt[Math.min(secs - 1, Math.floor(f.t))];
+    const pp = f.pos.get(id) || lastPos.get(id);
+    return pp ? { t: f.t, ...pp, speaker: id } : { t: f.t, cx: null, speaker: id };
+  });
 }
 
 /**

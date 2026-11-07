@@ -3,7 +3,7 @@ import path from 'node:path';
 import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VERCEL } from '../db.js';
 import { ffmpeg, probe, run, assFilter } from './ffmpeg.js';
 import { buildASS, sliceWords, normWord } from './ass.js';
-import { trackFaces, cropPlan, cropExpr } from './face.js';
+import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
 import { emojiImage } from './emoji.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
@@ -174,17 +174,35 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     let layout = clip.layout, facePlan = null;
     if (layout === 'face') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
-      const cached = clip.track && clip.track.start === clip.start && clip.track.end === clip.end ? clip.track : null;
+      // v2: encuadre en quien habla (los encuadres guardados con la versión anterior se recalculan)
+      const cached = clip.track && clip.track.v === 2 && clip.track.start === clip.start && clip.track.end === clip.end ? clip.track : null;
       facePlan = cached ? cached.plan : null;
       if (!cached) {
         try {
-          const samples = await trackFaces(input, clip.start, dur, {
-            onProgress: f => prog('Detectando caras', f * 100),
+          let samples = await trackFaces(input, clip.start, dur, {
+            onProgress: f => prog('Detectando caras', f * 40),
             timeoutMs: Math.max(30000, Math.min(150000, ctx.remaining() - 20000)),
           });
+          // Varias personas en plano: se encuadra a quien está hablando
+          const multi = samples.filter(x => x.n >= 2).length >= samples.length * 0.3;
+          if (multi) {
+            try {
+              const voice = sliceWords(p.data.transcript?.words || [], clip.start, clip.end);
+              const t0 = Date.now();
+              const spk = await trackSpeakers(input, clip.start, dur, {
+                words: voice, onProgress: f => prog('Detectando quién habla', 40 + f * 60),
+                timeoutMs: Math.max(30000, Math.min(150000, ctx.remaining() - 60000)),
+              });
+              if (spk?.some(x => x.cx != null)) {
+                samples = spk;
+                const changes = spk.reduce((n, x, i) => n + (i && x.speaker !== spk[i - 1].speaker ? 1 : 0), 0);
+                console.log(`[caras] clip ${clipId}: ${new Set(spk.map(x => x.speaker)).size} persona(s), ${changes} cambio(s) de hablante en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+              }
+            } catch (e) { console.warn('hablante:', e.message); } // si falla, se usa la cara principal
+          }
           facePlan = cropPlan(samples, W, H);
         } catch (e) { console.warn('caras:', e.message); }
-        await updateClip(clipId, { track: { start: clip.start, end: clip.end, plan: facePlan } });
+        await updateClip(clipId, { track: { v: 2, start: clip.start, end: clip.end, plan: facePlan } });
         // En Vercel el render va en un paso nuevo para tener el tiempo completo
         if (ctx.remaining() < 200000) {
           await prog('En cola para renderizar', 0, true);
