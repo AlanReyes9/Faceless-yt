@@ -68,7 +68,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     lines.push(`Dialogue: 2,${ts(0)},${ts(duration)},Big,,0,0,0,,{\\fad(200,0)\\c${assColor(highlight)}}${wrap(esc(overlay.toUpperCase()), 16)}`);
   }
   if (captions && words.length) {
+    words = cleanWords(words, duration);
     const st = CAPTION_STYLES[style] || CAPTION_STYLES.clasico;
+    const capEvents = [];
     const hl = assColor(highlight), kw = assColor(keywordColor);
     const kwSet = new Set((keywords || []).map(norm).filter(Boolean));
     const isKw = w => kwSet.has(norm(w));
@@ -99,11 +101,38 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }).join(' ');
         // "impacto": cada grupo entra con un pequeño "pop"
         const pop = st.mode === 'pop' && wi === 0 ? '{\\fscx75\\fscy75\\t(0,110,\\fscx100\\fscy100)}' : '';
-        lines.push(`Dialogue: 0,${ts(start)},${ts(Math.min(end, duration))},Cap,,0,0,0,,${baseTag}${pop}${text}`);
+        capEvents.push({ start, end: Math.min(end, duration), text: `${baseTag}${pop}${text}` });
       });
     });
+    // Garantía final: nunca dos subtítulos a la vez (si coinciden, el motor los dibuja uno encima de otro)
+    capEvents.sort((x, y) => x.start - y.start);
+    for (let i = 0; i < capEvents.length; i++) {
+      const e = capEvents[i], next = capEvents[i + 1];
+      if (next && e.end > next.start) e.end = next.start;
+      // se redondea igual que ts() para que fin y siguiente inicio caigan en la misma centésima
+      if (Math.floor(e.end * 100) <= Math.floor(e.start * 100)) continue;
+      lines.push(`Dialogue: 0,${ts(e.start)},${ts(e.end)},Cap,,0,0,0,,${e.text}`);
+    }
   }
   return header + lines.join('\n') + '\n';
+}
+
+/**
+ * Limpia los tiempos de Whisper: tiempos crecientes, sin solapes y con duración mínima (sin cambiar el orden).
+ * (Whisper a veces devuelve palabras de duración 0 o que empiezan antes de que acabe la anterior.)
+ */
+export function cleanWords(words, duration = Infinity) {
+  const MIN = 0.08;
+  const out = words.filter(w => w && String(w.word).trim() && Number.isFinite(w.start))
+    // se respeta el orden de las palabras (el de Whisper); solo se corrigen los tiempos hacia delante
+    .map(w => ({ ...w, start: Math.max(0, w.start), end: Math.max(w.start, Number.isFinite(w.end) ? w.end : w.start) }));
+  for (let i = 0; i < out.length; i++) {
+    const w = out[i], prev = out[i - 1];
+    if (prev && w.start < prev.start + MIN) w.start = prev.start + MIN;     // dos palabras no empiezan a la vez
+    if (prev && prev.end > w.start) prev.end = w.start;                     // la anterior termina cuando empieza esta
+    if (w.end < w.start + MIN) w.end = w.start + MIN;                       // duración mínima visible
+  }
+  return out.filter(w => w.start < duration);
 }
 
 /** Recorta las palabras de una transcripción al rango [start,end] y las hace relativas. */
