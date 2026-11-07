@@ -44,10 +44,11 @@ export const FIELDS = {
   google_client_id: { secret: false, label: 'Google OAuth Client ID', group: 'Publicar en YouTube' },
   google_client_secret: { secret: true, label: 'Google OAuth Client Secret', group: 'Publicar en YouTube' },
 
-  llm_provider: { secret: false, default: 'openai', label: 'Proveedor de texto', options: ['openai', 'anthropic', 'gemini', 'openrouter'], group: 'Preferencias' },
+  llm_provider: { secret: false, default: 'openai', label: 'Proveedor de texto', options: ['openai', 'anthropic', 'gemini', 'groq', 'openrouter'], group: 'Preferencias' },
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },
   anthropic_model: { secret: false, default: 'claude-sonnet-5-5', label: 'Modelo Claude', group: 'Preferencias' },
   gemini_model: { secret: false, default: 'gemini-3.8-flash', label: 'Modelo Gemini', group: 'Preferencias' },
+  groq_model: { secret: false, default: 'openai/gpt-oss-120b', label: 'Modelo Groq (texto)', group: 'Preferencias' },
   openrouter_model: { secret: false, default: 'openai/gpt-4.1-mini', label: 'Modelo OpenRouter', group: 'Preferencias' },
   transcribe_provider: { secret: false, default: 'openai', label: 'Transcripción', options: ['openai', 'groq'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },

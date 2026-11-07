@@ -27,7 +27,7 @@ async function post(url, headers, body, { timeoutMs = 180000, retries = 3 } = {}
   }
 }
 
-const KEY_OF = { openai: 'openai_key', anthropic: 'anthropic_key', gemini: 'gemini_key', openrouter: 'openrouter_key' };
+const KEY_OF = { openai: 'openai_key', anthropic: 'anthropic_key', gemini: 'gemini_key', groq: 'groq_key', openrouter: 'openrouter_key' };
 const PER_CALL_MS = Number(process.env.LLM_TIMEOUT_MS || 100000);
 
 /**
@@ -37,7 +37,7 @@ const PER_CALL_MS = Number(process.env.LLM_TIMEOUT_MS || 100000);
 export async function chat(system, user, { json = false, maxTokens = 4000, provider } = {}) {
   const preferred = provider || await getSetting('llm_provider');
   const order = [preferred];
-  if (!provider) for (const p of ['openai', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
+  if (!provider) for (const p of ['openai', 'groq', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
   let lastErr;
   for (const p of order) {
     try {
@@ -91,15 +91,16 @@ async function chatWith(provider, system, user, { json, maxTokens }) {
     return text;
   }
 
-  // OpenAI y OpenRouter comparten el formato chat/completions
-  const isOR = provider === 'openrouter';
-  const res = await post(isOR ? 'https://openrouter.ai/api/v1/chat/completions' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/chat/completions', {
-    authorization: 'Bearer ' + await requireKey(isOR ? 'openrouter_key' : 'openai_key', 'usar ' + provider),
+  // OpenAI, Groq y OpenRouter comparten el formato chat/completions
+  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: 'https://api.groq.com/openai/v1', openrouter: 'https://openrouter.ai/api/v1' };
+  const p = BASE[provider] ? provider : 'openai';
+  const res = await post(BASE[p] + '/chat/completions', {
+    authorization: 'Bearer ' + await requireKey(KEY_OF[p], 'usar ' + p),
   }, {
-    model: await getSetting(isOR ? 'openrouter_model' : 'openai_model'),
+    model: await getSetting(p + '_model'),
     max_completion_tokens: maxTokens,
     messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-    ...(json && !isOR ? { response_format: { type: 'json_object' } } : {}),
+    ...(json && p !== 'openrouter' ? { response_format: { type: 'json_object' } } : {}),
   }, opts);
   return res.choices?.[0]?.message?.content || '';
 }
