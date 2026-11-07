@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { q, one, insert, update, getProject, updateProject, getClip, updateClip, FILES_DIR, DB_MODE, IS_VERCEL } from './db.js';
-import { publicSettings, setSettings, internalSecret } from './settings.js';
+import { publicSettings, setSettings, internalSecret, getSetting } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
 import { run, FFMPEG } from './video/ffmpeg.js';
@@ -15,6 +15,7 @@ import './video/shorts.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
+import { preview as cleanupPreview, runCleanup } from './cleanup.js';
 import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl } from './jobs.js';
 import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey } from './storage.js';
 import { s3Configured, presign, putBucketCors, S3 } from './s3.js';
@@ -65,7 +66,11 @@ app.post('/api/worker', h(async (req, res) => {
   if (req.get('x-worker-secret') !== internalSecret()) return res.status(403).json({ error: 'forbidden' });
   await workerEntry(req, res);
 }));
-app.get('/api/worker/cron', h(async (req, res) => workerEntry(req, res))); // cron de Vercel (red de seguridad)
+app.get('/api/worker/cron', h(async (req, res) => { // cron diario de Vercel: limpieza de originales + red de seguridad de la cola
+  const work = runCleanup().catch(e => console.error('limpieza', e.message));
+  if (IS_VERCEL) (await import('@vercel/functions')).waitUntil(work);
+  await workerEntry(req, res);
+}));
 
 app.use(['/api', '/files'], (req, res, next) => {
   if (authed(req) || req.path === '/youtube/callback' || req.path === '/blob/upload') return next();
@@ -141,6 +146,8 @@ app.post('/api/admin/jobs/:id/retry', h(async (req, res) => {
   kick(true); res.json({ ok: true });
 }));
 app.delete('/api/admin/jobs', h(async (req, res) => { await q("DELETE FROM jobs WHERE status = 'failed'"); res.json({ ok: true }); }));
+app.get('/api/admin/cleanup', h(async (req, res) => res.json(await cleanupPreview())));
+app.post('/api/admin/cleanup', h(async (req, res) => res.json(await runCleanup())));
 app.post('/api/admin/kick', h(async (req, res) => { kick(true); res.json({ ok: true }); }));
 
 // ---------- Ajustes y claves ----------
@@ -211,7 +218,11 @@ app.get('/api/projects/:id', h(async (req, res) => {
   if (!p) return res.status(404).json({ error: 'No existe' });
   const clips = await q('SELECT * FROM clips WHERE project_id = $1 ORDER BY idx', [p.id]);
   if (['pending', 'processing'].includes(p.status) || clips.some(c => c.status === 'rendering')) ensureWorker().catch(() => {});
-  res.json({ ...projectOut(p), percent: projectPercent(p, clips), clips: clips.map(clipOut) });
+  const days = Number(await getSetting('cleanup_days')) || 0;
+  const base = p.ready_at || p.created_at;
+  const cleanup = { days, keep: !!p.data.keepSource, deletedAt: p.data.sourceDeletedAt || null,
+    at: days > 0 && p.status === 'ready' && base && (p.source || p.data.options?.media?.length) ? new Date(new Date(base).getTime() + days * 864e5).toISOString() : null };
+  res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, clips: clips.map(clipOut) });
 }));
 app.post('/api/shorts', h(async (req, res) => {
   const b = req.body;
@@ -250,6 +261,7 @@ app.post('/api/compose', h(async (req, res) => {
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
+  if (p.data.sourceDeletedAt) throw new Error(NO_SOURCE);
   // Shorts ya transcritos: solo se vuelven a renderizar los clips que fallaron (no se repite ni se paga la transcripción)
   const failed = p.type === 'shorts' ? await q("SELECT id FROM clips WHERE project_id = $1 AND status <> 'ready'", [p.id]) : [];
   if (p.type === 'shorts' && p.data.transcript?.words?.length && failed.length) {
@@ -269,6 +281,7 @@ app.patch('/api/projects/:id', h(async (req, res) => {
   const f = {};
   if ('title' in req.body) f.title = req.body.title;
   if ('channel_id' in req.body) f.channel_id = Number(req.body.channel_id) || null;
+  if ('keepSource' in req.body) f.data = { ...p.data, keepSource: !!req.body.keepSource };
   await updateProject(p.id, f);
   res.json({ ok: true });
 }));
@@ -332,7 +345,14 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   await updateClip(c.id, f);
   res.json({ ok: true });
 }));
+const NO_SOURCE = 'El vídeo original de este proyecto se borró para ahorrar espacio (limpieza automática), así que no se puede volver a renderizar. Los Shorts ya hechos siguen disponibles.';
+async function requireSource(clipId) {
+  const c = await getClip(clipId);
+  const p = c && await getProject(c.project_id);
+  if (!p?.source) throw new Error(NO_SOURCE);
+}
 app.post('/api/clips/:id/render', h(async (req, res) => {
+  await requireSource(req.params.id);
   await updateClip(req.params.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
   await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', error: null, progress: 'Renderizando cambios…' });
   await enqueue('clip.render', { clipId: Number(req.params.id) });
@@ -340,6 +360,7 @@ app.post('/api/clips/:id/render', h(async (req, res) => {
 }));
 app.post('/api/clips/:id/translate', h(async (req, res) => {
   if (!req.body.lang) throw new Error('Elige un idioma.');
+  await requireSource(req.params.id);
   await updateClip(req.params.id, { status: 'rendering', error: null, progress: 0, stage: 'Traduciendo…' });
   await updateProject((await getClip(req.params.id)).project_id, { status: 'processing', error: null, progress: 'Traduciendo…' });
   await enqueue('clip.translate', { clipId: Number(req.params.id), lang: req.body.lang });

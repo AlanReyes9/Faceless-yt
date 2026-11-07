@@ -296,12 +296,18 @@ routes.proyecto = async id => {
     <div class="row">${p.type === 'shorts' && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
       ${p.status === 'error' ? '<button class="btn" id="retry">↻ Reintentar</button>' : ''}<button class="btn red" id="del">Eliminar</button></div></div>
     ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
+    ${cleanupBanner(p)}
     ${['pending', 'processing'].includes(p.status) ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
       <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
   main.innerHTML = head + (p.type === 'shorts' ? shortsGrid(p, chs) : longView(p, chs));
   const r = $('#retry'); if (r) r.onclick = () => busy(r, async () => { await api(`/api/projects/${p.id}/retry`, { method: 'POST' }); router(); });
   $('#del').onclick = async () => { if (confirm('¿Mover a la papelera?')) { await api('/api/projects/' + p.id, { method: 'DELETE' }); location.hash = '#/videos'; } };
+  main.querySelectorAll('[data-keep]').forEach(b => b.onclick = () => busy(b, async () => {
+    await api('/api/projects/' + p.id, { method: 'PATCH', body: { keepSource: b.dataset.keep === '1' } });
+    toast(b.dataset.keep === '1' ? 'El original se conservará' : 'Se borrará automáticamente', 'good'); router();
+  }));
   if (p.type === 'shorts') bindClips(p); else bindLong(p);
+  if (p.cleanup?.deletedAt) main.querySelectorAll('[data-apply],[data-tr],[data-retry],#retry').forEach(b => { b.disabled = true; b.title = 'El original se borró: no se puede volver a renderizar'; });
   if (working) livePoll(p);
 };
 
@@ -365,6 +371,18 @@ function shortsGrid(p, chs) {
         <label class="check"><input type="checkbox" data-zip ${c.include_zip ? 'checked' : ''}> Incluir en el .zip</label>
       </div></div>`;
   }).join('')}</div>`;
+}
+
+const fmtDate = d => new Date(d).toLocaleDateString('es', { day: 'numeric', month: 'long' });
+/** Aviso de borrado automático del vídeo original. */
+function cleanupBanner(p) {
+  const c = p.cleanup || {};
+  if (c.deletedAt) return `<div class="card small" style="margin-bottom:16px">🧹 El original se borró el ${fmtDate(c.deletedAt)} para ahorrar espacio. Los vídeos terminados siguen disponibles, pero este proyecto ya no se puede volver a renderizar.</div>`;
+  if (c.keep) return `<div class="card small row between" style="margin-bottom:16px"><span>📌 El original se conserva (no se borrará automáticamente).</span><button class="btn sm" data-keep="0">Permitir borrado automático</button></div>`;
+  const failed = (p.clips || []).some(x => x.status === 'error');
+  if (c.at && failed) return `<div class="card small" style="margin-bottom:16px">🧹 El original no se borrará mientras haya clips con error (para que puedas reintentarlos).</div>`;
+  if (c.at) return `<div class="card small row between" style="margin-bottom:16px"><span>🧹 Para ahorrar espacio, el vídeo original se borrará ${new Date(c.at) <= new Date() ? '<b>en la próxima limpieza</b> (hoy)' : `el <b>${fmtDate(c.at)}</b>`}. Después no se podrán ajustar ni traducir los clips (los ya hechos se quedan).</span><button class="btn sm" data-keep="1">📌 Conservar original</button></div>`;
+  return '';
 }
 
 /** Desglose de la nota viral: criterios de la IA + señales medidas. */
@@ -479,7 +497,7 @@ function longView(p, chs) {
       <button class="btn gold" id="pub" ${p.output ? '' : 'disabled'}>Publicar ahora</button></div>
     ${s?.hooks?.length ? `<div class="card" style="grid-column:1/-1"><h2>Ganchos alternativos</h2><ul>${s.hooks.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     ${s?.scenes ? `<div class="card" style="grid-column:1/-1"><h2>Escenas</h2>${s.scenes.map((x, i) => `<div class="row" style="align-items:flex-start;flex-wrap:nowrap;padding:6px 0">
-      ${x.mediaUrl ? (/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(x.mediaUrl) ? `<img src="${x.mediaUrl}" style="width:64px;border-radius:6px">` : '<span class="pill">vídeo</span>') : ''}
+      ${x.mediaUrl ? (/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(x.mediaUrl) ? `<img src="${x.mediaUrl}" style="width:64px;border-radius:6px" onerror="this.remove()">` : '<span class="pill">vídeo</span>') : ''}
       <div><b class="muted">${i + 1}.</b> ${esc(x.narration || '(sin voz)')}${x.overlay ? ` <span class="pill">${esc(x.overlay)}</span>` : ''}</div></div>`).join('')}</div>` : ''}
   </div>`;
 }
@@ -764,11 +782,23 @@ routes.servidor = async () => {
         ${a.storage === 's3' ? `<div class="small muted">Bucket: ${esc(a.s3.bucket)}</div><button class="btn sm" id="cors" style="margin-top:6px">Configurar CORS</button>` : ''}</div>
       <div class="card"><div class="muted small">ffmpeg</div><div class="stat" style="font-size:20px">${sys.ffmpeg ? '✓ OK' : '✕ No'}</div></div>
     </div>
+    <div class="card stack" style="margin-bottom:16px" id="cleanup"><h2>🧹 Limpieza automática de originales</h2><p class="muted small">Calculando…</p></div>
     <div class="card"><div class="row between"><h2>Cola de trabajos</h2><div class="row"><span class="pill">${a.queue.waiting} en espera</span><span class="pill processing">${a.queue.running} en curso</span><span class="pill error">${a.queue.failed} fallidos</span>
       <button class="btn sm" id="kick">▶ Procesar cola</button>${a.queue.failed ? '<button class="btn sm red" id="clean">Limpiar fallidos</button>' : ''}</div></div>
       ${a.jobs.length ? `<table><tr><th>#</th><th>Paso</th><th>Proyecto</th><th>Estado</th><th>Intentos</th><th>Error</th><th></th></tr>${a.jobs.map(j => `<tr><td>${j.id}</td><td>${JOB[j.type] || j.type}</td>
         <td>${j.payload.id ? `<a href="#/proyecto/${j.payload.id}">#${j.payload.id}</a>` : j.payload.clipId ? 'clip ' + j.payload.clipId : ''}</td><td>${pill(j.status === 'queued' ? 'pending' : j.status === 'running' ? 'processing' : 'error')}</td>
         <td>${j.attempts}</td><td class="small err">${esc((j.error || '').slice(0, 160))}</td><td>${j.status === 'failed' ? `<button class="btn sm" data-retry="${j.id}">Reintentar</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">La cola está vacía.</p>'}</div>`;
+  api('/api/admin/cleanup').then(c => {
+    const mb = b => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : Math.round(b / 1e6) + ' MB';
+    $('#cleanup').innerHTML = `<h2>🧹 Limpieza automática de originales</h2>
+      <p class="small">${c.days > 0 ? `Los vídeos originales se borran <b>${c.days} día${c.days > 1 ? 's' : ''}</b> después de terminar el proyecto (cada día, automáticamente). Los Shorts y vídeos terminados se conservan.` : 'Desactivada: los originales no se borran.'}
+        Cámbialo en <a href="#/ajustes">Ajustes y claves → Almacenamiento</a>.</p>
+      ${c.count ? `<p class="small">Ahora mismo se pueden borrar <b>${c.count}</b> proyecto(s), unos <b>${mb(c.bytes)}</b>:</p>
+        <ul class="small">${c.items.slice(0, 8).map(i => `<li><a href="#/proyecto/${i.id}">${esc(i.title || 'Proyecto ' + i.id)}</a> · ${mb(i.bytes)}</li>`).join('')}</ul>
+        <div><button class="btn gold sm" id="cleanNow">🧹 Liberar espacio ahora</button></div>` : c.days > 0 ? '<p class="small muted">No hay originales pendientes de borrar.</p>' : ''}`;
+    const bn = $('#cleanNow');
+    if (bn) bn.onclick = () => { if (confirm(`Se borrarán los originales de ${c.count} proyecto(s). Los Shorts terminados se conservan, pero esos proyectos no se podrán volver a renderizar. ¿Continuar?`)) busy(bn, async () => { const r = await api('/api/admin/cleanup', { method: 'POST' }); toast(`${r.files} archivo(s) borrados`, 'good'); router(); }); };
+  }).catch(e => { $('#cleanup').innerHTML = `<h2>🧹 Limpieza automática</h2><p class="err small">${esc(e.message)}</p>`; });
   const cb = $('#cors');
   if (cb) cb.onclick = e => busy(e.target, async () => {
     try { const r = await api('/api/admin/s3-cors', { method: 'POST' }); toast('CORS configurado para ' + r.origins.join(', '), 'good'); }

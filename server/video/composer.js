@@ -205,7 +205,7 @@ register('compose.concat', async ({ id }) => {
     const ref = await saveFile(out, `video_${id}.mp4`);
     await removeFile(p.output);
     for (const part of p.data.parts || []) await removeFile(part);
-    await updateProject(id, { status: 'ready', output: ref, duration: info.duration, progress: 'Vídeo listo', percent: 100, data: { ...p.data, parts: [] } });
+    await updateProject(id, { status: 'ready', ready_at: new Date().toISOString(), output: ref, duration: info.duration, progress: 'Vídeo listo', percent: 100, data: { ...p.data, parts: [] } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

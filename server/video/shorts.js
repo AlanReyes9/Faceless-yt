@@ -151,6 +151,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const clip = await getClip(clipId);
   if (!clip) return;
   const p = await getProject(clip.project_id);
+  if (!p.source) throw new Error('El vídeo original se borró para ahorrar espacio; no se puede volver a renderizar. (410)');
   const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
   await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
@@ -261,7 +262,7 @@ async function checkDone(projectId) {
   if (!r.ready && r.failed) {
     await updateProject(projectId, { status: 'error', error: `No se pudo renderizar ningún Short (${r.failed} con error). Pulsa "Reintentar" para volver a renderizarlos.`, progress: null });
   } else {
-    await updateProject(projectId, { status: 'ready', error: null, percent: 100, progress: `${r.ready} Shorts listos${r.failed ? ` · ${r.failed} con error` : ''}` });
+    await updateProject(projectId, { status: 'ready', ready_at: new Date().toISOString(), error: null, percent: 100, progress: `${r.ready} Shorts listos${r.failed ? ` · ${r.failed} con error` : ''}` });
   }
 }
 const clipFail = async ({ clipId }, msg) => {

@@ -53,6 +53,7 @@ export const FIELDS = {
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
   elevenlabs_voice_id: { secret: false, default: 'pNInz6obpgDQGcFmaJgB', label: 'ElevenLabs voice ID', group: 'Preferencias' },
+  cleanup_days: { secret: false, default: '7', label: 'Borrar vídeos originales tras (días, 0 = nunca)', options: ['0', '1', '3', '7', '14', '30'], group: 'Almacenamiento' },
   image_model: { secret: false, default: 'gpt-image-1', label: 'Modelo de imágenes OpenAI', group: 'Preferencias' },
   caption_color: { secret: false, default: '#FFD400', label: 'Color de palabra resaltada', group: 'Preferencias' },
 };

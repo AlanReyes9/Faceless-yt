@@ -73,6 +73,8 @@ Vercel Blob cobra cada descarga, y los vídeos de móvil son muy pesados. **Clou
    ```
 4. En Vercel → Settings → Environment Variables añade `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` y `S3_SECRET_ACCESS_KEY` (para Backblaze B2 añade también `S3_REGION`, por ejemplo `us-west-004`). Después haz **Redeploy**.
 
+**Limpieza automática:** para ahorrar espacio, los vídeos originales (y las fotos o clips subidos en anuncios y montajes) se borran 7 días después de terminar el proyecto. Se puede cambiar en *Ajustes y claves → Almacenamiento* (0 = nunca) o desactivar por proyecto con "Conservar original". Los Shorts y vídeos terminados se conservan siempre. No se borra nada de proyectos en proceso o con clips con error.
+
 Si S3 está configurado, tiene prioridad sobre Vercel Blob. Los proyectos antiguos guardados en Blob siguen funcionando.
 
 ## Instalación local
