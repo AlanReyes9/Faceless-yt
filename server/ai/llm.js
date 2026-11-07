@@ -31,6 +31,7 @@ const KEY_OF = { openai: 'openai_key', anthropic: 'anthropic_key', gemini: 'gemi
 const PER_CALL_MS = Number(process.env.LLM_TIMEOUT_MS || 100000);       // máximo por llamada a un proveedor
 const GEMINI_PER_MODEL_MS = Number(process.env.GEMINI_TIMEOUT_MS || 60000); // máximo por modelo de Gemini
 const TOTAL_BUDGET_MS = Number(process.env.LLM_BUDGET_MS || 230000);    // todo el reparto cabe en un paso del servidor
+const FALLBACK_RESERVE_MS = Number(process.env.LLM_FALLBACK_RESERVE_MS || 60000); // tiempo guardado para el proveedor de respaldo
 const GEMINI_BASE = () => process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
 
 // Errores por los que vale la pena probar otro modelo/proveedor (saturación, lentitud, red)
@@ -46,12 +47,15 @@ export async function chat(system, user, { json = false, maxTokens = 4000, provi
   const deadline = Date.now() + TOTAL_BUDGET_MS;
   const preferred = provider || await getSetting('llm_provider');
   const order = [preferred];
-  if (!provider) for (const p of ['openai', 'groq', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
+  // Orden de respaldo: Groq primero (muy rápido), luego el resto de proveedores con clave
+  if (!provider) for (const p of ['groq', 'openai', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
   let lastErr;
-  for (const p of order) {
+  for (const [i, p] of order.entries()) {
     if (deadline - Date.now() < 8000) break; // sin tiempo para otro intento útil
+    // Si hay respaldo, se le reserva tiempo: la cadena de modelos de Gemini no puede gastarlo todo
+    const own = i < order.length - 1 ? deadline - FALLBACK_RESERVE_MS : deadline;
     try {
-      const out = await chatWith(p, system, user, { json, maxTokens, deadline });
+      const out = await chatWith(p, system, user, { json, maxTokens, deadline: own });
       if (p !== preferred) console.log(`[IA] respondió ${p} (respaldo de ${preferred})`);
       return out;
     } catch (e) {
@@ -171,7 +175,7 @@ async function chatWith(provider, system, user, { json, maxTokens, deadline = Da
   }
 
   // OpenAI, Groq y OpenRouter comparten el formato chat/completions
-  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: 'https://api.groq.com/openai/v1', openrouter: 'https://openrouter.ai/api/v1' };
+  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1' };
   const p = BASE[provider] ? provider : 'openai';
   const res = await post(BASE[p] + '/chat/completions', {
     authorization: 'Bearer ' + await requireKey(KEY_OF[p], 'usar ' + p),
