@@ -48,6 +48,7 @@ export const FIELDS = {
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },
   anthropic_model: { secret: false, default: 'claude-sonnet-5-5', label: 'Modelo Claude', group: 'Preferencias' },
   gemini_model: { secret: false, default: 'gemini-3.8-flash', label: 'Modelo Gemini', group: 'Preferencias' },
+  gemini_fallbacks: { secret: false, default: '', label: 'Modelos Gemini de respaldo (vacío = automático; ej.: gemini-3.8-flash-lite, gemini-3.5-pro)', group: 'Preferencias' },
   groq_model: { secret: false, default: 'openai/gpt-oss-120b', label: 'Modelo Groq (texto)', group: 'Preferencias' },
   openrouter_model: { secret: false, default: 'openai/gpt-4.1-mini', label: 'Modelo OpenRouter', group: 'Preferencias' },
   transcribe_provider: { secret: false, default: 'openai', label: 'Transcripción', options: ['openai', 'groq'], group: 'Preferencias' },
