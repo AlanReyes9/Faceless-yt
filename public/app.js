@@ -159,7 +159,7 @@ routes[''] = async () => {
     <h1>Hola 👋</h1><p class="sub">Tu fábrica de contenido faceless con tus propias claves de IA.</p>
     ${!sys.ffmpeg ? '<div class="card err" style="margin-bottom:16px">ffmpeg no está instalado en el servidor. Sin él no se pueden renderizar vídeos.</div>' : ''}
     ${sys.vercel && sys.db !== 'postgres' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay base de datos conectada: los datos se perderán. En Vercel abre el proyecto → <b>Storage</b> → conecta una base de datos <b>Neon</b> y vuelve a desplegar.</div>' : ''}
-    ${sys.vercel && sys.storage !== 'blob' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay almacenamiento de archivos: conecta un <b>Blob store</b> en Vercel → Storage.</div>' : ''}
+    ${sys.vercel && sys.storage === 'local' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay almacenamiento de archivos: configura <b>Cloudflare R2</b> (ver Ayuda) o conecta un Blob store en Vercel → Storage.</div>' : ''}
     <div class="grid g4" style="margin-bottom:16px">
       <div class="card"><div class="muted small">Canales</div><div class="stat">${s.channels}</div></div>
       <div class="card"><div class="muted small">Proyectos</div><div class="stat">${s.projects}</div></div>
