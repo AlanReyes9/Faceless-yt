@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { proxyArgs } from './netproxy.js';
 
 const require = createRequire(import.meta.url);
 let staticPath = null;
@@ -15,7 +16,9 @@ export class TimeoutError extends Error {}
  * Ejecuta un proceso. timeoutMs: lo detiene a tiempo (antes de que el servidor corte la función).
  * onStdout recibe cada trozo de salida estándar (se usa para el progreso de ffmpeg).
  */
-export function run(cmd, args, { onStderr, onStdout, allowFail = false, timeoutMs } = {}) {
+export async function run(cmd, args, { onStderr, onStdout, allowFail = false, timeoutMs } = {}) {
+  // ffmpeg nunca se conecta a internet: las entradas remotas pasan por el proxy local (ver netproxy.js)
+  if (cmd === FFMPEG) args = await proxyArgs(args);
   return new Promise((resolve, reject) => {
     if (timeoutMs !== undefined && timeoutMs <= 0) return reject(new TimeoutError('No queda tiempo en esta ejecución del servidor.'));
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });

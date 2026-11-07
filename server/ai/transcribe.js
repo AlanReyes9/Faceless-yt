@@ -22,7 +22,8 @@ async function whisper(file, language) {
   form.append('timestamp_granularities[]', 'segment');
   if (language) form.append('language', language);
   const url = isGroq ? 'https://api.groq.com/openai/v1/audio/transcriptions' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/audio/transcriptions';
-  const r = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form });
+  const r = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form, signal: AbortSignal.timeout(150000) })
+    .catch(e => { throw new Error(e.name === 'TimeoutError' ? 'La transcripción tardó demasiado en responder (más de 2,5 min).' : 'No se pudo conectar con el servicio de transcripción: ' + e.message); });
   const text = await r.text();
   if (!r.ok) throw new Error(`Error de transcripción (${r.status}): ${apiError(text)}`);
   return JSON.parse(text);
@@ -39,7 +40,8 @@ export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, 
     const { err } = await run(FFMPEG, ['-hide_banner', '-loglevel', 'info', '-y', '-skip_frame:v', 'nokey',
       '-ss', String(offset), '-t', String(len), '-i', input,
       '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out,
-      '-map', '0:v:0?', '-an', '-vf', 'scale=160:90,select=gt(scene\\,0.35),showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-']);
+      '-map', '0:v:0?', '-an', '-vf', 'scale=160:90,select=gt(scene\\,0.35),showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-'],
+      { timeoutMs: 150000 });
     const cuts = [...err.matchAll(/Parsed_showinfo.*?pts_time:\s*([\d.]+)/g)].map(m => +(parseFloat(m[1]) + offset).toFixed(2));
     const [r, energy] = await Promise.all([whisper(out, language), audioEnergy(out, offset).catch(() => [])]);
     const segments = (r.segments || []).map(s => ({ start: s.start + offset, end: s.end + offset, text: s.text.trim() }));

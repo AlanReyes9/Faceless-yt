@@ -9,9 +9,10 @@ async function post(url, headers, body) {
   for (let attempt = 1; ; attempt++) {
     let r, text;
     try {
-      r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+      r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) });
       text = await r.text();
     } catch (e) {
+      if (e.name === 'TimeoutError') throw new Error('La IA tardó demasiado en responder (más de 3 min). Se reintentará.');
       if (attempt >= 4) throw new Error('No se pudo conectar con la API de IA: ' + e.message);
       await new Promise(res => setTimeout(res, 1500 * attempt));
       continue;

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FFMPEG } from './ffmpeg.js';
+import { localUrl } from './netproxy.js';
 
 const require = createRequire(import.meta.url);
 const MODEL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'models', 'ultraface-rfb-320.onnx');
@@ -54,7 +55,8 @@ export async function detectFaces(rgb, threshold = 0.7) {
  * Lee fotogramas reducidos de [start, start+dur].
  * keyOnly: solo fotogramas clave (muy rápido: no decodifica el resto). Devuelve [{t, img}].
  */
-function frames(input, start, dur, { fps = 2, keyOnly = false, timeoutMs } = {}) {
+async function frames(input, start, dur, { fps = 2, keyOnly = false, timeoutMs } = {}) {
+  input = await localUrl(input);
   return new Promise((resolve, reject) => {
     const args = ['-hide_banner', '-loglevel', keyOnly ? 'info' : 'error',
       ...(keyOnly ? ['-skip_frame', 'nokey'] : []), '-ss', String(start), '-i', input, '-t', String(dur),

@@ -52,11 +52,14 @@ export async function runOne(deadline = Infinity) {
     await fail('Este paso superó varias veces el tiempo máximo del servidor (5 min en Vercel). Pulsa "Reintentar": se usará una calidad más rápida. Si sigue fallando, prueba un clip más corto.');
     return true;
   }
+  const t0 = Date.now();
+  console.log(`[job ${job.id} ${job.type}] inicio (intento ${job.attempts}) ${JSON.stringify(job.payload)}`);
   try {
     await h.fn(job.payload, ctx);
     await q('DELETE FROM jobs WHERE id = $1', [job.id]);
+    console.log(`[job ${job.id} ${job.type}] ok en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   } catch (e) {
-    console.error(`[job ${job.id} ${job.type}]`, e.message);
+    console.error(`[job ${job.id} ${job.type}] error tras ${((Date.now() - t0) / 1000).toFixed(1)} s:`, e.message);
     // Errores de configuración (falta clave, 4xx) no se reintentan.
     const permanent = /Falta la clave|\((400|401|403|404|410|413|422)\)|no está conectado|No se pudo leer/.test(e.message);
     if (permanent || job.attempts >= MAX_ATTEMPTS) await fail(e.message);
