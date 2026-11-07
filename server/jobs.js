@@ -114,7 +114,9 @@ export async function ensureWorker() {
 export async function queueStatus() {
   return one(`SELECT COUNT(*) FILTER (WHERE status = 'queued')::int AS waiting,
     COUNT(*) FILTER (WHERE status = 'running')::int AS running,
-    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed FROM jobs`);
+    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+    EXTRACT(EPOCH FROM now() - MIN(locked_at) FILTER (WHERE status = 'running'))::int AS running_for_s,
+    STRING_AGG(type || ':' || status || ':' || attempts, ',' ORDER BY id) FILTER (WHERE status <> 'failed') AS pending FROM jobs`);
 }
 
 /** Bucle local (servidor normal / VPS). */

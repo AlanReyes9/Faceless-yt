@@ -58,7 +58,10 @@ app.post('/api/logout', (req, res) => { res.clearCookie('session'); res.json({ o
 
 // ---------- Worker (procesa la cola en segundo plano) ----------
 async function workerEntry(req, res) {
-  res.status(202).json({ ok: true });
+  // Estado de la cola (solo recuentos y tipos de paso, sin datos de proyectos) para diagnóstico
+  const qs = await queueStatus().catch(e => ({ error: e.message }));
+  console.log('[worker] cola:', JSON.stringify(qs));
+  res.status(202).json({ ok: true, queue: qs });
   const work = drain().then(empty => { if (!empty) kick(true); }).catch(e => console.error('drain', e)); // sin relanzar en error: evita bucles si la BD falla
   if (IS_VERCEL) (await import('@vercel/functions')).waitUntil(work);
 }
