@@ -44,6 +44,23 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 
 Límites en Vercel: cada paso tiene un máximo de 300 s y no se pueden importar vídeos desde enlaces de YouTube (sube el archivo).
 
+## Instalación en tu PC con Linux (espacio ilimitado)
+
+Todo se guarda en tu disco: sin límite de espacio, sin el límite de 5 minutos de Vercel y renders más rápidos.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlanReyes9/Faceless-yt/main/deploy/install-linux.sh | bash
+```
+
+Opciones (añádelas con `bash -s --` al final):
+- `--data /media/disco/faceless`: guarda los vídeos en otro disco
+- `--tunnel`: dirección pública gratis con Cloudflare Tunnel para usarla desde el móvil
+- `--port 3000`: puerto web
+
+Por ejemplo: `curl -fsSL …/install-linux.sh | bash -s -- --tunnel`
+
+El instalador instala Node 22 (sin sudo), ffmpeg y yt-dlp (en local sí funcionan los enlaces de YouTube). También crea la configuración con una clave aleatoria y un servicio que arranca solo al encender el PC. Para actualizar, vuelve a ejecutarlo.
+
 ## Almacenamiento gratuito con Cloudflare R2 (recomendado)
 
 Vercel Blob cobra cada descarga, y los vídeos de móvil son muy pesados. **Cloudflare R2** ofrece 10 GB gratis y **descargas ilimitadas gratis**. También sirve cualquier almacenamiento compatible con S3 (Backblaze B2, MinIO…).

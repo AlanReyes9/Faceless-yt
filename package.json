@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Estudio web para canales faceless: convierte vídeos largos en Shorts, genera vídeos completos con IA y publica en YouTube usando tus propias claves API.",
   "scripts": {
-    "start": "node --no-warnings server/index.js",
-    "dev": "node --no-warnings --watch server/index.js",
-    "worker": "WORKER=1 node --no-warnings server/worker.js",
+    "start": "node --no-warnings --env-file-if-exists=.env server/index.js",
+    "dev": "node --no-warnings --env-file-if-exists=.env --watch server/index.js",
+    "worker": "WORKER=1 node --no-warnings --env-file-if-exists=.env server/worker.js",
     "vercel-build": "node node_modules/ffmpeg-static/install.js && node -e \"const f=require('ffmpeg-static');require('fs').accessSync(f);console.log('ffmpeg OK:',f)\""
   },
   "engines": {
