@@ -18,13 +18,12 @@ export async function audioEnergy(audioFile, offset = 0) {
 }
 
 /** Cambios de plano analizando solo fotogramas clave (rápido incluso en vídeos largos). Devuelve segundos. */
-export async function sceneCuts(input, { threshold = 0.35, timeoutMs = 90000 } = {}) {
-  const p = run(FFMPEG, ['-hide_banner', '-skip_frame', 'nokey', '-i', input, '-an', '-vf',
-    `scale=160:90,select=gt(scene\\,${threshold}),showinfo`, '-vsync', '0', '-f', 'null', '-'], { allowFail: true });
-  const timeout = new Promise(r => setTimeout(() => r(null), timeoutMs));
-  const res = await Promise.race([p, timeout]);
+export async function sceneCuts(input, { threshold = 0.35, timeoutMs = 90000, offset = 0, len } = {}) {
+  const res = await run(FFMPEG, ['-hide_banner', '-skip_frame', 'nokey', ...(offset ? ['-ss', String(offset)] : []), ...(len ? ['-t', String(len)] : []),
+    '-i', input, '-an', '-vf', `scale=160:90,select=gt(scene\\,${threshold}),showinfo`, '-fps_mode', 'passthrough', '-f', 'null', '-'],
+    { allowFail: true, timeoutMs }).catch(() => null); // si tarda demasiado se omite: es solo una señal extra
   if (!res) return [];
-  return [...res.err.matchAll(/pts_time:([\d.]+)/g)].map(m => +parseFloat(m[1]).toFixed(2));
+  return [...res.err.matchAll(/Parsed_showinfo.*?pts_time:\s*([\d.]+)/g)].map(m => +(parseFloat(m[1]) + offset).toFixed(2));
 }
 
 const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };

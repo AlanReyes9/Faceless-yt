@@ -5,7 +5,8 @@ import { ffmpeg, run, FFMPEG } from '../video/ffmpeg.js';
 import { getSetting, requireKey } from '../settings.js';
 import { WORK_DIR } from '../db.js';
 import { apiError } from './llm.js';
-import { audioEnergy } from '../video/signals.js';
+import { audioEnergy, sceneCuts } from '../video/signals.js';
+import { proxyBytes } from '../video/netproxy.js';
 
 // 15 min de mp3 mono 32 kbps ≈ 3,6 MB (< 25 MB límite de Whisper) y cabe en un paso de 300 s
 export const CHUNK_SECONDS = 15 * 60;
@@ -36,14 +37,20 @@ async function whisper(file, language) {
 export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language } = {}) {
   const out = path.join(WORK_DIR, `audio_${crypto.randomBytes(5).toString('hex')}.mp3`);
   try {
-    // Una sola lectura del vídeo: extrae el audio y, a la vez, detecta cambios de plano en los fotogramas clave
-    const { err } = await run(FFMPEG, ['-hide_banner', '-loglevel', 'info', '-y', '-skip_frame:v', 'nokey',
-      '-ss', String(offset), '-t', String(len), '-i', input,
-      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', out,
-      '-map', '0:v:0?', '-an', '-vf', 'scale=160:90,select=gt(scene\\,0.35),showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-'],
+    const log = (m, t) => console.log(`[transcribir ${offset}s] ${m}${t ? ` en ${((Date.now() - t) / 1000).toFixed(1)} s` : ''} · descargado ${(proxyBytes() / 1e6).toFixed(0)} MB`);
+    // 1) Audio (imprescindible): sin decodificar el vídeo
+    let t = Date.now();
+    await ffmpeg(['-ss', String(offset), '-t', String(len), '-i', input, '-vn', '-map', '0:a:0', '-ac', '1', '-ar', '16000', '-b:a', '32k', out],
       { timeoutMs: 150000 });
-    const cuts = [...err.matchAll(/Parsed_showinfo.*?pts_time:\s*([\d.]+)/g)].map(m => +(parseFloat(m[1]) + offset).toFixed(2));
-    const [r, energy] = await Promise.all([whisper(out, language), audioEnergy(out, offset).catch(() => [])]);
+    log(`audio extraído (${(fs.statSync(out).size / 1e6).toFixed(1)} MB)`, t);
+    // 2) Whisper + energía del audio, y en paralelo los cambios de plano (opcional: si tarda, se omite)
+    t = Date.now();
+    const cutsP = sceneCuts(input, { offset, len, timeoutMs: 40000 }).then(c => { log(`cambios de plano: ${c.length}`, t); return c; }).catch(() => []);
+    const [r, energy] = await Promise.all([
+      whisper(out, language).then(x => { log('Whisper respondió', t); return x; }),
+      audioEnergy(out, offset).catch(() => []),
+    ]);
+    const cuts = await cutsP;
     const segments = (r.segments || []).map(s => ({ start: s.start + offset, end: s.end + offset, text: s.text.trim() }));
     let words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start + offset, end: w.end + offset }));
     if (!words.length) words = approximateWords(segments);

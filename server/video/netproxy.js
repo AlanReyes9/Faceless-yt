@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 
 const map = new Map(); // id -> { url, at }
+let served = 0;
+/** Bytes descargados por el proxy (diagnóstico). */
+export const proxyBytes = () => served;
 let ready = null, port = 0;
 
 function start() {
@@ -36,7 +39,7 @@ function start() {
         for (const h of ['content-length', 'content-range']) if (r.headers.get(h)) out[h] = r.headers.get(h);
         res.writeHead(r.status, out);
         if (!r.body) return res.end();
-        Readable.fromWeb(r.body).on('error', () => res.destroy()).pipe(res);
+        Readable.fromWeb(r.body).on('data', c => { served += c.length; }).on('error', () => res.destroy()).pipe(res);
       } catch (e) {
         if (!res.headersSent) res.writeHead(502).end(); else res.destroy();
       }
