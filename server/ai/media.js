@@ -90,32 +90,138 @@ export async function download(url, outFile) {
   return outFile;
 }
 
-/**
- * Genera una imagen con OpenAI. Si se pasan imágenes de referencia (Buffers png/jpg),
- * usa el endpoint de edición para mantener la apariencia del personaje.
- * size: '1024x1536' (vertical) | '1536x1024' (horizontal) | '1024x1024'
- */
-export async function generateImage(prompt, { size = '1024x1536', references = [] } = {}) {
-  const key = await requireKey('openai_key', 'generar imágenes');
+// ===================== Generación de imágenes (varios proveedores) =====================
+// Proveedores: openai (gpt-image), gemini ("Nano Banana", modelos de imagen de Gemini) y pollinations (gratis).
+// Si el elegido falla, se prueban los demás con clave; Pollinations queda siempre al final como opción gratuita.
+
+const ratioOf = size => { const [w, h] = String(size).split('x').map(Number); return !w || !h ? '1:1' : w > h ? '16:9' : h > w ? '9:16' : '1:1'; };
+const sniffMime = b => b[0] === 0x89 ? 'image/png' : b[0] === 0xff ? 'image/jpeg' : b[0] === 0x52 ? 'image/webp' : 'image/png';
+
+async function openaiImage(prompt, { size, references }) {
+  const key = await requireKey('openai_key', 'generar imágenes con OpenAI');
   const model = await getSetting('image_model');
+  const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
   let r;
   if (references.length) {
     const form = new FormData();
-    form.append('model', model);
-    form.append('prompt', prompt);
-    form.append('size', size);
-    references.slice(0, 4).forEach((b, i) => form.append('image[]', new Blob([b], { type: 'image/png' }), `ref${i}.png`));
-    r = await fetch((process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/images/edits', { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form });
+    form.append('model', model); form.append('prompt', prompt); form.append('size', size);
+    references.slice(0, 4).forEach((b, i) => form.append('image[]', new Blob([b], { type: sniffMime(b) }), `ref${i}.png`));
+    r = await fetch(base + '/images/edits', { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form, signal: AbortSignal.timeout(150000) });
   } else {
-    r = await fetch((process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/images/generations', {
+    r = await fetch(base + '/images/generations', {
       method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
-      body: JSON.stringify({ model, prompt, size, n: 1 }),
+      body: JSON.stringify({ model, prompt, size, n: 1 }), signal: AbortSignal.timeout(150000),
     });
   }
   const text = await r.text();
-  if (!r.ok) throw new Error(`Error de imagen (${r.status}): ${apiError(text)}`);
+  if (!r.ok) throw new Error(`OpenAI imagen (${r.status}): ${apiError(text)}`);
   const d = JSON.parse(text).data?.[0];
   if (d?.b64_json) return Buffer.from(d.b64_json, 'base64');
   if (d?.url) return Buffer.from(await (await fetch(d.url)).arrayBuffer());
-  throw new Error('La API de imágenes no devolvió ninguna imagen.');
+  throw new Error('OpenAI no devolvió ninguna imagen.');
+}
+
+// --- Gemini: se buscan los modelos de imagen disponibles con la clave ---
+let geminiImageModels = { at: 0, list: [] };
+const GEMINI_BASE = () => process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+async function geminiImageChain(key) {
+  const fixed = String(await getSetting('gemini_image_model') || '').trim();
+  if (fixed) return [fixed];
+  if (Date.now() - geminiImageModels.at > 6 * 3600e3 || !geminiImageModels.list.length) {
+    try {
+      const r = await fetch(`${GEMINI_BASE()}/models?pageSize=200`, { headers: { 'x-goog-api-key': key }, signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        const names = ((await r.json()).models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+          .map(m => String(m.name).replace(/^models\//, '')).filter(n => /^gemini-.*image/.test(n) && !/tts|audio|embed/.test(n));
+        const ver = n => parseFloat((n.match(/^gemini-(\d+(?:\.\d+)?)/) || [0, 0])[1]);
+        names.sort((a, b) => ver(b) - ver(a) || (/flash/.test(a) ? 0 : 1) - (/flash/.test(b) ? 0 : 1)); // los más nuevos y rápidos primero
+        geminiImageModels = { at: Date.now(), list: names };
+      }
+    } catch {}
+  }
+  return geminiImageModels.list.length ? geminiImageModels.list.slice(0, 3) : ['gemini-2.5-flash-image'];
+}
+
+async function geminiImage(prompt, { size, references }) {
+  const key = await requireKey('gemini_key', 'generar imágenes con Gemini');
+  const parts = [{ text: prompt }, ...references.slice(0, 3).map(b => ({ inlineData: { mimeType: sniffMime(b), data: Buffer.from(b).toString('base64') } }))];
+  let lastErr;
+  for (const model of await geminiImageChain(key)) {
+    // Se intenta con proporción y solo imagen; si el modelo no admite esos campos, se repite sin ellos
+    for (const cfg of [{ responseModalities: ['IMAGE'], imageConfig: { aspectRatio: ratioOf(size) } }, { responseModalities: ['TEXT', 'IMAGE'] }]) {
+      try {
+        const r = await fetch(`${GEMINI_BASE()}/models/${encodeURIComponent(model)}:generateContent`, {
+          method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+          body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: cfg }), signal: AbortSignal.timeout(120000),
+        });
+        const text = await r.text();
+        if (!r.ok) {
+          const err = new Error(`Gemini imagen ${model} (${r.status}): ${apiError(text)}`);
+          if (r.status === 400 && /imageConfig|aspect|modalit|response_modalities/i.test(text)) { lastErr = err; continue; }
+          throw err;
+        }
+        const img = (JSON.parse(text).candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data || p.inline_data?.data);
+        if (img) return Buffer.from((img.inlineData || img.inline_data).data, 'base64');
+        throw new Error(`Gemini ${model} no devolvió ninguna imagen (puede haberla bloqueado por seguridad).`);
+      } catch (e) {
+        lastErr = e.name === 'TimeoutError' ? new Error(`Gemini ${model} tardó demasiado en generar la imagen.`) : e;
+        break; // probar el siguiente modelo
+      }
+    }
+  }
+  throw lastErr || new Error('No hay modelos de imagen de Gemini disponibles con esta clave.');
+}
+
+// --- Pollinations: gratis sin clave (con marca de agua); con clave, sin marca y mejores modelos ---
+async function pollinationsImage(prompt, { size }) {
+  const [w, h] = { '9:16': [768, 1344], '16:9': [1344, 768], '1:1': [1024, 1024] }[ratioOf(size)];
+  const key = await getSetting('pollinations_key');
+  const model = await getSetting('pollinations_model');
+  const seed = Math.floor(Math.random() * 1e9);
+  const q = new URLSearchParams({ width: w, height: h, nologo: 'true', seed: String(seed), ...(model ? { model } : {}) });
+  const url = key ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt.slice(0, 1500))}?${q}`
+    : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1500))}?${q}`;
+  for (let attempt = 1; ; attempt++) {
+    const r = await fetch(url, { headers: key ? { authorization: 'Bearer ' + key } : {}, signal: AbortSignal.timeout(120000) })
+      .catch(e => { throw new Error(e.name === 'TimeoutError' ? 'Pollinations tardó demasiado.' : 'No se pudo conectar con Pollinations: ' + e.message); });
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return buf;
+    const body = buf.toString('utf8');
+    // Sin clave: límite gratuito (1 imagen cada ~45 s por IP). Se espera lo que indique y se reintenta una vez.
+    const wait = Number(body.match(/Retry after (\d+)/i)?.[1] || r.headers.get('retry-after'));
+    if ((r.status === 402 || r.status === 429) && attempt === 1 && wait > 0 && wait <= 60) {
+      console.log(`[imagen] Pollinations: límite gratuito, esperando ${wait} s…`);
+      await new Promise(res => setTimeout(res, (wait + 1) * 1000));
+      continue;
+    }
+    throw new Error(`Pollinations (${r.status}): ${body.slice(0, 200)}${r.status === 402 ? ' — con una clave de Pollinations (Ajustes) no hay límite.' : ''}`);
+  }
+}
+
+const IMAGE_PROVIDERS = { openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null } };
+
+/**
+ * Genera una imagen con el proveedor elegido en Ajustes; si falla, prueba los demás.
+ * size: '1024x1536' (vertical) | '1536x1024' (horizontal) | '1024x1024'.
+ * references: Buffers de imágenes del personaje para mantener su aspecto (OpenAI y Gemini).
+ */
+export async function generateImage(prompt, { size = '1024x1536', references = [], provider } = {}) {
+  const preferred = provider || await getSetting('image_provider');
+  const order = [preferred];
+  if (!provider) for (const p of ['gemini', 'openai', 'pollinations']) if (p !== preferred && (!IMAGE_PROVIDERS[p].key || await getSetting(IMAGE_PROVIDERS[p].key))) order.push(p);
+  let lastErr;
+  for (const p of order) {
+    const prov = IMAGE_PROVIDERS[p];
+    if (!prov) continue;
+    try {
+      const out = await prov.fn(prompt, { size, references });
+      if (p !== preferred) console.log(`[imagen] generada con ${p} (respaldo de ${preferred})`);
+      return out;
+    } catch (e) {
+      lastErr = e;
+      if (provider) throw e;
+      console.warn(`[imagen] ${p} falló: ${e.message.slice(0, 160)}`);
+    }
+  }
+  throw lastErr || new Error('No se pudo generar la imagen.');
 }

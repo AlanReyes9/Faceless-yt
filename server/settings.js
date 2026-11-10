@@ -39,6 +39,7 @@ export const FIELDS = {
   groq_key: { secret: true, label: 'Groq API key (transcripción Whisper barata)', group: 'IA de texto / voz / transcripción' },
   openrouter_key: { secret: true, label: 'OpenRouter API key', group: 'IA de texto / voz / transcripción' },
   elevenlabs_key: { secret: true, label: 'ElevenLabs API key', group: 'Voz' },
+  pollinations_key: { secret: true, label: 'Pollinations API key (opcional: imágenes sin marca de agua)', group: 'Material' },
   pixabay_key: { secret: true, label: 'Pixabay API key (vídeos de stock, gratis)', group: 'Material' },
   pexels_key: { secret: true, label: 'Pexels API key (vídeos de stock, opcional)', group: 'Material' },
   youtube_api_key: { secret: true, label: 'YouTube Data API key (Analizador)', group: 'Material' },
@@ -57,7 +58,10 @@ export const FIELDS = {
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
   elevenlabs_voice_id: { secret: false, default: 'pNInz6obpgDQGcFmaJgB', label: 'ElevenLabs voice ID', group: 'Preferencias' },
   cleanup_days: { secret: false, default: '7', label: 'Borrar vídeos originales tras (días, 0 = nunca)', options: ['0', '1', '3', '7', '14', '30'], group: 'Almacenamiento' },
+  image_provider: { secret: false, default: 'openai', label: 'Proveedor de imágenes (si falla se prueban los demás)', options: ['openai', 'gemini', 'pollinations'], group: 'Preferencias' },
   image_model: { secret: false, default: 'gpt-image-1', label: 'Modelo de imágenes OpenAI', group: 'Preferencias' },
+  gemini_image_model: { secret: false, default: '', label: 'Modelo de imágenes Gemini (vacío = automático)', group: 'Preferencias' },
+  pollinations_model: { secret: false, default: 'flux', label: 'Modelo de Pollinations', group: 'Preferencias' },
   caption_color: { secret: false, default: '#FFD400', label: 'Color de palabra resaltada', group: 'Preferencias' },
 };
 

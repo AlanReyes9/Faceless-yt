@@ -25,6 +25,7 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 - **Texto:** OpenAI, Anthropic (Claude), Google Gemini, OpenRouter
 - **Transcripción:** OpenAI Whisper o Groq (más barato)
 - **Voz:** OpenAI TTS o ElevenLabs
+- **Imágenes:** OpenAI, Gemini ("Nano Banana") o Pollinations (gratis), con respaldo automático
 - **Stock:** Pixabay (gratis) o Pexels
 - **Publicación:** YouTube Data API v3 (OAuth de Google)
 

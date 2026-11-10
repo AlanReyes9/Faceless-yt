@@ -842,7 +842,7 @@ routes.ayuda = () => {
   <div class="card stack"><h2>¿Qué claves necesito?</h2>
     <p><b>Mínimo para Shorts:</b> una clave de <b>OpenAI</b> (transcribe con Whisper y escribe títulos y ganchos). Alternativa más barata: <b>Groq</b> para transcribir + Claude/Gemini/OpenRouter para el texto.</p>
     <p><b>Vídeo completo, anuncios y montajes:</b> IA de texto + voz (<b>OpenAI TTS</b> o <b>ElevenLabs</b>) + <b>Pixabay</b> (gratis; regístrate en pixabay.com y copia tu clave en pixabay.com/api/docs) o Pexels para vídeos de stock.</p>
-    <p><b>Personaje IA:</b> OpenAI (modelo de imágenes gpt-image-1).</p>
+    <p><b>Imágenes (Personaje IA):</b> elige el proveedor en Ajustes: <b>OpenAI</b>, <b>Gemini</b> (con tu clave de Gemini) o <b>Pollinations</b> (gratis, sin clave; con marca de agua y una imagen cada ~45 s). Si el elegido falla, se usan los demás.</p>
     <p><b>Analizador:</b> una <b>YouTube Data API key</b> (gratis en Google Cloud) o un canal conectado.</p>
     <p><b>Publicar:</b> credenciales OAuth de Google (gratis).</p></div>
   <div class="card stack"><h2>Herramientas</h2><ul>
