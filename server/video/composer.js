@@ -7,7 +7,7 @@ import { ffmpeg, probe, assFilter } from './ffmpeg.js';
 import { buildASS } from './ass.js';
 import { wordTimings } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
-import { tts, pexelsVideo, download, generateImage } from '../ai/media.js';
+import { tts, stockVideo, download, generateImage } from '../ai/media.js';
 import { getSetting } from '../settings.js';
 import { register, enqueue } from '../jobs.js';
 import { saveFile, saveBuffer, inputPath, toLocal, removeFile } from '../storage.js';
@@ -134,9 +134,9 @@ register('compose.scene', async ({ id, i }, ctx) => {
       iw = info.width; ih = info.height;
       kind = IMG_EXT.test(media) || info.duration < 0.2 ? 'image' : 'video';
       if (kind === 'video' && !useVoice) dur = Math.min(info.duration || dur, Number(s.duration) || 600);
-    } else if (o.visual !== 'none' && (await getSetting('pexels_key'))) {
+    } else if (o.visual !== 'none' && ((await getSetting('pixabay_key')) || (await getSetting('pexels_key')))) {
       const used = new Set((p.data.usedStock || []));
-      const v = await pexelsVideo(s.search || p.data.script.title, { orientation: vertical ? 'portrait' : 'landscape', exclude: used }).catch(() => null);
+      const v = await stockVideo(s.search || p.data.script.title, { orientation: vertical ? 'portrait' : 'landscape', exclude: used }).catch(() => null);
       if (v) {
         input = await download(v.url, t('stock.mp4'));
         kind = 'video'; iw = vertical ? 1080 : 1920; ih = vertical ? 1920 : 1080;

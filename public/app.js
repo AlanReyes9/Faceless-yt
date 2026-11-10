@@ -451,10 +451,10 @@ routes.completo = async (_, params) => {
         <div style="flex:1"><label>Formato</label><select name="format"><option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16 (Short)</option></select></div></div>
       <div><label>Estilo de narración</label><input name="style" value="documental, narrativo, con intriga"></div>
       <div class="row"><div style="flex:1"><label>Imágenes del vídeo</label><select name="visual">
-          <option value="stock">Vídeos de stock (Pexels)</option><option value="character" ${preChar ? 'selected' : ''}>Imágenes IA con mi personaje</option><option value="none">Fondo liso</option></select></div>
+          <option value="stock">Vídeos de stock (Pixabay / Pexels)</option><option value="character" ${preChar ? 'selected' : ''}>Imágenes IA con mi personaje</option><option value="none">Fondo liso</option></select></div>
         <div style="flex:1"><label>Personaje (narrador)</label><select name="characterId"><option value="">Ninguno</option>${chars.map(c => `<option value="${c.id}" ${c.id == preChar ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos</label>
-      <div class="muted small">Voz: ${settings.values.tts_provider} · Stock: ${settings.values.pexels_key ? 'Pexels ✓' : '<span class="err">sin clave de Pexels (fondo liso)</span>'}</div>
+      <div class="muted small">Voz: ${settings.values.tts_provider} · Stock: ${settings.values.pixabay_key || settings.values.pexels_key ? [settings.values.pixabay_key && 'Pixabay ✓', settings.values.pexels_key && 'Pexels ✓'].filter(Boolean).join(' · ') : '<span class="err">sin clave de vídeos de stock (fondo liso): añade Pixabay en Ajustes</span>'}</div>
       <div class="row"><button type="button" class="btn" id="draft">✎ Generar guion para revisar</button><button class="btn gold" id="go">▶ Crear vídeo directamente</button></div>
     </form>
     <div class="card" id="script"><h2>Guion</h2><p class="muted">Genera un borrador para revisarlo y editarlo antes de producir el vídeo.</p></div>
@@ -841,7 +841,7 @@ routes.ayuda = () => {
   main.innerHTML = `<h1>Ayuda</h1><p class="sub">Cómo sacar partido a tu estudio.</p><div class="grid g2">
   <div class="card stack"><h2>¿Qué claves necesito?</h2>
     <p><b>Mínimo para Shorts:</b> una clave de <b>OpenAI</b> (transcribe con Whisper y escribe títulos y ganchos). Alternativa más barata: <b>Groq</b> para transcribir + Claude/Gemini/OpenRouter para el texto.</p>
-    <p><b>Vídeo completo, anuncios y montajes:</b> IA de texto + voz (<b>OpenAI TTS</b> o <b>ElevenLabs</b>) + <b>Pexels</b> (gratis) para vídeos de stock.</p>
+    <p><b>Vídeo completo, anuncios y montajes:</b> IA de texto + voz (<b>OpenAI TTS</b> o <b>ElevenLabs</b>) + <b>Pixabay</b> (gratis; regístrate en pixabay.com y copia tu clave en pixabay.com/api/docs) o Pexels para vídeos de stock.</p>
     <p><b>Personaje IA:</b> OpenAI (modelo de imágenes gpt-image-1).</p>
     <p><b>Analizador:</b> una <b>YouTube Data API key</b> (gratis en Google Cloud) o un canal conectado.</p>
     <p><b>Publicar:</b> credenciales OAuth de Google (gratis).</p></div>

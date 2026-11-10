@@ -27,22 +27,59 @@ export async function tts(text, outFile, { voice: voiceOverride } = {}) {
   return outFile;
 }
 
-/** Busca un vídeo de stock en Pexels y devuelve la URL del archivo más adecuado. */
-export async function pexelsVideo(query, { orientation = 'landscape', exclude = new Set() } = {}) {
-  const key = await requireKey('pexels_key', 'buscar vídeos de stock');
+/** Busca un vídeo de stock en Pexels. */
+async function pexelsSearch(key, query, orientation, exclude) {
   const r = await fetch(`https://api.pexels.com/videos/search?per_page=15&orientation=${orientation}&query=${encodeURIComponent(query)}`, {
-    headers: { authorization: key },
+    headers: { authorization: key }, signal: AbortSignal.timeout(20000),
   });
-  if (!r.ok) throw new Error(`Error de Pexels (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) throw new Error(`Error de Pexels (${r.status}): ${apiError(await r.text())}`);
   const j = await r.json();
   for (const v of j.videos || []) {
-    if (exclude.has(v.id)) continue;
+    if (exclude.has('px' + v.id)) continue;
     const files = (v.video_files || []).filter(f => f.file_type === 'video/mp4' && f.width && f.height)
       .sort((a, b) => Math.abs(a.height - 1080) - Math.abs(b.height - 1080));
-    if (files[0]) { exclude.add(v.id); return { url: files[0].link, id: v.id, duration: v.duration }; }
+    if (files[0]) { exclude.add('px' + v.id); return { url: files[0].link, id: 'px' + v.id, duration: v.duration, source: 'Pexels' }; }
   }
   return null;
 }
+
+/** Busca un vídeo de stock en Pixabay (gratis, sin atribución obligatoria). */
+async function pixabaySearch(key, query, orientation, exclude) {
+  const qs = new URLSearchParams({ key, q: String(query).slice(0, 100), per_page: '30', safesearch: 'true', video_type: 'film' });
+  const r = await fetch(`https://pixabay.com/api/videos/?${qs}`, { signal: AbortSignal.timeout(20000) });
+  if (!r.ok) throw new Error(`Error de Pixabay (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  const j = await r.json();
+  const wantPortrait = orientation === 'portrait';
+  // Se prefieren vídeos con la orientación del proyecto; si no hay, cualquiera (se encuadra igual)
+  const hits = (j.hits || []).filter(h => !exclude.has('pb' + h.id));
+  const pickFile = h => Object.values(h.videos || {}).filter(f => f?.url && f.width && f.height)
+    .sort((a, b) => Math.abs(Math.max(a.width, a.height) - 1920) - Math.abs(Math.max(b.width, b.height) - 1920))[0];
+  const oriented = hits.filter(h => { const f = pickFile(h); return f && (f.height > f.width) === wantPortrait; });
+  for (const h of [...oriented, ...hits]) {
+    const f = pickFile(h);
+    if (f) { exclude.add('pb' + h.id); return { url: f.url, id: 'pb' + h.id, duration: h.duration, source: 'Pixabay' }; }
+  }
+  return null;
+}
+
+/**
+ * Busca un vídeo de stock: Pexels si hay clave, y si no encuentra nada o falla, Pixabay.
+ * Devuelve { url, id, duration, source } o null.
+ */
+export async function stockVideo(query, { orientation = 'landscape', exclude = new Set() } = {}) {
+  const pexels = await getSetting('pexels_key'), pixabay = await getSetting('pixabay_key');
+  if (!pexels && !pixabay) throw new Error('Falta una clave de vídeos de stock (Pixabay o Pexels). Añádela en Ajustes y claves.');
+  let lastErr = null;
+  for (const [key, fn] of [[pexels, pexelsSearch], [pixabay, pixabaySearch]]) {
+    if (!key) continue;
+    try { const v = await fn(key, query, orientation, exclude); if (v) return v; }
+    catch (e) { lastErr = e; console.warn('stock:', e.message); }
+  }
+  if (lastErr) throw lastErr;
+  return null;
+}
+/** Compatibilidad con el nombre anterior. */
+export const pexelsVideo = stockVideo;
 
 export async function download(url, outFile) {
   const r = await fetch(url);
