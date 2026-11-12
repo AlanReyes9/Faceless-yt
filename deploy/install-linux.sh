@@ -63,9 +63,9 @@ npm ci --omit=dev --no-audit --no-fund
 "$NODE_BIN" node_modules/ffmpeg-static/install.js >/dev/null 2>&1 || true
 "$NODE_BIN" -e "require('fs').accessSync(require('ffmpeg-static'))" || { echo "No se pudo instalar ffmpeg."; exit 1; }
 
-# ---------- 4. yt-dlp (importar vídeos desde enlaces de YouTube) ----------
-if ! command -v yt-dlp >/dev/null; then
-  say "Instalando yt-dlp…"
+# ---------- 4. yt-dlp (enlaces de YouTube, Twitch y Kick; se actualiza en cada instalación porque estas webs cambian a menudo) ----------
+if ! command -v yt-dlp >/dev/null || [ -x "$BIN/yt-dlp" ]; then
+  say "Instalando/actualizando yt-dlp…"
   if curl -fsSL -o "$BIN/yt-dlp" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux$([ "$A" = arm64 ] && echo _aarch64)"; then
     chmod +x "$BIN/yt-dlp"
   else echo "  (no se pudo instalar yt-dlp; la app funciona igual subiendo archivos)"; fi

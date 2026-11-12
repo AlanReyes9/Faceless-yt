@@ -247,8 +247,10 @@ app.post('/api/shorts', h(async (req, res) => {
 // Clips de un vídeo en directo
 app.post('/api/live', h(async (req, res) => {
   const b = req.body;
-  const url = String(b.url || '').trim();
+  let url = String(b.url || '').trim();
+  if (/^(www\.|m\.)?(youtube\.com|youtu\.be|twitch\.tv|kick\.com)\//i.test(url)) url = 'https://' + url; // enlaces pegados sin https://
   if (!/^(https?|rtmps?|srt|rtsp):\/\//i.test(url)) throw new Error('Pega el enlace del directo (YouTube, Twitch, Kick… o un enlace .m3u8).');
+  const platform = /twitch\.tv/i.test(url) ? 'Twitch' : /kick\.com/i.test(url) ? 'Kick' : /youtube\.com|youtu\.be/i.test(url) ? 'YouTube' : null;
   if (IS_VERCEL && !/\.m3u8(\?|$)/i.test(url)) throw new Error('En la versión de Vercel solo se pueden usar enlaces directos .m3u8. Para YouTube, Twitch o Kick instala la app en tu PC (ver Ayuda).');
   const options = {
     layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
@@ -257,7 +259,7 @@ app.post('/api/live', h(async (req, res) => {
     segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
     perSegment: Math.min(5, Math.max(1, Number(b.perSegment) || 3)),
   };
-  const p = await insert('projects', { type: 'live', title: b.title || 'Directo ' + new Date().toLocaleString('es'), channel_id: Number(b.channel_id) || null,
+  const p = await insert('projects', { type: 'live', title: b.title || `Directo${platform ? ' de ' + platform : ''} ${url.split('/').filter(Boolean).pop()?.split('?')[0] || ''} · ${new Date().toLocaleDateString('es')}`, channel_id: Number(b.channel_id) || null,
     source_url: url, status: 'processing', data: { options, live: {} }, progress: '🔴 Conectando con el directo…' });
   await enqueue('live.capture', { id: p.id, seg: 0 });
   res.json({ id: p.id });

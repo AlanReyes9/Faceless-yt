@@ -296,7 +296,7 @@ routes.directo = async () => {
   <form id="f" class="grid g2">
     <div class="card stack">
       <h2>1. Directo</h2>
-      <div><label>Enlace del directo</label><input name="url" required placeholder="${sys.vercel ? 'https://…/playlist.m3u8' : 'https://www.youtube.com/watch?v=… · twitch.tv/… · kick.com/… · .m3u8'}"></div>
+      <div><label>Enlace del directo <span class="muted">— YouTube, Twitch, Kick o .m3u8</span></label><input name="url" required placeholder="${sys.vercel ? 'https://…/playlist.m3u8' : 'https://www.youtube.com/watch?v=… · twitch.tv/… · kick.com/… · .m3u8'}"></div>
       <div><label>Título del proyecto (opcional)</label><input name="title"></div>
       <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
       <div class="row"><div style="flex:1"><label>Grabar como máximo (min)</label><input type="number" name="maxMinutes" value="120" min="5" max="600"></div>
