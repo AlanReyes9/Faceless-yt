@@ -56,7 +56,7 @@ Descarga el instalador en la página **Releases** del repositorio:
 
 La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan los enlaces de YouTube, Twitch y Kick (también en directo), sin límite de 5 minutos ni de espacio. Todo se guarda en tu ordenador: menú *Archivo → Abrir carpeta de datos*. Tus claves API se configuran en *Ajustes y claves*, igual que en la web.
 
-**Compilar los instaladores:** se generan solos con GitHub Actions al crear una etiqueta (`git tag v0.2.0 && git push --tags`), o a mano en *Actions → App de escritorio → Run workflow*. Para probar en local: `npm install -D electron electron-builder` y después `npx electron-builder --config desktop/electron-builder.yml --linux dir`.
+**Compilar los instaladores:** se generan solos con GitHub Actions al crear una etiqueta (`git tag v0.2.0 && git push --tags`), o a mano en *Actions → App de escritorio → Run workflow* escribiendo la versión. Para probar en local: `npm install -D electron electron-builder` y después `npx electron-builder --config desktop/electron-builder.yml --linux dir`.
 
 ## Instalación en tu PC con Linux (espacio ilimitado)
 
