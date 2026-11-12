@@ -1,4 +1,4 @@
-// Faceless Studio de escritorio (Windows / macOS / Linux).
+// Clippers Pro de escritorio (Windows / macOS / Linux).
 // Arranca el mismo servidor de la web dentro de la app (base de datos y vídeos en tu ordenador)
 // y lo muestra en una ventana. ffmpeg y yt-dlp van incluidos.
 import { app, BrowserWindow, shell, Menu, dialog } from 'electron';
@@ -52,13 +52,13 @@ async function startServer() {
   startLocalWorker();
   const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
   setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);
-  console.log('Faceless Studio (escritorio) en', process.env.PUBLIC_URL, '· datos:', process.env.DATA_DIR);
+  console.log('Clippers Pro (escritorio) en', process.env.PUBLIC_URL, '· datos:', process.env.DATA_DIR);
   return `http://localhost:${real}`;
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1360, height: 880, minWidth: 900, minHeight: 600, backgroundColor: '#0f1013', title: 'Faceless Studio',
+    width: 1360, height: 880, minWidth: 900, minHeight: 600, backgroundColor: '#0f1013', title: 'Clippers Pro',
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -98,7 +98,7 @@ app.whenReady().then(async () => {
     baseUrl = await startServer();
   } catch (e) {
     console.error('arranque:', e);
-    dialog.showErrorBox('Faceless Studio no pudo arrancar', `${e.message}\n\nRegistro: ${logFile}`);
+    dialog.showErrorBox('Clippers Pro no pudo arrancar', `${e.message}\n\nRegistro: ${logFile}`);
     return app.quit();
   }
   buildMenu(logFile);

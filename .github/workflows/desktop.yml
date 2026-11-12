@@ -83,7 +83,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version != '' && format('v{0}', inputs.version) || github.ref_name }}
-          name: Faceless Studio ${{ inputs.version != '' && format('v{0}', inputs.version) || github.ref_name }}
+          name: Clippers Pro ${{ inputs.version != '' && format('v{0}', inputs.version) || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: |
             dist-desktop/*.exe

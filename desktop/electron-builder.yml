@@ -1,8 +1,8 @@
 # Empaquetado de escritorio. Se ejecuta desde la raíz del repositorio:
 #   npx electron-builder --config desktop/electron-builder.yml --win   (o --mac / --linux)
-appId: com.facelessstudio.app
-productName: Faceless Studio
-copyright: Faceless Studio
+appId: com.facelessstudio.app   # se mantiene para que la nueva versión actualice la ya instalada
+productName: Clippers Pro
+copyright: Clippers Pro
 extraMetadata:
   main: desktop/main.js
 directories:
@@ -25,23 +25,23 @@ extraResources:
 win:
   target: [{ target: nsis, arch: [x64] }]
   icon: desktop/build/icon.png
-  artifactName: FacelessStudio-Setup-${version}.${ext}
+  artifactName: ClippersPro-Setup-${version}.${ext}
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
-  shortcutName: Faceless Studio
+  shortcutName: Clippers Pro
 mac:
   target: [{ target: dmg }]
   category: public.app-category.video
   icon: desktop/build/icon.png
   identity: "-"        # firma local (ad-hoc), sin certificado de Apple: ver instrucciones para abrirla la primera vez
-  artifactName: FacelessStudio-${version}-mac-${arch}.${ext}
+  artifactName: ClippersPro-${version}-mac-${arch}.${ext}
 dmg:
-  title: Faceless Studio
+  title: Clippers Pro
 linux:
   target: [AppImage]
   category: Video
   icon: desktop/build/icon.png
-  artifactName: FacelessStudio-${version}-linux.${ext}
+  artifactName: ClippersPro-${version}-linux.${ext}

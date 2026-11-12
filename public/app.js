@@ -1,4 +1,4 @@
-// Faceless Studio — frontend sin dependencias (SPA con rutas por hash)
+// Clippers Pro — frontend sin dependencias (SPA con rutas por hash)
 const $ = (s, el = document) => el.querySelector(s);
 const main = $('#main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

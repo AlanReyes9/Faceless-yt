@@ -7,7 +7,7 @@ import { STORAGE_MODE } from './storage.js';
 
 const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, () => {
-  console.log(`Faceless Studio en http://localhost:${PORT}  ·  base de datos: ${DB_MODE}  ·  archivos: ${STORAGE_MODE}${process.env.APP_PASSWORD ? '' : '  ·  ⚠ sin contraseña (define APP_PASSWORD)'}`);
+  console.log(`Clippers Pro en http://localhost:${PORT}  ·  base de datos: ${DB_MODE}  ·  archivos: ${STORAGE_MODE}${process.env.APP_PASSWORD ? '' : '  ·  ⚠ sin contraseña (define APP_PASSWORD)'}`);
   if (process.env.WORKER !== '0') {
     startLocalWorker();
     // Limpieza de originales: al arrancar y cada 6 horas

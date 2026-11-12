@@ -1,4 +1,4 @@
-# Faceless Studio
+# Clippers Pro
 
 Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Funciona con **tus propias claves API**: solo pagas lo que uses en cada proveedor.
 
@@ -50,9 +50,9 @@ Límites en Vercel: cada paso tiene un máximo de 300 s y no se pueden importar 
 
 Descarga el instalador en la página **Releases** del repositorio:
 
-- **Windows:** `FacelessStudio-Setup-x.y.z.exe`. Si aparece "Windows protegió su PC", pulsa *Más información → Ejecutar de todas formas* (la app no tiene firma de pago de Microsoft).
-- **Mac con Apple Silicon (M1–M4):** `FacelessStudio-x.y.z-mac-arm64.dmg`. **Mac Intel:** `…-mac-x64.dmg`. Arrastra la app a *Aplicaciones*. Como no está firmada por Apple, la primera vez abre la Terminal y ejecuta:
-  `xattr -cr "/Applications/Faceless Studio.app"`, y después ábrela normalmente.
+- **Windows:** `ClippersPro-Setup-x.y.z.exe`. Si aparece "Windows protegió su PC", pulsa *Más información → Ejecutar de todas formas* (la app no tiene firma de pago de Microsoft).
+- **Mac con Apple Silicon (M1–M4):** `ClippersPro-x.y.z-mac-arm64.dmg`. **Mac Intel:** `…-mac-x64.dmg`. Arrastra la app a *Aplicaciones*. Como no está firmada por Apple, la primera vez abre la Terminal y ejecuta:
+  `xattr -cr "/Applications/Clippers Pro.app"`, y después ábrela normalmente.
 
 La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan los enlaces de YouTube, Twitch y Kick (también en directo), sin límite de 5 minutos ni de espacio. Todo se guarda en tu ordenador: menú *Archivo → Abrir carpeta de datos*. Tus claves API se configuran en *Ajustes y claves*, igual que en la web.
 
