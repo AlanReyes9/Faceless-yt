@@ -14,7 +14,7 @@ let ready = null, port = 0;
 function start() {
   return (ready ||= new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
-      const entry = map.get(req.url.slice(1).split('?')[0]);
+      const entry = map.get(req.url.slice(1).split(/[/?]/)[0]);
       if (!entry) { res.writeHead(404).end(); return; }
       entry.at = Date.now();
       const ac = new AbortController();
@@ -26,6 +26,13 @@ function start() {
         if (isHead) headers.range = 'bytes=0-0';
         else if (req.headers.range) headers.range = req.headers.range;
         const r = await fetch(entry.url, { headers, signal: ac.signal });
+        // Listas HLS (directos): se reescriben sus URLs para que cada segmento también pase por el proxy
+        const ctype = r.headers.get('content-type') || '';
+        if (!isHead && (/mpegurl/i.test(ctype) || /\.m3u8(\?|$)/i.test(entry.url)) && r.ok) {
+          const text = await rewriteM3u8(await r.text(), r.url || entry.url);
+          res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-cache' });
+          return res.end(text);
+        }
         const out = {};
         for (const h of ['content-type', 'last-modified', 'etag']) if (r.headers.get(h)) out[h] = r.headers.get(h);
         out['accept-ranges'] = 'bytes';
@@ -51,15 +58,36 @@ function start() {
 }
 
 // Limpieza de entradas viejas (las URL firmadas duran horas; aquí basta con 6 h)
-setInterval(() => { const lim = Date.now() - 6 * 3600e3; for (const [k, v] of map) if (v.at < lim) map.delete(k); }, 600000).unref();
+setInterval(() => { const lim = Date.now() - 6 * 3600e3; for (const [k, v] of map) if (v.at < lim) { map.delete(k); byUrl.delete(v.url); } }, 600000).unref();
+
+const byUrl = new Map(); // url -> id (para no crear entradas nuevas en cada refresco de una lista en directo)
 
 /** Convierte una URL remota en una local servida por el proxy. Las rutas locales no cambian. */
 export async function localUrl(input) {
   if (!/^https?:\/\//.test(input) || /^http:\/\/127\.0\.0\.1:/.test(input)) return input;
   await start();
-  const id = crypto.randomBytes(9).toString('hex');
-  map.set(id, { url: input, at: Date.now() });
-  return `http://127.0.0.1:${port}/${id}`;
+  let id = byUrl.get(input);
+  if (!id || !map.has(id)) {
+    id = crypto.randomBytes(9).toString('hex');
+    map.set(id, { url: input, at: Date.now() });
+    byUrl.set(input, id);
+  }
+  // se conserva el nombre del archivo (con su extensión): el lector HLS de ffmpeg rechaza segmentos sin extensión conocida
+  let name = 'f';
+  try { name = decodeURIComponent(new URL(input).pathname.split('/').pop() || 'f').replace(/[^\w.-]+/g, '_').slice(-80) || 'f'; } catch {}
+  return `http://127.0.0.1:${port}/${id}/${name}`;
+}
+
+/** Reescribe una lista m3u8: segmentos, sublistas y claves pasan a URLs del proxy. */
+async function rewriteM3u8(text, base) {
+  const abs = u => { try { return new URL(u, base).href; } catch { return u; } };
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line && !line.startsWith('#')) { out.push(await localUrl(abs(line.trim()))); continue; }
+    const m = line.match(/URI="([^"]+)"/);
+    out.push(m ? line.replace(m[0], `URI="${await localUrl(abs(m[1]))}"`) : line);
+  }
+  return out.join('\n');
 }
 
 /** Reescribe los argumentos de ffmpeg: cada "-i <url remota>" pasa por el proxy local. */

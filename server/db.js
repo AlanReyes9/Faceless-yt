@@ -45,6 +45,13 @@ ALTER TABLE clips ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS stage TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS percent INT DEFAULT 0;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS src TEXT;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS src_offset REAL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS live_segments (
+  id SERIAL PRIMARY KEY, project_id INT NOT NULL, seg INT NOT NULL, ref TEXT, start REAL, dur REAL,
+  words JSONB, segments JSONB, energy JSONB, analyzed BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (project_id, seg)
+);
 CREATE TABLE IF NOT EXISTS calendar (
   id SERIAL PRIMARY KEY, date TEXT NOT NULL, title TEXT NOT NULL, notes TEXT,
   channel_id INT, kind TEXT DEFAULT 'short', done BOOLEAN DEFAULT false
@@ -62,6 +69,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   attempts INT DEFAULT 0, error TEXT, locked_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, id);
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lane TEXT DEFAULT 'work';
 `;
 
 let ready;

@@ -12,6 +12,14 @@ export const FONTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url
 
 export class TimeoutError extends Error {}
 
+// El ffmpeg estático (glibc estática) se cuelga si carga los módulos iconv del sistema (p. ej. al leer
+// MPEG-TS de directos o listas HLS). Con GCONV_PATH apuntando a una carpeta vacía no los carga.
+import os from 'node:os';
+import fs from 'node:fs';
+const GCONV_EMPTY = path.join(os.tmpdir(), 'faceless-gconv-empty');
+try { fs.mkdirSync(GCONV_EMPTY, { recursive: true }); } catch {}
+const FF_ENV = { ...process.env, GCONV_PATH: GCONV_EMPTY };
+
 /**
  * Ejecuta un proceso. timeoutMs: lo detiene a tiempo (antes de que el servidor corte la función).
  * onStdout recibe cada trozo de salida estándar (se usa para el progreso de ffmpeg).
@@ -21,7 +29,7 @@ export async function run(cmd, args, { onStderr, onStdout, allowFail = false, ti
   if (cmd === FFMPEG) args = await proxyArgs(args);
   return new Promise((resolve, reject) => {
     if (timeoutMs !== undefined && timeoutMs <= 0) return reject(new TimeoutError('No queda tiempo en esta ejecución del servidor.'));
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...(cmd === FFMPEG || /ffprobe/.test(cmd) ? { env: FF_ENV } : {}) });
     let out = '', err = '', timedOut = false;
     const timer = timeoutMs > 0 && Number.isFinite(timeoutMs) ? setTimeout(() => { timedOut = true; p.kill('SIGKILL'); }, timeoutMs) : null;
     p.stdout.on('data', d => { if (onStdout) onStdout(String(d)); else { out += d; if (out.length > 200000) out = out.slice(-100000); } });

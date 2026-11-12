@@ -12,6 +12,7 @@ import { generateImage } from './ai/media.js';
 import { run, FFMPEG } from './video/ffmpeg.js';
 import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
+import { setLive } from './video/live.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -225,7 +226,9 @@ app.get('/api/projects/:id', h(async (req, res) => {
   const base = p.ready_at || p.created_at;
   const cleanup = { days, keep: !!p.data.keepSource, deletedAt: p.data.sourceDeletedAt || null,
     at: days > 0 && p.status === 'ready' && base && (p.source || p.data.options?.media?.length) ? new Date(new Date(base).getTime() + days * 864e5).toISOString() : null };
-  res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, clips: clips.map(clipOut) });
+  const live = p.type === 'live' ? { ...(p.data.live || {}), ...(await one(`SELECT COUNT(*)::int AS segs, COALESCE(SUM(dur), 0)::float AS secs,
+      COUNT(*) FILTER (WHERE NOT analyzed)::int AS pending FROM live_segments WHERE project_id = $1`, [p.id])) } : null;
+  res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, live, clips: clips.map(clipOut) });
 }));
 app.post('/api/shorts', h(async (req, res) => {
   const b = req.body;
@@ -239,6 +242,32 @@ app.post('/api/shorts', h(async (req, res) => {
     source: b.source || null, source_url: b.url || null, data: { options }, progress: 'En cola…' });
   await enqueue('shorts.start', { id: p.id });
   res.json({ id: p.id });
+}));
+
+// Clips de un vídeo en directo
+app.post('/api/live', h(async (req, res) => {
+  const b = req.body;
+  const url = String(b.url || '').trim();
+  if (!/^(https?|rtmps?|srt|rtsp):\/\//i.test(url)) throw new Error('Pega el enlace del directo (YouTube, Twitch, Kick… o un enlace .m3u8).');
+  if (IS_VERCEL && !/\.m3u8(\?|$)/i.test(url)) throw new Error('En la versión de Vercel solo se pueden usar enlaces directos .m3u8. Para YouTube, Twitch o Kick instala la app en tu PC (ver Ayuda).');
+  const options = {
+    layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
+    emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '',
+    minScore: Math.min(10, Math.max(1, Number(b.minScore) || 7)), minSec: Number(b.minSec) || 15, maxSec: Number(b.maxSec) || 60,
+    segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
+    perSegment: Math.min(5, Math.max(1, Number(b.perSegment) || 3)),
+  };
+  const p = await insert('projects', { type: 'live', title: b.title || 'Directo ' + new Date().toLocaleString('es'), channel_id: Number(b.channel_id) || null,
+    source_url: url, status: 'processing', data: { options, live: {} }, progress: '🔴 Conectando con el directo…' });
+  await enqueue('live.capture', { id: p.id, seg: 0 });
+  res.json({ id: p.id });
+}));
+app.post('/api/projects/:id/stop', h(async (req, res) => {
+  const p = await getProject(req.params.id);
+  if (p?.type !== 'live') throw new Error('Solo se pueden detener directos.');
+  await setLive(p.id, { stopRequested: true });
+  await updateProject(p.id, { progress: '⏹ Deteniendo: se termina de grabar el segmento actual y se analizan los últimos momentos…' });
+  res.json({ ok: true });
 }));
 
 // Vídeo completo / anuncio / montaje: mismo motor de composición
@@ -266,8 +295,12 @@ app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
   if (p.data.sourceDeletedAt) throw new Error(NO_SOURCE);
   // Shorts ya transcritos: solo se vuelven a renderizar los clips que fallaron (no se repite ni se paga la transcripción)
-  const failed = p.type === 'shorts' ? await q("SELECT id FROM clips WHERE project_id = $1 AND status <> 'ready'", [p.id]) : [];
-  if (p.type === 'shorts' && p.data.transcript?.words?.length && failed.length) {
+  const failed = ['shorts', 'live'].includes(p.type) ? await q("SELECT id FROM clips WHERE project_id = $1 AND status <> 'ready'", [p.id]) : [];
+  if (p.type === 'live') {
+    if (!failed.length) throw new Error('No hay clips con error que reintentar.');
+    await q("UPDATE jobs SET status = 'failed' WHERE status = 'queued' AND payload->>'id' = $1 AND type LIKE 'live.%'", [String(p.id)]);
+  }
+  if ((p.type === 'shorts' && p.data.transcript?.words?.length || p.type === 'live') && failed.length) {
     await updateProject(p.id, { status: 'processing', error: null, progress: `Renderizando ${failed.length} Shorts…` });
     for (const c of failed) {
       await updateClip(c.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
@@ -352,7 +385,8 @@ const NO_SOURCE = 'El vídeo original de este proyecto se borró para ahorrar es
 async function requireSource(clipId) {
   const c = await getClip(clipId);
   const p = c && await getProject(c.project_id);
-  if (!p?.source) throw new Error(NO_SOURCE);
+  const parts = c?.src ? JSON.parse(c.src) : null;
+  if (p?.data?.sourceDeletedAt || !(parts ? parts.every(x => x.ref) : p?.source)) throw new Error(NO_SOURCE);
 }
 app.post('/api/clips/:id/render', h(async (req, res) => {
   await requireSource(req.params.id);

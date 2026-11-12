@@ -21,25 +21,29 @@ let baseUrl = process.env.PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_U
 const fixedBase = !!process.env.PUBLIC_URL || (process.env.VERCEL_ENV === 'production' && !!process.env.VERCEL_PROJECT_PRODUCTION_URL);
 export const setBaseUrl = u => { if (u && !fixedBase) baseUrl = u; };
 
+// Carriles: la grabación de directos va aparte para que los análisis/renders no la retrasen (sin huecos).
+export const LANES = ['live', 'work'];
+const laneOf = type => type === 'live.capture' ? 'live' : 'work';
+
 export async function enqueue(type, payload = {}) {
-  const job = await one('INSERT INTO jobs (type, payload) VALUES ($1, $2) RETURNING id', [type, JSON.stringify(payload)]);
+  const job = await one('INSERT INTO jobs (type, payload, lane) VALUES ($1, $2, $3) RETURNING id', [type, JSON.stringify(payload), laneOf(type)]);
   kick();
   return job.id;
 }
 
-async function claim() {
+async function claim(lane = 'work') {
   return one(`UPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1
-    WHERE id = (SELECT id FROM jobs WHERE status = 'queued' OR (status = 'running' AND locked_at < now() - ${STALE})
+    WHERE id = (SELECT id FROM jobs WHERE COALESCE(lane, 'work') = $1 AND (status = 'queued' OR (status = 'running' AND locked_at < now() - ${STALE}))
                 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
-    RETURNING *`);
+    RETURNING *`, [lane]);
 }
 
 /**
  * Procesa un trabajo. Devuelve false si la cola está vacía.
  * El manejador recibe ctx = { attempt, deadline (ms epoch), remaining() }.
  */
-export async function runOne(deadline = Infinity) {
-  const job = await claim();
+export async function runOne(deadline = Infinity, lane = 'work') {
+  const job = await claim(lane);
   if (!job) return false;
   const ctx = { attempt: job.attempts, deadline, remaining: () => deadline - Date.now(), jobId: job.id };
   const h = handlers[job.type];
@@ -68,23 +72,38 @@ export async function runOne(deadline = Infinity) {
   return true;
 }
 
-let busy = false;
+const busy = { work: false, live: false };
 /**
  * Procesa trabajos de la cola. En Vercel: un trabajo pesado por invocación y nunca dos a la vez
  * en la misma instancia (con "fluid compute" varias peticiones comparten la misma CPU).
  * Devuelve true si la cola quedó vacía.
  */
 export async function drain() {
-  if (busy) return true; // ya hay un trabajo en esta instancia; ese se encargará de seguir
-  busy = true;
+  // Los dos carriles en paralelo: grabar un directo apenas usa CPU (copia el vídeo sin recodificar).
+  // Mientras un carril sigue trabajando, los demás vuelven a mirar la cola (un directo genera análisis y renders).
+  const working = new Set(); // carriles que están ejecutando un trabajo ahora mismo
+  const res = await Promise.all(LANES.map(l => drainLane(l, () => [...working].some(x => x !== l), on => on ? working.add(l) : working.delete(l))));
+  return res.every(Boolean);
+}
+async function drainLane(lane, othersActive = () => false, mark = () => {}) {
+  if (busy[lane]) return true; // ya hay un trabajo de este carril en esta instancia; ese se encargará de seguir
+  busy[lane] = true;
   const start = Date.now();
   const deadline = IS_VERCEL ? start + INVOCATION_BUDGET_MS : Infinity;
   try {
     for (;;) {
-      if (IS_VERCEL && Date.now() - start > START_WINDOW_MS) return false; // dejar el siguiente a una invocación nueva
-      if (!(await runOne(deadline))) return true;
+      if (IS_VERCEL && Date.now() - start > START_WINDOW_MS) {
+        // Dejar el siguiente a una invocación nueva, sin esperar al otro carril (la grabación de un directo no puede tener huecos)
+        if (await one(`SELECT 1 FROM jobs WHERE COALESCE(lane, 'work') = $1 AND status = 'queued' LIMIT 1`, [lane]).catch(() => null)) setTimeout(() => kick(true), 50);
+        return false;
+      }
+      mark(true);
+      const did = await runOne(deadline, lane).finally(() => mark(false));
+      if (did) continue;
+      if (IS_VERCEL || !othersActive()) return true;
+      await new Promise(r => setTimeout(r, 2000));
     }
-  } finally { busy = false; }
+  } finally { busy[lane] = false; }
 }
 
 // ---------- Disparadores ----------
@@ -103,12 +122,12 @@ const bypassHeader = () => process.env.VERCEL_AUTOMATION_BYPASS_SECRET ? { 'x-ve
 /** Si hay trabajos pendientes y nadie los está procesando, despierta al worker (red de seguridad). */
 export async function ensureWorker() {
   if (!IS_VERCEL) return;
-  const r = await one(`SELECT
+  const rows = await q(`SELECT COALESCE(lane, 'work') AS lane,
       COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
       COUNT(*) FILTER (WHERE status = 'running' AND locked_at > now() - ${STALE})::int AS running,
       COUNT(*) FILTER (WHERE status = 'running' AND locked_at <= now() - ${STALE})::int AS stale
-    FROM jobs`);
-  if ((r.queued && !r.running) || r.stale) kick(true);
+    FROM jobs GROUP BY 1`);
+  if (rows.some(r => (r.queued && !r.running) || r.stale)) kick(true);
 }
 
 export async function queueStatus() {
@@ -122,9 +141,10 @@ export async function queueStatus() {
 /** Bucle local (servidor normal / VPS). */
 export function startLocalWorker() {
   const n = Number(process.env.JOB_CONCURRENCY || 1);
-  for (let i = 0; i < n; i++) (async function loop() {
+  // un bucle para grabar directos + N bucles para el resto de trabajos
+  for (const lane of ['live', ...Array(n).fill('work')]) (async function loop() {
     for (;;) {
-      try { if (!(await runOne(Infinity))) await new Promise(r => setTimeout(r, 1500)); }
+      try { if (!(await runOne(Infinity, lane))) await new Promise(r => setTimeout(r, 1500)); }
       catch (e) { console.error('worker:', e.message); await new Promise(r => setTimeout(r, 5000)); }
     }
   })();

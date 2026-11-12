@@ -90,3 +90,8 @@ details > summary { cursor: pointer; color: #c6c9d1; font-size: 13px; padding: 4
 .pbar-top b { color: var(--gold); }
 .pbar-track { height: 8px; background: #2a2e37; border-radius: 99px; overflow: hidden; }
 .pbar-fill { height: 100%; background: linear-gradient(90deg, var(--gold-d), var(--gold)); border-radius: 99px; transition: width .6s ease; }
+
+/* Directos */
+.card.warn { border-color: rgba(230, 180, 60, .45); background: rgba(230, 180, 60, .08); font-size: 14px; }
+.livedot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ff3b3b; margin-right: 6px; vertical-align: 1px; animation: livepulse 1.4s infinite; }
+@keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(255, 59, 59, .6); } 70% { box-shadow: 0 0 0 8px rgba(255, 59, 59, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 59, 59, 0); } }

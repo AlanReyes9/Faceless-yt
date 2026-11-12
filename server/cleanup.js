@@ -9,7 +9,8 @@ function originals(p) {
   const files = [];
   if (p.source) files.push(p.source);
   for (const m of p.data?.options?.media || []) files.push(m);
-  return [...new Set(files)];
+  for (const r of p.liveRefs || []) files.push(r); // segmentos grabados de un directo
+  return [...new Set(files.filter(Boolean))];
 }
 
 /**
@@ -25,6 +26,7 @@ export async function candidates(days) {
       AND COALESCE((p.data->>'keepSource')::boolean, false) = false
       AND NOT EXISTS (SELECT 1 FROM clips c WHERE c.project_id = p.id AND c.status IN ('rendering', 'pending', 'error'))
     ORDER BY p.id LIMIT 200`, [days]);
+  for (const p of rows.filter(r => r.type === 'live')) p.liveRefs = (await q('SELECT ref FROM live_segments WHERE project_id = $1 AND ref IS NOT NULL', [p.id])).map(r => r.ref);
   return rows.filter(p => originals(p).length);
 }
 
@@ -53,6 +55,7 @@ export async function runCleanup({ days } = {}) {
     const data = { ...p.data, sourceDeletedAt: new Date().toISOString() };
     if (data.options?.media) data.options = { ...data.options, media: [] };
     await updateProject(p.id, { source: null, data });
+    if (p.type === 'live') await q('UPDATE live_segments SET ref = NULL WHERE project_id = $1', [p.id]);
   }
   if (list.length) console.log(`Limpieza: ${list.length} proyectos, ${files} originales borrados (>${days} días)`);
   return { days, projects: list.length, files };

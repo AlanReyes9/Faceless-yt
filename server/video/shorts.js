@@ -62,7 +62,7 @@ register('shorts.transcribe', async ({ id, chunk }) => {
 }, projectFail);
 
 // ---------- Paso 3: la IA elige los clips ----------
-async function pickClips(transcript, sig, { count, minSec, maxSec, language }) {
+export async function pickClips(transcript, sig, { count, minSec, maxSec, language }) {
   const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`).join('\n');
   const system = `Eres el mejor editor de vídeos cortos virales (YouTube Shorts, TikTok, Reels). Sabes exactamente qué momentos de un vídeo largo retienen a la audiencia y se comparten.
 Criterios (de más a menos importante):
@@ -89,7 +89,7 @@ Escribe title, hook y reason en el idioma: ${language || 'el mismo del vídeo'}.
   return Array.isArray(res) ? res : (res.clips || []);
 }
 
-function snap(words, start, end) {
+export function snap(words, start, end) {
   const near = (arr, t, k) => arr.filter(w => Math.abs(w[k] - t) < 1.5).sort((a, b) => Math.abs(a[k] - t) - Math.abs(b[k] - t))[0];
   const s = near(words, start, 'start'), e = near(words, end, 'end');
   return { start: Math.max(0, (s?.start ?? start) - 0.1), end: (e?.end ?? end) + 0.25 };
@@ -151,12 +151,16 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const clip = await getClip(clipId);
   if (!clip) return;
   const p = await getProject(clip.project_id);
-  if (!p.source) throw new Error('El vídeo original se borró para ahorrar espacio; no se puede volver a renderizar. (410)');
+  // Trozos de vídeo que forman el clip: normalmente el original; en directos, uno o dos segmentos grabados
+  const dur = clip.end - clip.start;
+  const parts = clip.src ? JSON.parse(clip.src) : [{ ref: p.source, ss: clip.start, dur }];
+  if (parts.some(x => !x.ref) || p.data.sourceDeletedAt) throw new Error('El vídeo original se borró para ahorrar espacio; no se puede volver a renderizar. (410)');
+  const inputs = parts.map(x => inputPath(x.ref));
   const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
   await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
-  const dur = clip.end - clip.start;
-  const words = lang ? (clip.variants[lang]?.words || []) : sliceWords(p.data.transcript?.words || [], clip.start, clip.end);
+  const allWords = p.type === 'live' ? await liveWords(p.id, clip.start, clip.end) : (p.data.transcript?.words || []);
+  const words = lang ? (clip.variants[lang]?.words || []) : sliceWords(allWords, clip.start, clip.end);
   const hook = lang ? (clip.variants[lang]?.hook || '') : clip.hook;
   const tag = `c${clip.id}${lang ? '_' + lang : ''}_${Date.now()}`;
   const assFile = path.join(WORK_DIR, `${tag}.ass`);
@@ -169,7 +173,18 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       style: clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
     }));
     const ass = assFilter(assFile);
-    const input = inputPath(p.source);
+    const input = inputs[0];
+    // Recorre los trozos del clip aplicando un análisis y uniendo los resultados en una sola línea de tiempo
+    const overParts = async fn => {
+      const outAll = []; let acc = 0;
+      for (const [i, part] of parts.entries()) {
+        const r = await fn(inputs[i], part, acc);
+        if (!r) return null;
+        outAll.push(...r.map(x => ({ ...x, t: x.t + acc })));
+        acc += part.dur;
+      }
+      return outAll;
+    };
     // Encuadre "face": la ventana vertical sigue a la persona que habla
     let layout = clip.layout, facePlan = null;
     if (layout === 'face') {
@@ -179,20 +194,21 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       facePlan = cached ? cached.plan : null;
       if (!cached) {
         try {
-          let samples = await trackFaces(input, clip.start, dur, {
+          let samples = await overParts((inp, part) => trackFaces(inp, part.ss, part.dur, {
             onProgress: f => prog('Detectando caras', f * 40),
             timeoutMs: Math.max(30000, Math.min(150000, ctx.remaining() - 20000)),
-          });
+          }));
           // Varias personas en plano: se encuadra a quien está hablando
           const multi = samples.filter(x => x.n >= 2).length >= samples.length * 0.3;
           if (multi) {
             try {
-              const voice = sliceWords(p.data.transcript?.words || [], clip.start, clip.end);
+              const voice = sliceWords(allWords, clip.start, clip.end);
               const t0 = Date.now();
-              const spk = await trackSpeakers(input, clip.start, dur, {
-                words: voice, onProgress: f => prog('Detectando quién habla', 40 + f * 60),
+              const spk = await overParts((inp, part, acc) => trackSpeakers(inp, part.ss, part.dur, {
+                words: voice.filter(w => w.start >= acc && w.start < acc + part.dur).map(w => ({ ...w, start: w.start - acc, end: w.end - acc })),
+                onProgress: f => prog('Detectando quién habla', 40 + f * 60),
                 timeoutMs: Math.max(30000, Math.min(150000, ctx.remaining() - 60000)),
-              });
+              }));
               if (spk?.some(x => x.cx != null)) {
                 samples = spk;
                 const changes = spk.reduce((n, x, i) => n + (i && x.speaker !== spk[i - 1].speaker ? 1 : 0), 0);
@@ -216,10 +232,14 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     let vf;
     // Los subtítulos y emojis se diseñan a 1080x1920; en modo rápido se escala al final
     const Q = quality(ctx.attempt);
+    // Varios trozos: se unen (vídeo y audio) antes de aplicar el encuadre
+    const vin = parts.length > 1 ? '[cv]' : '[0:v]';
+    const pre = parts.length > 1 ? `${parts.map((_, i) => `[${i}:v][${i}:a]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
     if (layout === 'face') vf = `[0:v]crop=w=${facePlan.cw}:h=${facePlan.H}:x=${cropExpr(facePlan)}:y=0,scale=1080:1920,setsar=1,${ass}[base]`;
     else if (layout === 'crop') vf = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[base]`;
     else vf = `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
       `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
+    vf = pre + vf.replace('[0:v]', vin);
 
     // Emojis animados sobre los subtítulos cuando se dice la palabra
     const extra = [];
@@ -232,7 +252,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       if (!w) continue;
       const img = await emojiImage(e.emoji).catch(() => null);
       if (!img) continue;
-      const i = 1 + k++;
+      const i = parts.length + k++;
       extra.push('-loop', '1', '-i', img);
       const t0 = Math.max(0, w.start - 0.05).toFixed(2), t1 = (w.start + 1.3).toFixed(2);
       // aparece con un pequeño rebote de escala
@@ -247,8 +267,9 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       return 'requeued';
     }
     await prog('Renderizando', 0, true);
-    await ffmpeg(['-threads', '0', '-ss', clip.start.toFixed(3), '-i', input, ...extra, '-t', dur.toFixed(3),
-      '-filter_complex', vf, '-map', '[v]', '-map', '0:a?',
+    const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', x.dur.toFixed(3)] : []), '-i', inputs[i]]);
+    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', dur.toFixed(3),
+      '-filter_complex', vf, '-map', '[v]', '-map', parts.length > 1 ? '[ca]' : '0:a?',
       '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
       onProgress: sec => prog('Renderizando', (sec / dur) * 95),
@@ -272,7 +293,15 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   await checkDone(clip.project_id);
 }
 
-async function checkDone(projectId) {
+/** Palabras de un directo entre dos instantes (se guardan por segmento). */
+export async function liveWords(projectId, start, end) {
+  const rows = await q('SELECT words FROM live_segments WHERE project_id = $1 AND start < $3 AND start + dur > $2 ORDER BY seg', [projectId, start, end]);
+  return rows.flatMap(r => r.words || []);
+}
+
+export async function checkDone(projectId) {
+  const pr = await getProject(projectId);
+  if (pr?.type === 'live' && !pr.data.live?.ended) return; // el directo sigue: el proyecto continúa en curso
   const r = await one(`SELECT COUNT(*) FILTER (WHERE status IN ('rendering','pending'))::int AS busy,
       COUNT(*) FILTER (WHERE status = 'ready')::int AS ready, COUNT(*) FILTER (WHERE status = 'error')::int AS failed
     FROM clips WHERE project_id = $1`, [projectId]);
@@ -295,7 +324,8 @@ register('clip.render', ({ clipId, lang }, ctx) => renderClip(clipId, { lang }, 
 register('clip.translate', async ({ clipId, lang }, ctx) => {
   const clip = await getClip(clipId);
   const p = await getProject(clip.project_id);
-  const segs = (p.data.transcript?.segments || []).filter(s => s.end > clip.start && s.start < clip.end)
+  const allSegs = p.type === 'live' ? (await q('SELECT segments FROM live_segments WHERE project_id = $1 ORDER BY seg', [p.id])).flatMap(r => r.segments || []) : (p.data.transcript?.segments || []);
+  const segs = allSegs.filter(s => s.end > clip.start && s.start < clip.end)
     .map(s => ({ start: Math.max(0, s.start - clip.start), end: Math.min(clip.end, s.end) - clip.start, text: s.text }));
   const res = await chatJSON('Eres un traductor profesional de subtítulos para vídeos cortos. Traduces de forma natural y breve, manteniendo el tono.',
     `Traduce al idioma "${lang}". Devuelve {"hook":"...","title":"...","segments":["texto traducido 1", ...]} con el mismo número de segmentos (${segs.length}).

@@ -35,7 +35,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 // ---------- Navegación ----------
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
-  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'],
+  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'], ['directo', '🔴', 'Clips de directos'],
     ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
@@ -111,7 +111,7 @@ async function uploadMany(files, el) {
   el.textContent = '';
   return refs;
 }
-const TYPE_LABEL = { shorts: '✂ Shorts', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje' };
+const TYPE_LABEL = { shorts: '✂ Shorts', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje' };
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -176,8 +176,8 @@ routes[''] = async () => {
 function projectTable(rows, trash = false) {
   if (!rows.length) return '<p class="muted">Aún no hay proyectos.</p>';
   return `<table><tr><th>Proyecto</th><th>Tipo</th><th>Estado</th><th>Fecha</th><th></th></tr>${rows.map(p => `<tr>
-    <td><a href="#/proyecto/${p.id}">${esc(p.title || 'Sin título')}</a>${['pending', 'processing'].includes(p.status) ? `<div style="max-width:320px;margin-top:4px">${pbar(p.percent, p.progress || 'En cola…')}</div>` : p.status === 'error' && p.error ? `<div class="err small">${esc(p.error.slice(0, 120))}</div>` : ''}</td>
-    <td>${TYPE_LABEL[p.type] || p.type}${p.type === 'shorts' && p.ready_clips != null ? ` (${p.ready_clips})` : ''}</td>
+    <td><a href="#/proyecto/${p.id}">${esc(p.title || 'Sin título')}</a>${['pending', 'processing'].includes(p.status) ? (p.type === 'live' ? `<div class="small muted" style="margin-top:4px">${esc(p.progress || '')}</div>` : `<div style="max-width:320px;margin-top:4px">${pbar(p.percent, p.progress || 'En cola…')}</div>`) : p.status === 'error' && p.error ? `<div class="err small">${esc(p.error.slice(0, 120))}</div>` : ''}</td>
+    <td>${TYPE_LABEL[p.type] || p.type}${['shorts', 'live'].includes(p.type) && p.ready_clips != null ? ` (${p.ready_clips})` : ''}</td>
     <td>${pill(p.status)}</td><td class="muted small">${(p.created_at || '').slice(0, 16)}</td>
     <td style="text-align:right">${trash ? `<button class="btn sm" data-restore="${p.id}">Restaurar</button> <button class="btn sm red" data-purge="${p.id}">Borrar definitivamente</button>` : ''}</td></tr>`).join('')}</table>`;
 }
@@ -287,32 +287,81 @@ routes.shorts = async () => {
   $('#list').innerHTML = projectTable(list);
 };
 
+// ---------- Clips de un directo ----------
+routes.directo = async () => {
+  const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
+  main.innerHTML = `<h1>🔴 Clips de directos</h1><p class="sub">Pega el enlace de un directo. La app lo va grabando por segmentos, la IA analiza cada uno y crea Shorts verticales de los momentos más virales mientras el directo sigue en marcha.</p>
+  ${sys.vercel ? `<div class="card warn" style="margin-bottom:16px">En la versión de Vercel solo funcionan enlaces directos <b>.m3u8</b> (HLS). Para directos de YouTube, Twitch o Kick instala la app en tu PC con Linux (ver Ayuda): allí yt-dlp obtiene el vídeo del directo.</div>`
+    : sys.ytdlp ? '' : '<div class="card warn" style="margin-bottom:16px">yt-dlp no está instalado: solo funcionarán enlaces .m3u8, rtmp, srt o rtsp.</div>'}
+  <form id="f" class="grid g2">
+    <div class="card stack">
+      <h2>1. Directo</h2>
+      <div><label>Enlace del directo</label><input name="url" required placeholder="${sys.vercel ? 'https://…/playlist.m3u8' : 'https://www.youtube.com/watch?v=… · twitch.tv/… · kick.com/… · .m3u8'}"></div>
+      <div><label>Título del proyecto (opcional)</label><input name="title"></div>
+      <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
+      <div class="row"><div style="flex:1"><label>Grabar como máximo (min)</label><input type="number" name="maxMinutes" value="120" min="5" max="600"></div>
+        <div style="flex:1"><label>Analizar cada (s)</label><select name="segmentSec"><option value="120">2 min (clips antes)</option><option value="180" selected>3 min</option><option value="240">4 min (más contexto)</option></select></div></div>
+    </div>
+    <div class="card stack">
+      <h2>2. Opciones de los clips</h2>
+      <div class="row"><div style="flex:1"><label>Nota viral mínima</label><select name="minScore">${[9, 8, 7, 6, 5].map(n => `<option value="${n}" ${n === 7 ? 'selected' : ''}>${n}/10${n >= 8 ? ' (solo lo mejor)' : n <= 5 ? ' (más clips)' : ''}</option>`).join('')}</select></div>
+        <div style="flex:1"><label>Clips máx. por segmento</label><input type="number" name="perSegment" value="3" min="1" max="5"></div></div>
+      <div class="row"><div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="15" min="5"></div>
+        <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="120"></div></div>
+      <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
+          <option value="face">Recorte centrado en quien habla (automático)</option>
+          <option value="crop">Recorte centrado fijo</option><option value="blur">Fondo difuminado</option></select></div>
+        <div style="flex:1"><label>Estilo de subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
+      <div class="row"><div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar automáticamente</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+        <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
+      <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
+      <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <button class="btn gold block" id="go">🔴 Empezar a grabar y clipear</button>
+    </div>
+  </form>
+  <h2 style="margin-top:28px">Directos</h2><div id="list" class="card"></div>`;
+  const f = $('#f');
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const go = $('#go'); go.disabled = true;
+    try {
+      const d = Object.fromEntries(new FormData(f));
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked;
+      const r = await api('/api/live', { method: 'POST', body: d });
+      location.hash = '#/proyecto/' + r.id;
+    } catch (err) { toast(err.message, 'bad'); go.disabled = false; }
+  };
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=live'));
+};
+
 // ---------- Proyecto (Shorts o completo) ----------
 routes.proyecto = async id => {
   const [p, chs] = await Promise.all([api('/api/projects/' + id), channelsCache.get()]);
-  const working = ['pending', 'processing'].includes(p.status) || p.clips?.some(c => c.status === 'rendering');
+  const isClips = ['shorts', 'live'].includes(p.type);
+  const working = ['pending', 'processing'].includes(p.status) || p.clips?.some(c => c.status === 'rendering') || (p.live && !p.live.ended);
   const head = `<div class="row between" style="margin-bottom:16px"><div><a href="#/videos" class="small">← Mis vídeos</a><h1>${esc(p.title || 'Proyecto')}</h1>
       <div class="row small muted">${pill(p.status)} ${p.duration ? '· ' + mmss(p.duration) : ''} ${p.progress ? '· ' + esc(p.progress) : ''}</div></div>
-    <div class="row">${p.type === 'shorts' && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
+    <div class="row">${p.live && !p.live.ended ? `<button class="btn red" id="stop" ${p.live.stopRequested ? 'disabled' : ''}>⏹ Detener directo</button>` : ''}${isClips && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
       ${p.status === 'error' ? '<button class="btn" id="retry">↻ Reintentar</button>' : ''}<button class="btn red" id="del">Eliminar</button></div></div>
     ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
-    ${cleanupBanner(p)}
-    ${['pending', 'processing'].includes(p.status) ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
+    ${cleanupBanner(p)}${liveBanner(p)}
+    ${['pending', 'processing'].includes(p.status) && !p.live ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
       <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
-  main.innerHTML = head + (p.type === 'shorts' ? shortsGrid(p, chs) : longView(p, chs));
+  main.innerHTML = head + (isClips ? shortsGrid(p, chs) : longView(p, chs));
+  const st = $('#stop'); if (st) st.onclick = () => { if (confirm('¿Dejar de grabar el directo? Se analizan los últimos minutos y se terminan los clips pendientes.')) busy(st, async () => { await api(`/api/projects/${p.id}/stop`, { method: 'POST' }); router(); }); };
   const r = $('#retry'); if (r) r.onclick = () => busy(r, async () => { await api(`/api/projects/${p.id}/retry`, { method: 'POST' }); router(); });
   $('#del').onclick = async () => { if (confirm('¿Mover a la papelera?')) { await api('/api/projects/' + p.id, { method: 'DELETE' }); location.hash = '#/videos'; } };
   main.querySelectorAll('[data-keep]').forEach(b => b.onclick = () => busy(b, async () => {
     await api('/api/projects/' + p.id, { method: 'PATCH', body: { keepSource: b.dataset.keep === '1' } });
     toast(b.dataset.keep === '1' ? 'El original se conservará' : 'Se borrará automáticamente', 'good'); router();
   }));
-  if (p.type === 'shorts') bindClips(p); else bindLong(p);
+  if (isClips) bindClips(p); else bindLong(p);
   if (p.cleanup?.deletedAt) main.querySelectorAll('[data-apply],[data-tr],[data-retry],#retry').forEach(b => { b.disabled = true; b.title = 'El original se borró: no se puede volver a renderizar'; });
   if (working) livePoll(p);
 };
 
 // Firma de lo que cambia la estructura de la página (si no cambia, solo se actualizan las barras)
-const projSig = p => [p.status, p.error, p.output, ...(p.clips || []).map(c => `${c.id}:${c.status}:${c.file}:${Object.keys(c.variants || {}).join(',')}`)].join('|');
+const projSig = p => [p.status, p.error, p.output, p.live?.ended, p.live?.stopRequested, ...(p.clips || []).map(c => `${c.id}:${c.status}:${c.file}:${Object.keys(c.variants || {}).join(',')}`)].join('|');
 function livePoll(prev) {
   const sig = projSig(prev);
   poll(async () => {
@@ -324,6 +373,8 @@ function livePoll(prev) {
     // Solo actualizar las barras de progreso, sin tocar los vídeos que se estén viendo
     const top = main.querySelector('.progress .pbar');
     if (top) top.outerHTML = pbar(p.percent, p.progress || 'Procesando…');
+    const lb = main.querySelector('.livebox');
+    if (lb && p.live) lb.outerHTML = liveBanner(p);
     for (const c of p.clips || []) {
       const box = main.querySelector(`[data-clip="${c.id}"] .vid .pbar`);
       if (box && c.status === 'rendering') box.outerHTML = pbar(c.progress, c.stage || 'En cola…');
@@ -332,8 +383,20 @@ function livePoll(prev) {
   }, 3000);
 }
 
+/** Estado de un directo: tiempo grabado, segmentos y clips. */
+function liveBanner(p) {
+  const l = p.live; if (!l) return '';
+  const ok = (p.clips || []).filter(c => c.status === 'ready').length;
+  const state = l.ended ? `⏹ Directo terminado${l.reason ? ' · ' + esc(l.reason) : ''}` : l.stopRequested ? '⏹ Deteniendo…' : '<span class="livedot"></span> Grabando en directo';
+  return `<div class="card livebox" style="margin-bottom:16px"><div class="row between"><b>${state}</b><span class="muted small">${esc(p.progress || '')}</span></div>
+    <div class="row" style="gap:22px;margin-top:10px"><div><div class="muted small">Grabado</div><b>${mmss(l.secs || 0)}</b></div>
+      <div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>
+      <div><div class="muted small">Clips listos</div><b>${ok}</b> <span class="muted small">de ${(p.clips || []).length}</span></div></div>
+    ${l.ended ? '' : '<div class="muted small" style="margin-top:8px">Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.</div>'}</div>`;
+}
+
 function shortsGrid(p, chs) {
-  if (!p.clips?.length) return p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
+  if (!p.clips?.length) return p.live && !p.live.ended ? '<div class="empty">Aún no hay clips: el primero aparece tras analizar el primer segmento.</div>' : p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
   return `<div class="shorts">${p.clips.map(c => {
     const dur = c.end - c.start;
     const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
@@ -859,6 +922,12 @@ routes.ayuda = () => {
     <li>Cada Short sale en 1080×1920 con <b>Recorte centrado en quien habla</b> (si hay varias personas en plano, detecta quién habla por el movimiento de la boca y corta a esa persona), recorte fijo o fondo difuminado, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
+  <div class="card stack"><h2>🔴 Clips de directos</h2><ol>
+    <li>Pega el enlace de un directo que esté emitiendo. La app lo graba por segmentos (2–4 min) sin recodificar y sin huecos entre ellos.</li>
+    <li>Cada segmento se transcribe y la IA busca los momentos virales. También revisa el final del segmento anterior, así que los momentos que cruzan el corte no se pierden.</li>
+    <li>Solo se cortan los momentos con la nota mínima que elijas. Los Shorts aparecen mientras el directo sigue.</li>
+    <li>Pulsa <b>Detener directo</b> cuando quieras. Si el directo termina o se llega al máximo de minutos, se detiene solo.</li>
+    <li><b>En Vercel</b> solo funcionan enlaces directos <code>.m3u8</code>. Para <b>YouTube, Twitch o Kick</b> instala la app en tu PC con Linux: yt-dlp obtiene la emisión. Allí también funcionan <code>rtmp://</code>, <code>srt://</code> y <code>rtsp://</code>.</li></ol></div>
   <div class="card stack"><h2>Almacenamiento gratis: Cloudflare R2</h2>
     <p class="small">Vercel Blob cobra cada descarga de vídeo; R2 da 10 GB gratis y <b>descargas ilimitadas gratis</b>.</p><ol>
     <li>En Cloudflare: <b>R2 Object Storage → Create bucket</b>.</li>
