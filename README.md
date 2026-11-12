@@ -46,6 +46,18 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 
 Límites en Vercel: cada paso tiene un máximo de 300 s y no se pueden importar vídeos desde enlaces de YouTube (sube el archivo).
 
+## App de escritorio (Windows y Mac)
+
+Descarga el instalador en la página **Releases** del repositorio:
+
+- **Windows:** `FacelessStudio-Setup-x.y.z.exe`. Si aparece "Windows protegió su PC", pulsa *Más información → Ejecutar de todas formas* (la app no tiene firma de pago de Microsoft).
+- **Mac con Apple Silicon (M1–M4):** `FacelessStudio-x.y.z-mac-arm64.dmg`. **Mac Intel:** `…-mac-x64.dmg`. Arrastra la app a *Aplicaciones*. Como no está firmada por Apple, la primera vez abre la Terminal y ejecuta:
+  `xattr -cr "/Applications/Faceless Studio.app"`, y después ábrela normalmente.
+
+La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan los enlaces de YouTube, Twitch y Kick (también en directo), sin límite de 5 minutos ni de espacio. Todo se guarda en tu ordenador: menú *Archivo → Abrir carpeta de datos*. Tus claves API se configuran en *Ajustes y claves*, igual que en la web.
+
+**Compilar los instaladores:** se generan solos con GitHub Actions al crear una etiqueta (`git tag v0.2.0 && git push --tags`), o a mano en *Actions → App de escritorio → Run workflow*. Para probar en local: `npm install -D electron electron-builder` y después `npx electron-builder --config desktop/electron-builder.yml --linux dir`.
+
 ## Instalación en tu PC con Linux (espacio ilimitado)
 
 Todo se guarda en tu disco: sin límite de espacio, sin el límite de 5 minutos de Vercel y renders más rápidos.

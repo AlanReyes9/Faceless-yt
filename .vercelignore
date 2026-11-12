@@ -2,3 +2,6 @@ data
 *.log
 deploy
 docker-compose.yml
+desktop
+.github
+dist-desktop
