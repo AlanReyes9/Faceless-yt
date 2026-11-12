@@ -72,7 +72,7 @@ const getSystem = async () => (systemInfo ||= await api('/api/system'));
 /** Sube un archivo y devuelve su referencia. En Vercel va directo a Blob (archivos grandes). */
 async function uploadFile(file, onProgress = () => {}) {
   const sys = await getSystem();
-  if (sys.storage === 's3') {
+  if (sys.storage === 's3' && !sys.desktop) {
     // Subida directa al bucket (Cloudflare R2 / Backblaze B2) con una URL firmada
     const { ref, url } = await api('/api/s3/presign', { method: 'POST', body: { filename: file.name } });
     await new Promise((resolve, reject) => {
@@ -897,7 +897,52 @@ routes.ajustes = async () => {
     const r = await api('/api/settings/test', { method: 'POST', body: { provider: b.dataset.test } });
     toast(`${b.dataset.test}: conexión correcta (${r.reply})`, 'good');
   }));
+  const sys = await getSystem();
+  if (sys.desktop) await cloudCard();
 };
+
+
+/** App de escritorio: guardar los vídeos en R2/S3 y (opcional) compartir la base de datos con la web. */
+async function cloudCard() {
+  const c = await api('/api/desktop/cloud');
+  const box = document.createElement('div');
+  box.className = 'card stack'; box.style.marginTop = '20px';
+  const on = c.storage === 's3';
+  box.innerHTML = `<h2>☁ Nube: guardar en R2 / S3 ${on ? '<span class="pill ready">Activa</span>' : '<span class="pill">Desactivada: se guarda en este ordenador</span>'}</h2>
+    <p class="small muted">Los vídeos subidos y los Shorts se guardan en tu bucket (Cloudflare R2, Backblaze B2, AWS S3…). Si además pegas la <b>DATABASE_URL</b> de Neon y tu <b>APP_SECRET</b> de Vercel,
+      la app de escritorio y la web comparten los mismos proyectos, vídeos y claves API, y tu ordenador también procesa la cola de la web (más rápido y sin el límite de 5 minutos).</p>
+    <form id="cf" class="grid g2">
+      <div><label>Endpoint S3</label><input name="S3_ENDPOINT" value="${esc(c.S3_ENDPOINT)}" placeholder="https://<cuenta>.r2.cloudflarestorage.com"></div>
+      <div><label>Bucket</label><input name="S3_BUCKET" value="${esc(c.S3_BUCKET)}" placeholder="faceless-studio"></div>
+      <div><label>Access Key ID</label><input name="S3_ACCESS_KEY_ID" value="${esc(c.S3_ACCESS_KEY_ID)}" autocomplete="off"></div>
+      <div><label>Secret Access Key</label><input name="S3_SECRET_ACCESS_KEY" type="password" autocomplete="off" placeholder="${c.hasSecret ? '•••••• (guardada; déjalo vacío para no cambiarla)' : 'Pega la clave secreta'}"></div>
+      <div><label>Región <span class="muted">(vacío para R2)</span></label><input name="S3_REGION" value="${esc(c.S3_REGION)}" placeholder="auto"></div>
+      <div></div>
+      <div><label>DATABASE_URL de Neon <span class="muted">(opcional: compartir proyectos con la web)</span></label><input name="DATABASE_URL" type="password" autocomplete="off" placeholder="${c.hasDb ? 'Conectada a ' + esc(c.dbHost) + ' (vacío = no cambiar)' : 'postgresql://usuario:clave@…neon.tech/neondb?sslmode=require'}"></div>
+      <div><label>APP_SECRET de Vercel <span class="muted">(obligatorio si compartes la base de datos)</span></label><input name="APP_SECRET" type="password" autocomplete="off" placeholder="${c.hasAppSecret ? '•••••• (guardado)' : 'El mismo valor que en Vercel'}"></div>
+      <div class="row" style="grid-column:1/-1">
+        <button class="btn gold" id="csave">Probar, guardar y reiniciar</button>
+        ${c.hasDb ? '<button type="button" class="btn" id="cnodb">Dejar de compartir la base de datos</button>' : ''}
+        ${on ? '<button type="button" class="btn red" id="coff">Volver a guardar en este ordenador</button>' : ''}
+      </div>
+      <div class="small muted" style="grid-column:1/-1">Se prueba a escribir en el bucket (y a conectar con la base de datos) antes de guardar. ${c.encrypted ? 'Las claves se guardan cifradas en este ordenador.' : 'Las claves se guardan solo en este ordenador (este sistema no ofrece cifrado).'}
+        Los proyectos que ya tenías en este ordenador no se mueven a la nube.</div>
+    </form>`;
+  main.appendChild(box);
+  const f = box.querySelector('#cf');
+  const restart = () => { main.innerHTML = '<div class="card"><span class="spinner"></span> Reiniciando la app con la nueva configuración…</div>'; setTimeout(() => location.reload(), 6000); };
+  f.onsubmit = e => { e.preventDefault(); busy(box.querySelector('#csave'), async () => {
+    await api('/api/desktop/cloud', { method: 'POST', body: Object.fromEntries(new FormData(f)) }); toast('Conexión correcta. Reiniciando…', 'good'); restart();
+  }); };
+  const nodb = box.querySelector('#cnodb');
+  if (nodb) nodb.onclick = () => confirm('¿Dejar de usar la base de datos de la web? Volverás a ver los proyectos de este ordenador.') && busy(nodb, async () => {
+    await api('/api/desktop/cloud', { method: 'POST', body: { ...Object.fromEntries(new FormData(f)), removeDb: true } }); restart();
+  });
+  const off = box.querySelector('#coff');
+  if (off) off.onclick = () => confirm('¿Dejar de usar la nube? Los vídeos nuevos se guardarán en este ordenador.') && busy(off, async () => {
+    await api('/api/desktop/cloud', { method: 'POST', body: { disable: true } }); restart();
+  });
+}
 
 // ---------- Ayuda ----------
 routes.ayuda = () => {

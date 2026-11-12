@@ -131,8 +131,56 @@ app.post('/api/admin/s3-cors', h(async (req, res) => {
 const has = (cmd, flag = '--version') => run(cmd, [flag]).then(() => true, () => false);
 app.get('/api/system', h(async (req, res) => res.json({
   ffmpeg: await has(FFMPEG, '-version'), ytdlp: IS_VERCEL ? false : await has('yt-dlp'),
-  queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL,
+  queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL, desktop: !!globalThis.__desktop,
 })));
+// ---------- App de escritorio: conexión a la nube (R2/S3 y base de datos compartida con la web) ----------
+const desk = () => globalThis.__desktop;
+const mask = v => v ? v.slice(0, 4) + '…' + v.slice(-4) : '';
+app.get('/api/desktop/cloud', h(async (req, res) => {
+  if (!desk()) return res.status(404).json({ error: 'Solo en la app de escritorio' });
+  const c = desk().getCloud();
+  res.json({
+    storage: STORAGE_MODE, db: DB_MODE, encrypted: desk().encrypted(),
+    S3_ENDPOINT: c.S3_ENDPOINT || '', S3_BUCKET: c.S3_BUCKET || '', S3_REGION: c.S3_REGION || '', S3_ACCESS_KEY_ID: mask(c.S3_ACCESS_KEY_ID),
+    hasSecret: !!c.S3_SECRET_ACCESS_KEY, hasDb: !!c.DATABASE_URL, dbHost: (c.DATABASE_URL || '').match(/@([^/:?]+)/)?.[1] || '', hasAppSecret: !!c.APP_SECRET,
+  });
+}));
+app.post('/api/desktop/cloud', h(async (req, res) => {
+  if (!desk()) return res.status(404).json({ error: 'Solo en la app de escritorio' });
+  const b = req.body || {};
+  if (b.disable) { desk().saveCloud({}); desk().relaunch(); return res.json({ ok: true, restarting: true }); }
+  const old = desk().getCloud();
+  const keep = (k, v) => (v == null || v === '' || String(v).includes('…')) ? old[k] : String(v).trim();
+  const cfg = {
+    S3_ENDPOINT: keep('S3_ENDPOINT', b.S3_ENDPOINT)?.replace(/\/+$/, ''), S3_BUCKET: keep('S3_BUCKET', b.S3_BUCKET), S3_REGION: b.S3_REGION?.trim() || '',
+    S3_ACCESS_KEY_ID: keep('S3_ACCESS_KEY_ID', b.S3_ACCESS_KEY_ID), S3_SECRET_ACCESS_KEY: keep('S3_SECRET_ACCESS_KEY', b.S3_SECRET_ACCESS_KEY),
+    DATABASE_URL: b.removeDb ? '' : keep('DATABASE_URL', b.DATABASE_URL), APP_SECRET: b.removeDb ? '' : keep('APP_SECRET', b.APP_SECRET),
+  };
+  if (!cfg.S3_ENDPOINT || !cfg.S3_BUCKET || !cfg.S3_ACCESS_KEY_ID || !cfg.S3_SECRET_ACCESS_KEY) throw new Error('Rellena el endpoint, el bucket, el Access Key ID y el Secret Access Key.');
+  if (!/^https:\/\//.test(cfg.S3_ENDPOINT)) throw new Error('El endpoint debe empezar por https:// (p. ej. https://<cuenta>.r2.cloudflarestorage.com).');
+  if (cfg.DATABASE_URL && !cfg.APP_SECRET) throw new Error('Para compartir la base de datos con la web pega también tu APP_SECRET de Vercel (con él se descifran tus claves API).');
+  // Prueba de escritura y borrado en el bucket con la configuración nueva
+  const { S3, putObject, deleteObject } = await import('./s3.js');
+  const prev = { ...S3 };
+  Object.assign(S3, { endpoint: cfg.S3_ENDPOINT, bucket: cfg.S3_BUCKET, accessKeyId: cfg.S3_ACCESS_KEY_ID, secretAccessKey: cfg.S3_SECRET_ACCESS_KEY, region: cfg.S3_REGION || 'auto' });
+  try {
+    const key = `.clipperspro-test-${Date.now()}.txt`;
+    await putObject(key, Buffer.from('ok'), { contentType: 'text/plain', size: 2 });
+    await deleteObject(key).catch(() => {});
+  } catch (e) { throw new Error('No se pudo escribir en el bucket: ' + e.message); }
+  finally { Object.assign(S3, prev); }
+  // Prueba de la base de datos
+  if (cfg.DATABASE_URL) {
+    const pg = (await import('pg')).default;
+    const url = cfg.DATABASE_URL.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+    const c = new pg.Client({ connectionString: url, ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false }, connectionTimeoutMillis: 15000 });
+    try { await c.connect(); await c.query('SELECT 1'); } catch (e) { throw new Error('No se pudo conectar a la base de datos: ' + e.message); }
+    finally { c.end().catch(() => {}); }
+  }
+  desk().saveCloud(cfg);
+  desk().relaunch();
+  res.json({ ok: true, restarting: true });
+}));
 app.get('/api/stats', h(async (req, res) => res.json({
   channels: (await one('SELECT COUNT(*)::int n FROM channels')).n,
   projects: (await one('SELECT COUNT(*)::int n FROM projects WHERE deleted_at IS NULL')).n,

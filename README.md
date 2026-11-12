@@ -54,7 +54,7 @@ Descarga el instalador en la página **Releases** del repositorio:
 - **Mac con Apple Silicon (M1–M4):** `ClippersPro-x.y.z-mac-arm64.dmg`. **Mac Intel:** `…-mac-x64.dmg`. Arrastra la app a *Aplicaciones*. Como no está firmada por Apple, la primera vez abre la Terminal y ejecuta:
   `xattr -cr "/Applications/Clippers Pro.app"`, y después ábrela normalmente.
 
-La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan los enlaces de YouTube, Twitch y Kick (también en directo), sin límite de 5 minutos ni de espacio. Todo se guarda en tu ordenador: menú *Archivo → Abrir carpeta de datos*. Tus claves API se configuran en *Ajustes y claves*, igual que en la web.
+La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan los enlaces de YouTube, Twitch y Kick (también en directo), sin límite de 5 minutos ni de espacio. Por defecto todo se guarda en tu ordenador (menú *Archivo → Abrir carpeta de datos*). En *Ajustes y claves → Nube* puedes guardar los vídeos en tu bucket R2/S3 y, si pegas la `DATABASE_URL` de Neon y tu `APP_SECRET`, compartir proyectos, vídeos y claves con la web. Tus claves API se configuran en *Ajustes y claves*, igual que en la web.
 
 **Compilar los instaladores:** se generan solos con GitHub Actions al crear una etiqueta (`git tag v0.2.0 && git push --tags`), o a mano en *Actions → App de escritorio → Run workflow* escribiendo la versión. Para probar en local: `npm install -D electron electron-builder` y después `npx electron-builder --config desktop/electron-builder.yml --linux dir`.
 

@@ -1,7 +1,7 @@
 // Clippers Pro de escritorio (Windows / macOS / Linux).
 // Arranca el mismo servidor de la web dentro de la app (base de datos y vídeos en tu ordenador)
 // y lo muestra en una ventana. ffmpeg y yt-dlp van incluidos.
-import { app, BrowserWindow, shell, Menu, dialog } from 'electron';
+import { app, BrowserWindow, shell, Menu, dialog, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -14,6 +14,22 @@ if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null, baseUrl = null;
 
+// ---------- Conexión a la nube (opcional): R2/S3 y la misma base de datos que la web ----------
+const CLOUD_KEYS = ['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_REGION', 'DATABASE_URL', 'APP_SECRET'];
+const cloudFile = () => path.join(app.getPath('userData'), 'cloud.json');
+function readCloud() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(cloudFile(), 'utf8'));
+    const json = raw.enc ? safeStorage.decryptString(Buffer.from(raw.enc, 'base64')) : raw.plain;
+    return JSON.parse(json || '{}');
+  } catch { return {}; }
+}
+function writeCloud(cfg) {
+  const json = JSON.stringify(cfg);
+  const data = safeStorage.isEncryptionAvailable() ? { enc: safeStorage.encryptString(json).toString('base64') } : { plain: json };
+  fs.writeFileSync(cloudFile(), JSON.stringify(data), { mode: 0o600 });
+}
+
 function setupEnv() {
   const data = path.join(app.getPath('userData'), 'data');
   fs.mkdirSync(data, { recursive: true });
@@ -21,6 +37,16 @@ function setupEnv() {
   process.env.DESKTOP = '1';
   // Solo almacenamiento y base de datos locales
   for (const k of ['DATABASE_URL', 'POSTGRES_URL', 'BLOB_READ_WRITE_TOKEN', 'S3_ENDPOINT', 'APP_PASSWORD', 'VERCEL']) delete process.env[k];
+  // Nube configurada en Ajustes (R2/S3 y, opcionalmente, la base de datos Neon compartida con la web)
+  const cloud = readCloud();
+  for (const k of CLOUD_KEYS) if (cloud[k]) process.env[k] = cloud[k];
+  // Puente para el servidor: leer/guardar la configuración y reiniciar la app
+  globalThis.__desktop = {
+    getCloud: () => readCloud(),
+    saveCloud: cfg => writeCloud(Object.fromEntries(CLOUD_KEYS.filter(k => cfg[k]).map(k => [k, String(cfg[k]).trim()]))),
+    relaunch: () => setTimeout(() => { app.relaunch(); app.exit(0); }, 600),
+    encrypted: () => safeStorage.isEncryptionAvailable(),
+  };
   // yt-dlp incluido (YouTube, Twitch, Kick)
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'desktop', 'bin');
   if (fs.existsSync(bin)) process.env.PATH = bin + path.delimiter + (process.env.PATH || '');
