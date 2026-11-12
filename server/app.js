@@ -30,13 +30,14 @@ app.use(cookieParser());
 app.use((req, res, next) => { setBaseUrl(baseUrl(req)); next(); });
 
 // ---------- Acceso con contraseña (APP_PASSWORD) ----------
-const PASSWORD = process.env.APP_PASSWORD || '';
-// En Vercel (público en internet) no se abre nada sin contraseña ni clave de cifrado.
+// Opcional: sin APP_PASSWORD (o con APP_PASSWORD=off) la app abre directamente, sin pantalla de acceso.
+const PASSWORD = /^(off|no|none|0|false)$/i.test(process.env.APP_PASSWORD || '') ? '' : (process.env.APP_PASSWORD || '');
+// En Vercel no se abre nada sin la clave de cifrado de las claves API.
 const SETUP_MISSING = IS_VERCEL ? [
-  !PASSWORD && 'APP_PASSWORD', !process.env.APP_SECRET && 'APP_SECRET',
+  !process.env.APP_SECRET && 'APP_SECRET',
   !(process.env.DATABASE_URL || process.env.POSTGRES_URL) && 'DATABASE_URL', !(s3Configured() || process.env.BLOB_READ_WRITE_TOKEN) && 'ALMACENAMIENTO',
 ].filter(Boolean) : [];
-const BLOCKED = SETUP_MISSING.includes('APP_PASSWORD') || SETUP_MISSING.includes('APP_SECRET');
+const BLOCKED = SETUP_MISSING.includes('APP_SECRET');
 const sign = v => crypto.createHmac('sha256', PASSWORD + internalSecret()).update(v).digest('hex');
 const authed = req => !PASSWORD || req.cookies.session === sign('ok');
 const h = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console.error(req.path, e.message); if (!res.headersSent) res.status(400).json({ error: e.message }); });

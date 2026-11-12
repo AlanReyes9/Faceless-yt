@@ -41,7 +41,7 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 
 1. Importa el repositorio en Vercel (framework: *Other*).
 2. En **Storage**, conecta una base de datos **Neon** (crea `DATABASE_URL`) y un **Blob store** (crea `BLOB_READ_WRITE_TOKEN`).
-3. Añade las variables `APP_PASSWORD` y `APP_SECRET` (`openssl rand -hex 32`).
+3. Añade la variable `APP_SECRET` (`openssl rand -hex 32`). Opcional: `APP_PASSWORD` para pedir contraseña al entrar (`off` o sin definir = sin contraseña).
 4. Vuelve a desplegar. Las tablas se crean solas en el primer arranque.
 
 Límites en Vercel: cada paso tiene un máximo de 300 s y no se pueden importar vídeos desde enlaces de YouTube (sube el archivo).
