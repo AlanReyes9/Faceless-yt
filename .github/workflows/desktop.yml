@@ -49,6 +49,10 @@ jobs:
           node node_modules/ffmpeg-static/install.js
           node -e "const f=require('ffmpeg-static');require('fs').accessSync(f);console.log('ffmpeg:',f)"
 
+      - name: Prueba de render con el ffmpeg incluido
+        shell: bash
+        run: node --no-warnings desktop/smoke.mjs 2>&1 | grep -v onnxruntime
+
       - name: yt-dlp incluido (YouTube, Twitch, Kick)
         shell: bash
         run: |

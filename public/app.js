@@ -402,7 +402,7 @@ function shortsGrid(p, chs) {
     const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
     return `<div class="clip" data-clip="${c.id}">
       <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>`
-        : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div><button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
+        : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
         <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : 'fondo difuminado'}</span></div>
