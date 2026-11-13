@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { downloadVideo } from './ytdlp.js';
 import path from 'node:path';
 import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VERCEL } from '../db.js';
 import { ffmpeg, probe, run, assFilter } from './ffmpeg.js';
@@ -21,13 +22,13 @@ register('shorts.start', async ({ id }) => {
   let source = p.source;
   if (!source && p.source_url) {
     if (IS_VERCEL) throw new Error('En Vercel no se pueden descargar enlaces (YouTube bloquea los servidores en la nube). Sube el archivo de vídeo directamente. (400)');
-    const tmp = path.join(WORK_DIR, `dl_${id}.%(ext)s`);
-    await updateProject(id, { progress: 'Descargando vídeo…' });
-    await run('yt-dlp', ['-f', 'bv*[height<=1080]+ba/b[height<=1080]/b', '--merge-output-format', 'mp4', '-o', tmp, '--no-playlist', p.source_url]);
-    const f = fs.readdirSync(WORK_DIR).find(n => n.startsWith(`dl_${id}.`));
-    if (!f) throw new Error('yt-dlp no generó ningún archivo.');
-    source = await saveFile(path.join(WORK_DIR, f), `source_${id}.mp4`);
-    fs.rmSync(path.join(WORK_DIR, f), { force: true });
+    await updateProject(id, { progress: 'Obteniendo el vídeo del enlace…' });
+    for (const n of fs.readdirSync(WORK_DIR)) if (n.startsWith(`dl_${id}.`)) fs.rmSync(path.join(WORK_DIR, n), { force: true }); // restos de un intento anterior
+    const file = await downloadVideo(p.source_url, WORK_DIR, `dl_${id}`,
+      (pct, text) => updateProject(id, { progress: text, percent: Math.max(1, Math.round(pct * 0.1)) }).catch(() => {}));
+    await updateProject(id, { progress: 'Guardando el vídeo…', percent: 10 });
+    source = await saveFile(file, `source_${id}.mp4`);
+    fs.rmSync(file, { force: true });
     await updateProject(id, { source });
   }
   const info = await probe(inputPath(source));

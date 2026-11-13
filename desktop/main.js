@@ -50,6 +50,23 @@ function setupEnv() {
   // yt-dlp incluido (YouTube, Twitch, Kick)
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'desktop', 'bin');
   if (fs.existsSync(bin)) process.env.PATH = bin + path.delimiter + (process.env.PATH || '');
+  const ytdlpBin = path.join(bin, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+  if (fs.existsSync(ytdlpBin)) process.env.YTDLP_PATH = ytdlpBin;
+  // YouTube exige a yt-dlp un motor de JavaScript: se le da el Node que lleva la propia app (Electron en modo Node)
+  try {
+    const rt = path.join(app.getPath('userData'), 'runtime');
+    fs.mkdirSync(rt, { recursive: true });
+    let node;
+    if (process.platform === 'win32') {
+      node = path.join(rt, 'node.cmd');
+      fs.writeFileSync(node, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`);
+    } else {
+      node = path.join(rt, 'node');
+      fs.writeFileSync(node, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, { mode: 0o755 });
+      fs.chmodSync(node, 0o755);
+    }
+    process.env.YTDLP_JS_RUNTIME = 'node:' + node;
+  } catch (e) { console.warn('motor JS para yt-dlp:', e.message); }
   // Registro en un archivo (útil si algo falla)
   const logFile = path.join(app.getPath('userData'), 'faceless.log');
   try { if (fs.statSync(logFile).size > 5e6) fs.rmSync(logFile); } catch {}

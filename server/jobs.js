@@ -2,7 +2,7 @@
 // Cada trabajo es un paso corto (< 5 min) para que funcione en funciones serverless de Vercel.
 //  - Local / VPS: un bucle en el propio proceso procesa la cola.
 //  - Vercel: tras encolar, la API se "despierta" a sí misma (POST /api/worker) y procesa en segundo plano.
-import { q, one, IS_VERCEL } from './db.js';
+import { q, one, IS_VERCEL, DB_MODE } from './db.js';
 import { internalSecret } from './settings.js';
 
 const handlers = {};
@@ -141,11 +141,16 @@ export async function queueStatus() {
 /** Bucle local (servidor normal / VPS). */
 export function startLocalWorker() {
   const n = Number(process.env.JOB_CONCURRENCY || 1);
+  // Base de datos local (PGlite): los trabajos "en curso" son de una ejecución anterior que se cerró; se reanudan ya
+  const resume = DB_MODE === 'pglite'
+    ? q("UPDATE jobs SET status = 'queued', attempts = GREATEST(attempts - 1, 0) WHERE status = 'running' RETURNING id")
+      .then(r => r.length && console.log(`Reanudando ${r.length} trabajo(s) interrumpido(s)`)).catch(() => {})
+    : Promise.resolve();
   // un bucle para grabar directos + N bucles para el resto de trabajos
-  for (const lane of ['live', ...Array(n).fill('work')]) (async function loop() {
+  for (const lane of ['live', ...Array(n).fill('work')]) resume.then(async function loop() {
     for (;;) {
       try { if (!(await runOne(Infinity, lane))) await new Promise(r => setTimeout(r, 1500)); }
       catch (e) { console.error('worker:', e.message); await new Promise(r => setTimeout(r, 5000)); }
     }
-  })();
+  });
 }

@@ -12,6 +12,7 @@ import { register, enqueue } from '../jobs.js';
 import { saveFile, inputPath } from '../storage.js';
 import { pickClips, snap, checkDone } from './shorts.js';
 import { resolvePlaylist, recordMedia } from './hls.js';
+import { ytdlp } from './ytdlp.js';
 
 const OVERLAP = 60; // segundos del segmento anterior que se reanalizan (momentos que cruzan el corte)
 
@@ -25,7 +26,7 @@ export async function setLive(id, patch) {
 async function resolveStream(url) {
   if (/\.m3u8(\?|$)/i.test(url) || /^(rtmps?|srt|rtsp):\/\//i.test(url)) return url;
   if (IS_VERCEL) throw new Error('En Vercel solo se pueden grabar enlaces directos .m3u8 (YouTube/Twitch bloquean los servidores en la nube). Para usar enlaces de YouTube, Twitch o Kick, instala la app en tu PC. (400)');
-  const { out } = await run('yt-dlp', ['-g', '-f', 'best[height<=1080]/best', '--no-playlist', '--no-warnings', url], { timeoutMs: 60000 })
+  const { out } = await ytdlp(['-g', '-f', 'best[height<=1080]/best', url], { stallMs: 90000, timeoutMs: 120000 })
     .catch(e => { throw new Error('No se pudo abrir el directo (¿está emitiendo ahora mismo?): ' + e.message.slice(-300)); });
   const u = out.trim().split('\n').filter(Boolean).pop();
   if (!u) throw new Error('No se encontró la emisión en directo de ese enlace.');
