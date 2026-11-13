@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { FFMPEG } from './ffmpeg.js';
+import { FFMPEG, probe } from './ffmpeg.js';
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 
@@ -53,7 +53,8 @@ export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4
 export async function downloadVideo(url, dir, name, onProgress = () => {}) {
   const tmpl = path.join(dir, `${name}.%(ext)s`);
   let lastPct = -1, phase = 0, lastSent = 0;
-  await ytdlp(['-f', 'bv*[height<=1080]+ba/b[height<=1080]/b', '--merge-output-format', 'mp4', '-o', tmpl, url], {
+  // Se prefiere H.264 + AAC hasta 1080p (lo lee cualquier ffmpeg); el vídeo y el audio van por separado y se unen
+  await ytdlp(['-f', 'bv*+ba/b', '-S', 'res:1080,vcodec:h264,acodec:aac', '--merge-output-format', 'mp4', '-o', tmpl, url], {
     onLine: line => {
       if (/^\[download\] Destination:/.test(line) && lastPct >= 0) phase++; // segundo archivo (audio)
       const m = line.match(/^\[download\]\s+([\d.]+)%(?:\s+of\s+~?\s*([\d.]+\w+))?(?:.*?at\s+([\d.]+\w+\/s))?(?:.*?ETA\s+([\d:]+))?/);
@@ -69,5 +70,11 @@ export async function downloadVideo(url, dir, name, onProgress = () => {}) {
   });
   const f = fs.readdirSync(dir).find(n => n.startsWith(`${name}.`) && !/\.(part|ytdl|temp)$/.test(n) && !/\.f\d+\./.test(n));
   if (!f) throw new Error('yt-dlp no generó ningún archivo.');
-  return path.join(dir, f);
+  const file = path.join(dir, f);
+  const info = await probe(file).catch(() => ({}));
+  if (!info.hasVideo) {
+    fs.rmSync(file, { force: true });
+    throw new Error('Del enlace solo se pudo descargar el audio, sin imagen (YouTube no dio el vídeo). Pulsa Reintentar; si vuelve a pasar, descarga el vídeo y súbelo como archivo.');
+  }
+  return file;
 }

@@ -462,6 +462,7 @@ function viralBreakdown(sg) {
 function friendlyError(e = '') {
   if (/tiempo máximo|tiempo límite|agotó el tiempo/i.test(e)) return 'Tardó demasiado en renderizar. Pulsa Reintentar: se usará un modo más rápido.';
   if (/Falta la clave/i.test(e)) return e;
+  if (/Stream specifier ':v'|matches no streams/i.test(e)) return 'El vídeo descargado no tiene imagen (solo audio). Pulsa "↻ Reintentar" arriba, en el proyecto: se volverá a descargar.';
   if (/ffmpeg/i.test(e)) return 'No se pudo procesar el vídeo. Pulsa Reintentar; si vuelve a fallar, prueba con otro encuadre.';
   return e.length > 160 ? e.slice(0, 160) + '…' : e || 'Error';
 }

@@ -20,6 +20,13 @@ register('shorts.start', async ({ id }) => {
   const p = await getProject(id);
   await updateProject(id, { status: 'processing', error: null, progress: 'Preparando el vídeo…', percent: 1 });
   let source = p.source;
+  // Un origen descargado sin imagen (solo audio) se vuelve a descargar
+  if (source && p.source_url && !(await probe(inputPath(source)).catch(() => ({ hasVideo: true }))).hasVideo) {
+    await removeFile(source).catch(() => {});
+    source = null;
+    p.data = { ...p.data, transcript: null };
+    await updateProject(id, { source: null });
+  }
   if (!source && p.source_url) {
     if (IS_VERCEL) throw new Error('En Vercel no se pueden descargar enlaces (YouTube bloquea los servidores en la nube). Sube el archivo de vídeo directamente. (400)');
     await updateProject(id, { progress: 'Obteniendo el vídeo del enlace…' });
@@ -33,6 +40,7 @@ register('shorts.start', async ({ id }) => {
   }
   const info = await probe(inputPath(source));
   if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
+  if (!info.hasVideo) throw new Error('El archivo no tiene imagen (solo audio): no se pueden crear Shorts. Sube el vídeo completo. (400)');
   // Los cambios de plano se detectan durante la transcripción (misma lectura del vídeo)
   p.data = { ...p.data, cuts: p.data.cuts || [], width: info.width, height: info.height };
   if (p.data.transcript?.words?.length) { // ya transcrito (reintento): saltar a la selección

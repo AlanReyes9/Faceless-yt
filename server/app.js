@@ -9,7 +9,7 @@ import { q, one, insert, update, getProject, updateProject, getClip, updateClip,
 import { publicSettings, setSettings, internalSecret, getSetting } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
-import { run, FFMPEG } from './video/ffmpeg.js';
+import { run, FFMPEG, probe } from './video/ffmpeg.js';
 import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
 import { setLive } from './video/live.js';
@@ -18,7 +18,7 @@ import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from
 import { analyzeChannel } from './analyzer.js';
 import { preview as cleanupPreview, runCleanup } from './cleanup.js';
 import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl } from './jobs.js';
-import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey } from './storage.js';
+import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey, inputPath } from './storage.js';
 import { s3Configured, presign, putBucketCors, S3 } from './s3.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -350,6 +350,13 @@ app.post('/api/projects/:id/retry', h(async (req, res) => {
   if (p.type === 'live') {
     if (!failed.length) throw new Error('No hay clips con error que reintentar.');
     await q("UPDATE jobs SET status = 'failed' WHERE status = 'queued' AND payload->>'id' = $1 AND type LIKE 'live.%'", [String(p.id)]);
+  }
+  // Origen descargado sin imagen (solo audio): se borra y el proyecto empieza de nuevo (se vuelve a descargar)
+  if (p.type === 'shorts' && p.source && p.source_url && !(await probe(inputPath(p.source)).catch(() => ({ hasVideo: true }))).hasVideo) {
+    await q('DELETE FROM clips WHERE project_id = $1', [p.id]);
+    await updateProject(p.id, { status: 'pending', error: null, progress: 'Volviendo a descargar el vídeo (el anterior no tenía imagen)…', percent: 0 });
+    await enqueue('shorts.start', { id: p.id });
+    return res.json({ ok: true, restarted: true });
   }
   if ((p.type === 'shorts' && p.data.transcript?.words?.length || p.type === 'live') && failed.length) {
     await updateProject(p.id, { status: 'processing', error: null, progress: `Renderizando ${failed.length} Shorts…` });
