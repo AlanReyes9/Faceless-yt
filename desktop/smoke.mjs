@@ -45,5 +45,14 @@ for (const c of await q('SELECT idx, layout, style, status, error, file FROM cli
   console.log(`#${c.idx} ${c.layout}/${c.style}: ${c.status}${c.error ? '\n   ERROR: ' + c.error : ''}`);
   if (c.status !== 'ready') bad++;
 }
+// Ranking de 3 puestos con el mismo vídeo de prueba
+const rk = await insert('projects', { type: 'ranking', title: 'smoke ranking', status: 'pending', data: { parts: [], options: {
+  title: 'Ranking de *prueba*', bottom: '@canal', order: 'countdown', fit: 'auto', highlight: '#FFD400', maxClipSec: 3, keepAudio: true,
+  items: [{ source, label: 'Primero', start: 1 }, { source, label: 'Segundo', start: 5 }, { source, label: 'Tercero', start: 9 }] } } });
+await enqueue('ranking.prep', { id: rk.id, i: 0 });
+await drain();
+const rr = await one('SELECT status, error, duration FROM projects WHERE id = $1', [rk.id]);
+console.log(`Ranking: ${rr.status} ${rr.duration ? rr.duration.toFixed(1) + ' s' : ''}${rr.error ? '\n   ERROR: ' + rr.error : ''}`);
+if (rr.status !== 'ready') bad++;
 console.log(`Tiempo total: ${((Date.now() - t) / 1000).toFixed(1)} s`);
 process.exit(bad ? 1 : 0);

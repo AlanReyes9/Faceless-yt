@@ -13,6 +13,7 @@ import { run, FFMPEG, probe } from './video/ffmpeg.js';
 import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
 import { setLive } from './video/live.js';
+import { suggestRanking } from './video/ranking.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -321,6 +322,28 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Rankings ("Top 5 momentos…"): clips en cuenta atrás con números y etiquetas
+app.post('/api/ranking/suggest', h(async (req, res) => res.json(await suggestRanking(req.body || {}))));
+app.post('/api/ranking', h(async (req, res) => {
+  const b = req.body || {};
+  const items = (b.items || []).map(it => ({ source: it.source || null, url: String(it.url || '').trim() || null, label: String(it.label || '').slice(0, 60),
+    start: Number(it.start) || 0, end: Number(it.end) || 0 })).filter(it => it.source || it.url);
+  if (items.length < 2) throw new Error('Añade al menos 2 clips al ranking.');
+  if (items.length > 10) throw new Error('Máximo 10 puestos.');
+  if (!String(b.title || '').trim()) throw new Error('Escribe el título del ranking.');
+  const options = {
+    title: String(b.title).slice(0, 80), bottom: String(b.bottom || '').slice(0, 80), items,
+    order: b.order === 'asc' ? 'asc' : 'countdown', fit: ['fill', 'blur', 'auto'].includes(b.fit) ? b.fit : 'auto',
+    highlight: /^#[0-9a-f]{6}$/i.test(b.highlight || '') ? b.highlight : '#FFD400', background: /^#[0-9a-f]{6}$/i.test(b.background || '') ? b.background : '#000000',
+    maxClipSec: Math.min(60, Math.max(2, Number(b.maxClipSec) || 15)), keepAudio: b.keepAudio !== false,
+  };
+  const script = b.yt_title ? { title: b.yt_title, description: b.description || '', tags: b.tags || [] } : null;
+  const p = await insert('projects', { type: 'ranking', title: b.projectTitle || options.title.replace(/\*/g, ''), channel_id: Number(b.channel_id) || null,
+    status: 'pending', data: { options, parts: [], ...(script ? { script } : {}) }, progress: 'En cola…' });
+  await enqueue('ranking.prep', { id: p.id, i: 0 });
+  res.json({ id: p.id });
+}));
+
 // Vídeo completo / anuncio / montaje: mismo motor de composición
 const COMPOSE_TYPES = ['long', 'ad', 'montage'];
 app.post('/api/compose/script', h(async (req, res) => {
@@ -367,6 +390,12 @@ app.post('/api/projects/:id/retry', h(async (req, res) => {
     return res.json({ ok: true, clips: failed.length });
   }
   await updateProject(p.id, { status: 'pending', error: null, progress: 'En cola…', percent: 0 });
+  if (p.type === 'ranking') { // continúa por el primer clip sin preparar (o monta de nuevo si ya están todos)
+    const parts = p.data.parts || [], n = p.data.options.items.length;
+    const i = [...Array(n).keys()].find(k => !parts[k]);
+    await enqueue(i == null ? 'ranking.render' : 'ranking.prep', { id: p.id, i: i ?? 0 });
+    return res.json({ ok: true });
+  }
   await enqueue(p.type === 'shorts' ? 'shorts.start' : 'compose.script', { id: p.id });
   res.json({ ok: true });
 }));

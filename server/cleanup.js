@@ -10,6 +10,8 @@ function originals(p) {
   if (p.source) files.push(p.source);
   for (const m of p.data?.options?.media || []) files.push(m);
   for (const r of p.liveRefs || []) files.push(r); // segmentos grabados de un directo
+  for (const it of p.data?.options?.items || []) if (it.source) files.push(it.source); // clips subidos para un ranking
+  for (const r of p.data?.parts || []) if (p.type === 'ranking') files.push(r); // clips ya preparados del ranking
   return [...new Set(files.filter(Boolean))];
 }
 

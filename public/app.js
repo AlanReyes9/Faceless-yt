@@ -36,7 +36,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
   ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'], ['directo', '🔴', 'Clips de directos'],
-    ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['analizador', '◎', 'Analizador']]],
+    ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['ranking', '🏆', 'Rankings Top'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
 ];
@@ -111,7 +111,7 @@ async function uploadMany(files, el) {
   el.textContent = '';
   return refs;
 }
-const TYPE_LABEL = { shorts: '✂ Shorts', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje' };
+const TYPE_LABEL = { shorts: '✂ Shorts', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje', ranking: '🏆 Ranking' };
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -787,6 +787,103 @@ routes.montar = async () => {
   $('#list').innerHTML = projectTable(await api('/api/projects?type=montage'));
 };
 
+// ---------- Rankings Top ("Top 5 momentos…") ----------
+const RANK_COLORS = ['#FFE600', '#FFFFFF', '#FF2D2D', '#2EE62E', '#FF7AD9', '#3FB6FF', '#FF9F1A', '#B57BFF', '#00F0D0', '#FFC2E0'];
+routes.ranking = async () => {
+  const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
+  const links = !sys.vercel;
+  main.innerHTML = `<h1>🏆 Rankings Top</h1><p class="sub">Vídeos tipo "Top 5 momentos": los clips se reproducen en cuenta atrás, los números quedan a la izquierda y la etiqueta de cada puesto aparece cuando empieza su clip.</p>
+  <form id="f" class="grid g2">
+    <div class="card stack"><h2>1. Puestos del ranking <span class="muted small">(el 1 es el mejor)</span></h2>
+      <div id="items" class="stack"></div>
+      <div class="row"><button type="button" class="btn sm" id="add">＋ Añadir puesto</button><span class="muted small">De 2 a 10 puestos. Arrastra un vídeo sobre un puesto${links ? ' o pega un enlace de YouTube/TikTok' : ''}.</span></div>
+      <input type="file" id="pick" accept="video/*" hidden>
+    </div>
+    <div class="stack">
+      <div class="card stack"><h2>2. Textos</h2>
+        <div><label>Título <span class="muted">(*palabra* = en color; si no, se resalta la última)</span></label><input name="title" value="Ranking funny cat *moment*" required></div>
+        <div><label>Texto inferior <span class="muted">(opcional: @tucanal…)</span></label><input name="bottom" placeholder="@tucanal"></div>
+        <div class="row"><input id="topic" placeholder="Tema para la IA (p. ej. gatos graciosos)" style="flex:1"><button type="button" class="btn sm" id="ai">✨ Sugerir título y etiquetas</button></div>
+      </div>
+      <div class="card stack"><h2>3. Estilo</h2>
+        <div class="row"><div style="flex:1"><label>Orden</label><select name="order"><option value="countdown">Cuenta atrás (5 → 1)</option><option value="asc">Del 1 al último</option></select></div>
+          <div style="flex:1"><label>Encuadre</label><select name="fit"><option value="auto">Automático</option><option value="fill">Llenar (recorta)</option><option value="blur">Vídeo entero con fondo difuminado</option></select></div></div>
+        <div class="row"><div style="flex:1"><label>Segundos máx. por clip</label><input type="number" name="maxClipSec" value="12" min="2" max="60"></div>
+          <div style="flex:1"><label>Color del resaltado</label><input type="color" name="highlight" value="#FFD400" style="height:40px"></div>
+          <div style="flex:1"><label>Fondo</label><input type="color" name="background" value="#000000" style="height:40px"></div></div>
+        <label class="check"><input type="checkbox" name="keepAudio" checked> Conservar el audio de los clips</label>
+        <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
+        <div class="small muted" id="up"></div>
+        <button class="btn gold block" id="go">🏆 Crear ranking</button>
+      </div>
+      <div class="card"><h2>Vista previa</h2><div id="prev" class="rkprev"></div></div>
+    </div>
+  </form>
+  <h2 style="margin-top:28px">Rankings</h2><div class="card" id="list"></div>`;
+  const items = [...Array(5)].map(() => ({ file: null, url: '', label: '', start: '', end: '' }));
+  const f = $('#f');
+  let pickFor = 0;
+  const preview = () => {
+    const t = esc(f.title.value || '').toUpperCase();
+    const title = t.includes('*') ? t.replace(/\*([^*]+)\*/g, `<span style="color:${f.highlight.value}">$1</span>`).replace(/\*/g, '') : t.replace(/(\S+)$/, `<span style="color:${f.highlight.value}">$1</span>`);
+    $('#prev').innerHTML = `<div class="rk-top">${title}</div><div class="rk-vid" style="background:${f.background.value === '#000000' ? '#2b2f38' : f.background.value}">${items.map((it, i) =>
+      `<div class="rk-row"><b style="color:${RANK_COLORS[i % 10]}">${i + 1}.</b> <span>${esc(it.label)}</span></div>`).join('')}</div><div class="rk-bot">${esc(f.bottom.value)}</div>`;
+  };
+  const draw = () => {
+    $('#items').innerHTML = items.map((it, i) => `<div class="scene stack rk-item" data-i="${i}" style="gap:6px">
+      <div class="row" style="flex-wrap:nowrap"><b style="color:${RANK_COLORS[i % 10]};font-size:20px;min-width:30px">${i + 1}.</b>
+        <input data-k="label" placeholder="Etiqueta (p. ej. White Cat)" value="${esc(it.label)}" style="flex:1">
+        <button type="button" class="btn sm" data-up title="Subir">↑</button><button type="button" class="btn sm" data-down title="Bajar">↓</button><button type="button" class="btn sm" data-rm title="Quitar">✕</button></div>
+      <div class="row" style="flex-wrap:nowrap"><button type="button" class="btn sm" data-pick>${it.file ? '🎬 ' + esc(it.file.name.slice(0, 26)) : '⬆ Elegir vídeo'}</button>
+        ${links ? `<input data-k="url" placeholder="…o enlace (YouTube, TikTok, .mp4)" value="${esc(it.url)}" style="flex:1">` : '<span style="flex:1"></span>'}
+        <input data-k="start" type="number" step="0.1" min="0" placeholder="Inicio s" value="${esc(it.start)}" style="width:86px">
+        <input data-k="end" type="number" step="0.1" min="0" placeholder="Fin s" value="${esc(it.end)}" style="width:76px"></div></div>`).join('');
+    $('#items').querySelectorAll('.rk-item').forEach(el => {
+      const i = +el.dataset.i;
+      el.querySelectorAll('[data-k]').forEach(inp => inp.oninput = () => { items[i][inp.dataset.k] = inp.value; preview(); });
+      el.querySelector('[data-pick]').onclick = () => { pickFor = i; $('#pick').click(); };
+      el.querySelector('[data-rm]').onclick = () => { if (items.length > 2) { items.splice(i, 1); draw(); } };
+      el.querySelector('[data-up]').onclick = () => { if (i) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; draw(); } };
+      el.querySelector('[data-down]').onclick = () => { if (i < items.length - 1) { [items[i + 1], items[i]] = [items[i], items[i + 1]]; draw(); } };
+      el.ondragover = e => { e.preventDefault(); el.classList.add('over'); };
+      el.ondragleave = () => el.classList.remove('over');
+      el.ondrop = e => { e.preventDefault(); el.classList.remove('over'); const file = e.dataTransfer.files[0]; if (file) { items[i].file = file; draw(); } };
+    });
+    preview();
+  };
+  $('#pick').onchange = e => { if (e.target.files[0]) { items[pickFor].file = e.target.files[0]; e.target.value = ''; draw(); } };
+  $('#add').onclick = () => { if (items.length < 10) { items.push({ file: null, url: '', label: '', start: '', end: '' }); draw(); } };
+  for (const k of ['title', 'bottom', 'highlight', 'background']) f[k].oninput = preview;
+  let meta = null;
+  $('#ai').onclick = () => busy($('#ai'), async () => {
+    const r = await api('/api/ranking/suggest', { method: 'POST', body: { topic: $('#topic').value || f.title.value, notes: items.map(x => x.label || x.file?.name || '') } });
+    if (r.title) f.title.value = r.title;
+    (r.labels || []).forEach((l, i) => { if (items[i] && !items[i].label) items[i].label = l; });
+    meta = { yt_title: r.yt_title, description: r.description, tags: r.tags };
+    draw(); toast('Sugerencias aplicadas', 'good');
+  });
+  f.onsubmit = e => {
+    e.preventDefault();
+    const used = items.filter(x => x.file || x.url.trim());
+    if (used.length < 2) return toast('Añade un vídeo en al menos 2 puestos', 'bad');
+    if (used.length !== items.length) return toast(`Falta el vídeo de algún puesto (o quita los puestos vacíos)`, 'bad');
+    busy($('#go'), async () => {
+      const d = Object.fromEntries(new FormData(f));
+      d.keepAudio = f.keepAudio.checked;
+      const out = [];
+      for (const [i, it] of items.entries()) {
+        let source = null;
+        if (it.file) source = await uploadFile(it.file, pct => { $('#up').textContent = `Subiendo vídeo del puesto ${i + 1}… ${pct}%`; });
+        out.push({ source, url: it.file ? '' : it.url, label: it.label, start: it.start, end: it.end });
+      }
+      const r = await api('/api/ranking', { method: 'POST', body: { ...d, ...(meta || {}), items: out } });
+      location.hash = '#/proyecto/' + r.id;
+    });
+  };
+  draw();
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=ranking'));
+};
+
 // ---------- Analizador ----------
 const fmtN = n => Number(n || 0).toLocaleString('es');
 routes.analizador = async (id) => {
@@ -968,6 +1065,11 @@ routes.ayuda = () => {
     <li>Cada Short sale en 1080×1920 con <b>Recorte centrado en quien habla</b> (si hay varias personas en plano, detecta quién habla por el movimiento de la boca y corta a esa persona), recorte fijo o fondo difuminado, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
+  <div class="card stack"><h2>🏆 Rankings Top</h2><ol>
+    <li>Pon un vídeo en cada puesto (el 1 es el mejor). Puedes subirlo${''} o, en la app de escritorio, pegar un enlace de YouTube o TikTok. Elige inicio y fin si solo quieres una parte.</li>
+    <li>Escribe una etiqueta corta por puesto y el título. La palabra entre *asteriscos* sale en color; si no marcas ninguna, se resalta la última.</li>
+    <li>"✨ Sugerir título y etiquetas" usa la IA a partir del tema y de tus notas.</li>
+    <li>El vídeo sale en vertical 1080×1920: título arriba, números de colores a la izquierda y los clips en cuenta atrás (5 → 1). La etiqueta de cada puesto aparece cuando empieza su clip y se queda.</li></ol></div>
   <div class="card stack"><h2>🔴 Clips de directos</h2><ol>
     <li>Pega el enlace de un directo que esté emitiendo. La app lo graba por segmentos (2–4 min) sin recodificar y sin huecos entre ellos.</li>
     <li>Cada segmento se transcribe y la IA busca los momentos virales. También revisa el final del segmento anterior, así que los momentos que cruzan el corte no se pierden.</li>
