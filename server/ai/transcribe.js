@@ -40,7 +40,9 @@ export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, 
     const log = (m, t) => console.log(`[transcribir ${offset}s] ${m}${t ? ` en ${((Date.now() - t) / 1000).toFixed(1)} s` : ''} · descargado ${(proxyBytes() / 1e6).toFixed(0)} MB`);
     // 1) Audio (imprescindible): sin decodificar el vídeo
     let t = Date.now();
-    await ffmpeg(['-ss', String(offset), '-t', String(len), '-i', input, '-vn', '-map', '0:a:0', '-ac', '1', '-ar', '16000', '-b:a', '32k', out],
+    // aresample async+first_pts=0: si el audio empieza más tarde que la imagen (habitual en directos y vídeos de móvil),
+    // se rellena con silencio para que los tiempos de las palabras coincidan con el vídeo (si no, los subtítulos se adelantan)
+    await ffmpeg(['-ss', String(offset), '-t', String(len), '-i', input, '-vn', '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-ac', '1', '-ar', '16000', '-b:a', '32k', out],
       { timeoutMs: 150000 });
     log(`audio extraído (${(fs.statSync(out).size / 1e6).toFixed(1)} MB)`, t);
     // 2) Whisper + energía del audio, y en paralelo los cambios de plano (opcional: si tarda, se omite)
