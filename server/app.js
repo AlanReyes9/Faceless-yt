@@ -323,6 +323,11 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
 }));
 
 // Rankings ("Top 5 momentos…"): clips en cuenta atrás con números y etiquetas
+app.get('/api/ranking/search', h(async (req, res) => {
+  if (IS_VERCEL) throw new Error('La búsqueda de vídeos solo está disponible en la app de escritorio (YouTube bloquea los servidores en la nube). (400)');
+  const { searchShorts } = await import('./video/ytdlp.js');
+  res.json(await searchShorts(req.query.q, { n: Math.min(40, Number(req.query.n) || 24) }));
+}));
 app.post('/api/ranking/suggest', h(async (req, res) => res.json(await suggestRanking(req.body || {}))));
 app.post('/api/ranking', h(async (req, res) => {
   const b = req.body || {};

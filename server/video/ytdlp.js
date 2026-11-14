@@ -78,3 +78,25 @@ export async function downloadVideo(url, dir, name, onProgress = () => {}) {
   }
   return file;
 }
+
+/** Busca vídeos cortos de YouTube (Shorts y clips ≤ maxSec). Devuelve [{ id, url, title, channel, duration, views, thumb }]. */
+export async function searchShorts(query, { n = 24, maxSec = 90 } = {}) {
+  const q = String(query || '').trim().slice(0, 120);
+  if (!q) return [];
+  // A la vez: Shorts del hashtag (#gatosgraciosos) y búsqueda con el filtro "menos de 4 minutos" (sp=EgIYAQ==)
+  const list = async args => { try { const { out } = await ytdlp(args, { stallMs: 60000, timeoutMs: 90000 }); return JSON.parse(out.slice(out.indexOf('{'))).entries || []; } catch { return []; } };
+  const tag = q.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
+  const [a, b] = await Promise.all([
+    tag ? list(['--flat-playlist', '-J', '--playlist-end', String(Math.min(60, n * 2)), `https://www.youtube.com/hashtag/${encodeURIComponent(tag)}/shorts`]) : [],
+    list(['--flat-playlist', '-J', '--playlist-end', String(Math.min(90, n * 3)), `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIYAQ%3D%3D`]),
+  ]);
+  const seen = new Set();
+  const uniq = arr => arr.filter(e => e.id && e.ie_key !== 'YoutubeTab' && !seen.has(e.id) && seen.add(e.id));
+  const shorts = uniq(a); // del hashtag: todos son Shorts (sin duración en la lista)
+  const rest = uniq(b).filter(e => e.duration && e.duration <= 240).sort((x, y) => (x.duration > maxSec) - (y.duration > maxSec));
+  const pick = [...shorts, ...rest].slice(0, n);
+  if (!pick.length) throw new Error('No se encontraron vídeos (o YouTube no respondió). Prueba otras palabras.');
+  return pick.map(e => ({ id: e.id, url: !e.duration || e.duration <= 180 ? `https://www.youtube.com/shorts/${e.id}` : `https://www.youtube.com/watch?v=${e.id}`,
+    title: e.title || '', channel: e.channel || e.uploader || '', duration: e.duration || null, views: e.view_count || null,
+    thumb: `https://i.ytimg.com/vi/${e.id}/hqdefault.jpg` }));
+}

@@ -793,10 +793,14 @@ routes.ranking = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
   const links = !sys.vercel;
   main.innerHTML = `<h1>🏆 Rankings Top</h1><p class="sub">Vídeos tipo "Top 5 momentos": los clips se reproducen en cuenta atrás, los números quedan a la izquierda y la etiqueta de cada puesto aparece cuando empieza su clip.</p>
+  ${links ? `<div class="card stack" style="margin-bottom:20px"><h2>🔎 Buscar vídeos en YouTube Shorts</h2>
+    <form id="sf" class="row"><input id="sq" placeholder="Ej: gatos graciosos, funny dogs, fails…" style="flex:1"><button class="btn gold" id="sgo">Buscar</button></form>
+    <div class="small muted">Pulsa "＋ Añadir" y el vídeo va al primer puesto libre. Para TikTok o Instagram, copia el enlace del vídeo y pégalo en un puesto.</div>
+    <div id="sres" class="rk-res"></div></div>` : `<div class="card small muted" style="margin-bottom:20px">🔎 Buscar en YouTube Shorts y descargar enlaces de YouTube, TikTok o Instagram está disponible en la app de escritorio (YouTube y TikTok bloquean los servidores en la nube). Aquí sube los vídeos como archivo.</div>`}
   <form id="f" class="grid g2">
     <div class="card stack"><h2>1. Puestos del ranking <span class="muted small">(el 1 es el mejor)</span></h2>
       <div id="items" class="stack"></div>
-      <div class="row"><button type="button" class="btn sm" id="add">＋ Añadir puesto</button><span class="muted small">De 2 a 10 puestos. Arrastra un vídeo sobre un puesto${links ? ' o pega un enlace de YouTube/TikTok' : ''}.</span></div>
+      <div class="row"><button type="button" class="btn sm" id="add">＋ Añadir puesto</button><span class="muted small">De 2 a 10 puestos. Arrastra un vídeo sobre un puesto${links ? ', búscalo arriba o pega un enlace de YouTube, TikTok o Instagram' : ''}.</span></div>
       <input type="file" id="pick" accept="video/*" hidden>
     </div>
     <div class="stack">
@@ -835,7 +839,7 @@ routes.ranking = async () => {
         <input data-k="label" placeholder="Etiqueta (p. ej. White Cat)" value="${esc(it.label)}" style="flex:1">
         <button type="button" class="btn sm" data-up title="Subir">↑</button><button type="button" class="btn sm" data-down title="Bajar">↓</button><button type="button" class="btn sm" data-rm title="Quitar">✕</button></div>
       <div class="row" style="flex-wrap:nowrap"><button type="button" class="btn sm" data-pick>${it.file ? '🎬 ' + esc(it.file.name.slice(0, 26)) : '⬆ Elegir vídeo'}</button>
-        ${links ? `<input data-k="url" placeholder="…o enlace (YouTube, TikTok, .mp4)" value="${esc(it.url)}" style="flex:1">` : '<span style="flex:1"></span>'}
+        ${links ? `<input data-k="url" placeholder="…o enlace (YouTube, TikTok, Instagram)" value="${esc(it.url)}" style="flex:1">` : '<span style="flex:1"></span>'}
         <input data-k="start" type="number" step="0.1" min="0" placeholder="Inicio s" value="${esc(it.start)}" style="width:86px">
         <input data-k="end" type="number" step="0.1" min="0" placeholder="Fin s" value="${esc(it.end)}" style="width:76px"></div></div>`).join('');
     $('#items').querySelectorAll('.rk-item').forEach(el => {
@@ -850,6 +854,29 @@ routes.ranking = async () => {
       el.ondrop = e => { e.preventDefault(); el.classList.remove('over'); const file = e.dataTransfer.files[0]; if (file) { items[i].file = file; draw(); } };
     });
     preview();
+  };
+  const sf = $('#sf');
+  if (sf) sf.onsubmit = e => {
+    e.preventDefault();
+    const q = $('#sq').value.trim(); if (!q) return;
+    busy($('#sgo'), async () => {
+      $('#sres').innerHTML = '<div class="muted small"><span class="spinner"></span> Buscando en YouTube… (unos segundos)</div>';
+      try {
+        const r = await api('/api/ranking/search?q=' + encodeURIComponent(q));
+        const fmtV = v => v >= 1e6 ? (v / 1e6).toFixed(1).replace('.0', '') + ' M' : v >= 1e3 ? Math.round(v / 1e3) + ' K' : v || '';
+        $('#sres').innerHTML = r.length ? r.map((v, k) => `<div class="rk-card"><a href="${esc(v.url)}" target="_blank" title="Ver en YouTube"><img src="${esc(v.thumb)}" loading="lazy" alt=""></a>
+          <div class="small" style="height:34px;overflow:hidden">${esc(v.title || 'Short')}</div>
+          <div class="row between small muted"><span>${v.views ? fmtV(v.views) + ' vistas' : ''}${v.duration ? ' · ' + mmss(v.duration) : ''}</span>
+            <button type="button" class="btn sm gold" data-addv="${k}">＋ Añadir</button></div></div>`).join('') : '<div class="muted">Sin resultados.</div>';
+        $('#sres').querySelectorAll('[data-addv]').forEach(b => b.onclick = () => {
+          const v = r[+b.dataset.addv];
+          let i = items.findIndex(x => !x.file && !x.url.trim());
+          if (i < 0) { if (items.length >= 10) return toast('Máximo 10 puestos', 'bad'); items.push({ file: null, url: '', label: '', start: '', end: '' }); i = items.length - 1; }
+          items[i].url = v.url; draw();
+          b.textContent = `✓ Puesto ${i + 1}`; b.disabled = true;
+        });
+      } catch (err) { $('#sres').innerHTML = `<div class="err small">${esc(err.message)}</div>`; }
+    });
   };
   $('#pick').onchange = e => { if (e.target.files[0]) { items[pickFor].file = e.target.files[0]; e.target.value = ''; draw(); } };
   $('#add').onclick = () => { if (items.length < 10) { items.push({ file: null, url: '', label: '', start: '', end: '' }); draw(); } };
@@ -1066,7 +1093,7 @@ routes.ayuda = () => {
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
   <div class="card stack"><h2>🏆 Rankings Top</h2><ol>
-    <li>Pon un vídeo en cada puesto (el 1 es el mejor). Puedes subirlo${''} o, en la app de escritorio, pegar un enlace de YouTube o TikTok. Elige inicio y fin si solo quieres una parte.</li>
+    <li>Pon un vídeo en cada puesto (el 1 es el mejor). Puedes subirlo o, en la app de escritorio, buscarlo en YouTube Shorts con el buscador del módulo o pegar un enlace de YouTube, TikTok o Instagram. Elige inicio y fin si solo quieres una parte.</li>
     <li>Escribe una etiqueta corta por puesto y el título. La palabra entre *asteriscos* sale en color; si no marcas ninguna, se resalta la última.</li>
     <li>"✨ Sugerir título y etiquetas" usa la IA a partir del tema y de tus notas.</li>
     <li>El vídeo sale en vertical 1080×1920: título arriba, números de colores a la izquierda y los clips en cuenta atrás (5 → 1). La etiqueta de cada puesto aparece cuando empieza su clip y se queda.</li></ol></div>
