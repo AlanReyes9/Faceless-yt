@@ -340,14 +340,14 @@ routes.proyecto = async id => {
   const isClips = ['shorts', 'live'].includes(p.type);
   const working = ['pending', 'processing'].includes(p.status) || p.clips?.some(c => c.status === 'rendering') || (p.live && !p.live.ended);
   const head = `<div class="row between" style="margin-bottom:16px"><div><a href="#/videos" class="small">← Mis vídeos</a><h1>${esc(p.title || 'Proyecto')}</h1>
-      <div class="row small muted">${pill(p.status)} ${p.duration ? '· ' + mmss(p.duration) : ''} ${p.progress ? '· ' + esc(p.progress) : ''}</div></div>
+      <div class="row small muted">${pill(p.status)} ${p.duration ? '· ' + mmss(p.duration) : ''} <span class="hprog">${p.progress ? '· ' + esc(p.progress) : ''}</span></div></div>
     <div class="row">${p.live && !p.live.ended ? `<button class="btn red" id="stop" ${p.live.stopRequested ? 'disabled' : ''}>⏹ Detener directo</button>` : ''}${isClips && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
       ${p.status === 'error' ? '<button class="btn" id="retry">↻ Reintentar</button>' : ''}<button class="btn red" id="del">Eliminar</button></div></div>
     ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
-    ${cleanupBanner(p)}${liveBanner(p)}
+    ${cleanupBanner(p)}${p.live && !p.live.ended ? `<div class="livewrap">${liveEmbed(p)}${liveBanner(p)}</div>` : liveBanner(p)}
     ${['pending', 'processing'].includes(p.status) && !p.live ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
       <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
-  main.innerHTML = head + (isClips ? shortsGrid(p, chs) : longView(p, chs));
+  main.innerHTML = head + (isClips ? `<div id="gridwrap">${shortsGrid(p, chs)}</div>` : longView(p, chs));
   const st = $('#stop'); if (st) st.onclick = () => { if (confirm('¿Dejar de grabar el directo? Se analizan los últimos minutos y se terminan los clips pendientes.')) busy(st, async () => { await api(`/api/projects/${p.id}/stop`, { method: 'POST' }); router(); }); };
   const r = $('#retry'); if (r) r.onclick = () => busy(r, async () => { await api(`/api/projects/${p.id}/retry`, { method: 'POST' }); router(); });
   $('#del').onclick = async () => { if (confirm('¿Mover a la papelera?')) { await api('/api/projects/' + p.id, { method: 'DELETE' }); location.hash = '#/videos'; } };
@@ -369,10 +369,21 @@ function livePoll(prev) {
     let p;
     try { p = await api('/api/projects/' + prev.id); } catch { return livePoll(prev); }
     const editing = document.activeElement && main.contains(document.activeElement) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    // Directo en curso: solo cambian los clips → se redibuja la cuadrícula sin recargar el reproductor del directo
+    if (projSig(p) !== sig && !editing && p.live && !p.live.ended && prev.live && !prev.live.stopRequested === !p.live.stopRequested && p.status === prev.status) {
+      const gw = main.querySelector('#gridwrap');
+      if (gw) {
+        gw.innerHTML = shortsGrid(p, await channelsCache.get()); bindClips(p);
+        const lb = main.querySelector('.livebox'); if (lb) lb.outerHTML = liveBanner(p);
+        return livePoll(p);
+      }
+    }
     if (projSig(p) !== sig && !editing) return router(); // algo terminó o cambió: redibujar
     // Solo actualizar las barras de progreso, sin tocar los vídeos que se estén viendo
     const top = main.querySelector('.progress .pbar');
     if (top) top.outerHTML = pbar(p.percent, p.progress || 'Procesando…');
+    const hp = main.querySelector('.hprog');
+    if (hp) hp.textContent = p.progress ? '· ' + p.progress : '';
     const lb = main.querySelector('.livebox');
     if (lb && p.live) lb.outerHTML = liveBanner(p);
     for (const c of p.clips || []) {
@@ -381,6 +392,27 @@ function livePoll(prev) {
     }
     livePoll(projSig(p) === sig ? p : prev);
   }, 3000);
+}
+
+/** Reproductor del directo mientras se graba: el oficial de Kick, Twitch o YouTube, o HLS para enlaces .m3u8. */
+function liveEmbed(p) {
+  const u = p.source_url || '';
+  let src = null, m;
+  if ((m = u.match(/kick\.com\/([\w-]+)/i)) && !/^(video|clip)s?$/i.test(m[1])) src = `https://player.kick.com/${m[1]}?autoplay=true&muted=true`;
+  else if ((m = u.match(/twitch\.tv\/([\w]+)/i)) && !/^videos?$/i.test(m[1])) src = `https://player.twitch.tv/?channel=${m[1]}&parent=${location.hostname}&muted=true&autoplay=true`;
+  else if ((m = u.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|live\/|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/i))) src = `https://www.youtube.com/embed/${m[1]}?autoplay=1&mute=1`;
+  const box = inner => `<div class="card liveplayer"><div class="lp-frame">${inner}</div><div class="row between small muted" style="margin-top:6px"><span>📺 El directo, en vivo</span><a href="${esc(u)}" target="_blank">Abrir en su web ↗</a></div></div>`;
+  if (src) return box(`<iframe src="${esc(src)}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen></iframe>`);
+  if (/\.m3u8(\?|$)/i.test(u)) { setTimeout(() => playHls(`/api/projects/${p.id}/hls`), 0); return box(`<video id="lphls" muted autoplay playsinline controls></video>`); }
+  return box(`<div class="lp-none">Este enlace no se puede mostrar aquí. <a href="${esc(u)}" target="_blank">Ábrelo en su web ↗</a></div>`);
+}
+async function playHls(url) {
+  const v = document.getElementById('lphls'); if (!v) return;
+  if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = url; return; }
+  try {
+    if (!window.Hls) await new Promise((ok, ko) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.20/hls.min.js'; sc.onload = ok; sc.onerror = ko; document.head.appendChild(sc); });
+    const h = new window.Hls(); h.loadSource(url); h.attachMedia(v);
+  } catch { v.outerHTML = '<div class="lp-none">No se pudo cargar el reproductor.</div>'; }
 }
 
 /** Estado de un directo: tiempo grabado, segmentos y clips. */

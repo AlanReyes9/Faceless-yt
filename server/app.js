@@ -314,6 +314,30 @@ app.post('/api/live', h(async (req, res) => {
   await enqueue('live.capture', { id: p.id, seg: 0 });
   res.json({ id: p.id });
 }));
+// Reproductor de directos .m3u8: la lista y sus segmentos pasan por aquí (mismo origen, sin problemas de CORS).
+// Solo se sirven hosts del enlace del proyecto o que aparecen en sus propias listas.
+const hlsHosts = new Map(); // id → Set(hosts permitidos)
+app.get('/api/projects/:id/hls', h(async (req, res) => {
+  const p = await getProject(req.params.id);
+  if (p?.type !== 'live' || !/\.m3u8(\?|$)/i.test(p.source_url || '')) return res.status(404).end();
+  let u;
+  try { u = new URL(String(req.query.u || p.source_url)); } catch { return res.status(400).end(); }
+  const allowed = hlsHosts.get(p.id) || new Set([new URL(p.source_url).host]);
+  hlsHosts.set(p.id, allowed);
+  if (!/^https?:$/.test(u.protocol) || !allowed.has(u.host)) return res.status(403).end();
+  const r = await fetch(u, { signal: AbortSignal.timeout(20000) });
+  if (!r.ok) return res.status(r.status).end();
+  const ctype = r.headers.get('content-type') || '';
+  if (/mpegurl/i.test(ctype) || /\.m3u8(\?|$)/i.test(u.pathname)) {
+    const base = r.url || u.href;
+    const prox = x => { const abs = new URL(x, base); allowed.add(abs.host); return `/api/projects/${p.id}/hls?u=${encodeURIComponent(abs.href)}`; };
+    const text = (await r.text()).split(/\r?\n/).map(l => !l ? l : l.startsWith('#') ? l.replace(/URI="([^"]+)"/, (_, x) => `URI="${prox(x)}"`) : prox(l.trim())).join('\n');
+    res.set({ 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-cache' }).send(text);
+  } else {
+    res.set({ 'content-type': ctype || 'video/mp2t', 'cache-control': 'max-age=60' });
+    res.send(Buffer.from(await r.arrayBuffer()));
+  }
+}));
 app.post('/api/projects/:id/stop', h(async (req, res) => {
   const p = await getProject(req.params.id);
   if (p?.type !== 'live') throw new Error('Solo se pueden detener directos.');
