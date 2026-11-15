@@ -159,7 +159,16 @@ routes.login = () => {
   if (ME.license) {
     main.innerHTML = `<div class="card stack" style="max-width:380px;margin:80px auto">
       <h1>Entrar</h1><p class="sub" style="margin:0">Acceso solo para administradores. Los suscriptores usan la app de escritorio.</p>
-      <form id="f" class="stack"><input name="username" placeholder="Usuario" autocomplete="username" autofocus><input type="password" name="password" placeholder="Contraseña" autocomplete="current-password"><button class="btn gold block">Entrar</button></form></div>`;
+      <form id="f" class="stack"><input name="username" placeholder="Usuario" autocomplete="username" autofocus><input type="password" name="password" placeholder="Contraseña" autocomplete="current-password"><button class="btn gold block">Entrar</button></form>
+      <a href="#" id="forgot" class="small">¿Olvidaste tu contraseña?</a>
+      <form id="rf" class="stack" hidden><div class="small muted">Escribe tu usuario de administrador, el código de recuperación (variable <code>ADMIN_RESET_CODE</code> en Vercel) y tu nueva contraseña. Cada código sirve una sola vez.</div>
+        <input name="username" placeholder="Usuario administrador" autocomplete="username"><input name="code" placeholder="Código de recuperación" autocomplete="off">
+        <input type="password" name="password" placeholder="Nueva contraseña (mín. 10)" autocomplete="new-password" minlength="10"><button class="btn gold block">Cambiar contraseña y entrar</button></form></div>`;
+    $('#forgot').onclick = e => { e.preventDefault(); $('#rf').hidden = false; $('#forgot').hidden = true; };
+    $('#rf').onsubmit = e => { e.preventDefault(); busy(e.target.querySelector('button'), async () => {
+      await api('/api/license/reset', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      toast('Contraseña cambiada', 'good'); location.hash = '#/'; router();
+    }); };
     $('#f').onsubmit = e => { e.preventDefault(); busy(e.target.querySelector('button'), async () => {
       await api('/api/license/admin-login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
       location.hash = '#/'; router();

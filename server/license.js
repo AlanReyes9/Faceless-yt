@@ -125,6 +125,28 @@ export function mountLicense(app, h) {
     res.json({ ok: true });
   }));
 
+  // Recuperar la contraseña de un administrador con el código ADMIN_RESET_CODE (cada código sirve una sola vez)
+  app.post('/api/license/reset', wrap(async (req, res) => {
+    const { code, username, password } = req.body || {};
+    const want = String(process.env.ADMIN_RESET_CODE || ''), got = String(code || '').trim().toUpperCase();
+    const x = Buffer.from(want), y = Buffer.from(got);
+    const ip = ipOf(req), f = ipFails.get(ip);
+    if (f && f.n >= 10 && f.at > Date.now() - LOCK_MIN * 60000) throw fail(429, 'Demasiados intentos. Espera unos minutos.');
+    if (!x.length || x.length !== y.length || !crypto.timingSafeEqual(x, y)) {
+      ipFails.set(ip, { n: (f && f.at > Date.now() - LOCK_MIN * 60000 ? f.n : 0) + 1, at: Date.now() });
+      throw fail(403, 'Código de recuperación incorrecto.');
+    }
+    const hash = crypto.createHash('sha256').update(want).digest('hex');
+    if (await one('SELECT 1 FROM license_used_codes WHERE hash = $1', [hash])) throw fail(403, 'Este código de recuperación ya se usó. Pide uno nuevo (variable ADMIN_RESET_CODE en Vercel).');
+    if (String(password || '').length < 10) throw fail(400, 'La nueva contraseña debe tener al menos 10 caracteres.');
+    const u = await one("SELECT id FROM license_users WHERE username = $1 AND role = 'admin'", [String(username || '').toLowerCase().trim()]);
+    if (!u) throw fail(404, 'No hay ningún administrador con ese usuario.');
+    await q('INSERT INTO license_used_codes (hash) VALUES ($1)', [hash]);
+    await q('UPDATE license_users SET pass_hash = $2, failed = 0, locked_until = NULL, active = true WHERE id = $1', [u.id, hashPassword(password)]);
+    sessionCache.clear();
+    res.cookie('adm', adminCookie(u.id), { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 14 * 864e5 });
+    res.json({ ok: true });
+  }));
   // Inicio de sesión en la web (solo administradores)
   app.post('/api/license/admin-login', wrap(async (req, res) => {
     const { username, password } = req.body || {};
