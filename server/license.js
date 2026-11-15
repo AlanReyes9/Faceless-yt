@@ -128,7 +128,7 @@ export function mountLicense(app, h) {
   // Recuperar la contraseña de un administrador con el código ADMIN_RESET_CODE (cada código sirve una sola vez)
   app.post('/api/license/reset', wrap(async (req, res) => {
     const { code, username, password } = req.body || {};
-    const want = String(process.env.ADMIN_RESET_CODE || ''), got = String(code || '').trim().toUpperCase();
+    const want = String(process.env.ADMIN_RESET_CODE || '').trim().toUpperCase(), got = String(code || '').trim().toUpperCase();
     const x = Buffer.from(want), y = Buffer.from(got);
     const ip = ipOf(req), f = ipFails.get(ip);
     if (f && f.n >= 10 && f.at > Date.now() - LOCK_MIN * 60000) throw fail(429, 'Demasiados intentos. Espera unos minutos.');
