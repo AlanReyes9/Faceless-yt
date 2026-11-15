@@ -145,7 +145,7 @@ function renderAdminSetup() {
   main.innerHTML = `<div class="card stack" style="max-width:440px;margin:60px auto">
     <h1>🔑 Crear administrador</h1><p class="sub" style="margin:0">El acceso a Clippers Pro ahora es solo para usuarios autorizados. Crea tu cuenta de administrador: con ella entrarás aquí y gestionarás los usuarios y sus equipos.</p>
     <form id="f" class="stack">
-      <div><label>APP_SECRET del servidor <span class="muted">(Vercel → Settings → Environment Variables)</span></label><input type="password" name="appSecret" autocomplete="off" required></div>
+      <div><label>Código de configuración <span class="muted">(ADMIN_SETUP_CODE o APP_SECRET del servidor)</span></label><input type="password" name="appSecret" autocomplete="off" required></div>
       <div><label>Usuario</label><input name="username" autocomplete="username" required></div>
       <div><label>Contraseña <span class="muted">(mín. 10 caracteres)</span></label><input type="password" name="password" autocomplete="new-password" minlength="10" required></div>
       <button class="btn gold block">Crear administrador y entrar</button></form></div>`;

@@ -114,8 +114,10 @@ export function mountLicense(app, h) {
   app.post('/api/license/setup', wrap(async (req, res) => {
     if (await hasAdmin()) throw fail(409, 'Ya hay un administrador. Inicia sesión.');
     const { appSecret, username, password } = req.body || {};
-    const want = Buffer.from(String(process.env.APP_SECRET || '')), got = Buffer.from(String(appSecret || ''));
-    if (!want.length || want.length !== got.length || !crypto.timingSafeEqual(want, got)) throw fail(403, 'El APP_SECRET no coincide con el del servidor (Vercel → Settings → Environment Variables).');
+    // Vale el APP_SECRET o un código de un solo uso (variable ADMIN_SETUP_CODE): solo sirve mientras no haya administrador
+    const same = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y); };
+    if (!same(process.env.APP_SECRET, appSecret) && !same(process.env.ADMIN_SETUP_CODE, String(appSecret || '').trim()))
+      throw fail(403, 'El código no coincide con el APP_SECRET ni con el ADMIN_SETUP_CODE del servidor.');
     if (!/^[\w.@-]{3,40}$/.test(username || '')) throw fail(400, 'Usuario no válido (3–40 caracteres: letras, números, . _ - @).');
     if (String(password || '').length < 10) throw fail(400, 'La contraseña del administrador debe tener al menos 10 caracteres.');
     const u = await one("INSERT INTO license_users (username, pass_hash, role, max_devices) VALUES ($1,$2,'admin',5) RETURNING id", [username.toLowerCase(), hashPassword(password)]);
