@@ -36,7 +36,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
   ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'], ['directo', '🔴', 'Clips de directos'],
-    ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['ranking', '🏆', 'Rankings Top'], ['analizador', '◎', 'Analizador']]],
+    ['personaje', '☺', 'Personaje IA'], ['anuncios', '✦', 'Creador de anuncios IA'], ['montar', '⧉', 'Montar mi material'], ['ranking', '🏆', 'Rankings Top'], ['miniaturas', '🖼', 'Miniaturas IA'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
 ];
@@ -1058,6 +1058,91 @@ routes.licencias = async () => {
   });
 };
 
+// ---------- Miniaturas y portadas con IA ----------
+const THUMB_STYLES = { impacto: 'Impactante (colores intensos)', misterio: 'Misterio / oscuro', gaming: 'Gaming / neón', documental: 'Documental / realista', minimal: 'Minimalista', cartoon: 'Dibujo / cartoon' };
+const THUMB_FORMATS = { youtube: 'YouTube 16:9 (1280×720)', short: 'Portada Shorts / Reels 9:16', square: 'Cuadrada 1:1' };
+const POSITIONS = { left: 'Texto a la izquierda', right: 'Texto a la derecha', top: 'Texto arriba', bottom: 'Texto abajo', center: 'Texto en el centro' };
+routes.miniaturas = async (id) => {
+  const [chs, list] = await Promise.all([channelsCache.get(), api('/api/thumbs')]);
+  let t = id ? await api('/api/thumbs/' + id) : null;
+  main.innerHTML = `<h1>🖼 Miniaturas IA</h1><p class="sub">Escribe el título de tu vídeo: la IA propone ideas, genera la imagen y le pone un texto grande que se lee en el móvil. Cambia el texto, los colores o la posición sin volver a generar la imagen.</p>
+  <div class="grid g2" style="align-items:start">
+    <form id="f" class="card stack"><h2>1. Tu vídeo</h2>
+      <div><label>Título del vídeo</label><input name="title" required placeholder="Ej: Probé el truco de ahorro que nadie usa" value="${esc(t?.title || '')}"></div>
+      <div class="row"><div style="flex:1"><label>Formato</label><select name="format">${opts(THUMB_FORMATS, t?.format || 'youtube')}</select></div>
+        <div style="flex:1"><label>Estilo</label><select name="style">${opts(THUMB_STYLES, t?.style || 'impacto')}</select></div></div>
+      <div><label>Nicho o canal <span class="muted">(opcional)</span></label><input name="niche" list="chn" value="${esc(t?.niche || '')}"><datalist id="chn">${chs.map(c => `<option value="${esc(c.niche || c.name)}">`).join('')}</datalist></div>
+      <div><label>Tu foto o personaje <span class="muted">(opcional: aparecerá en la miniatura; funciona con OpenAI y Gemini)</span></label><input type="file" name="ref" accept="image/*" multiple></div>
+      <div class="row"><button class="btn gold" id="ideasBtn">✨ Ideas con IA</button><button type="button" class="btn" id="ownBtn">🖼 Usar mi imagen de fondo</button></div>
+      <input type="file" id="ownFile" accept="image/*" hidden>
+      <div class="small muted" id="st"></div>
+    </form>
+    <div class="card stack"><h2>2. Ideas</h2><div id="ideas" class="stack">${t?.ideas?.length ? '' : '<div class="muted small">Pulsa "✨ Ideas con IA" y elige una (o genera todas).</div>'}</div></div>
+  </div>
+  <h2 style="margin-top:24px">3. Miniaturas</h2><div id="items" class="th-grid"></div>
+  ${list.length ? `<h2 style="margin-top:28px">Anteriores</h2><div class="card">${list.map(x => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line)">
+    <a href="#/miniaturas/${x.id}" class="row" style="gap:10px">${x.items[0] ? `<img src="${x.items[0].url}" style="height:42px;border-radius:4px">` : ''}<span>${esc(x.title)}</span></a>
+    <span class="small muted">${THUMB_FORMATS[x.format]?.split(' (')[0] || ''} · ${x.items.length} <button class="btn sm red" data-delset="${x.id}">✕</button></span></div>`).join('')}</div>` : ''}`;
+  const f = $('#f');
+  const ensure = async () => {
+    if (t && t.title === f.title.value && t.format === f.format.value && t.style === f.style.value) return t;
+    const refs = [];
+    for (const file of f.ref.files) refs.push(await uploadFile(file, pct => { $('#st').textContent = `Subiendo foto… ${pct}%`; }));
+    $('#st').textContent = '';
+    t = await api('/api/thumbs', { method: 'POST', body: { title: f.title.value, format: f.format.value, style: f.style.value, niche: f.niche.value, refs } });
+    history.replaceState(null, '', '#/miniaturas/' + t.id);
+    return t;
+  };
+  const drawIdeas = () => {
+    $('#ideas').innerHTML = (t?.ideas || []).map((i, k) => `<div class="scene stack" style="gap:4px"><div class="row between"><b style="font-family:Anton,Impact,sans-serif;font-size:20px;letter-spacing:.5px">${esc(i.text).replace(esc(i.highlight || '¤'), `<span style="color:${esc(i.color || '#FFD400')}">${esc(i.highlight || '')}</span>`)}</b>
+      <button class="btn sm gold" data-gen="${k}">🎨 Generar</button></div><div class="small muted">${esc(i.why || '')}</div></div>`).join('') +
+      (t?.ideas?.length ? '<button class="btn" id="genAll">🎨 Generar todas</button>' : '');
+    $('#ideas').querySelectorAll('[data-gen]').forEach(b => b.onclick = () => busy(b, () => generate(t.ideas[+b.dataset.gen])));
+    const ga = $('#genAll'); if (ga) ga.onclick = () => busy(ga, async () => { for (const i of t.ideas) await generate(i); });
+  };
+  const card = it => `<div class="card th-card" data-it="${it.id}">
+    <a href="${it.url}" target="_blank"><img src="${it.url}?v=${Date.now()}" class="th-img ${t.format}"></a>
+    <div class="stack" style="gap:6px;margin-top:8px">
+      <div class="row" style="flex-wrap:nowrap"><input data-k="text" value="${esc(it.design.text)}" placeholder="Texto" style="flex:2"><input data-k="highlight" value="${esc(it.design.highlight)}" placeholder="Palabra en color" style="flex:1"></div>
+      <div class="row" style="flex-wrap:nowrap;gap:6px"><select data-k="position" style="flex:2">${opts(POSITIONS, it.design.position)}</select>
+        <input type="color" data-k="color" value="${esc(it.design.color || '#FFD400')}" title="Color resaltado" style="width:44px;height:38px;padding:2px">
+        <input type="color" data-k="textColor" value="${esc(it.design.textColor || '#FFFFFF')}" title="Color del texto" style="width:44px;height:38px;padding:2px"></div>
+      <div class="row small muted" style="flex-wrap:nowrap;gap:8px">Tamaño<input type="range" data-k="scale" min="0.5" max="1.5" step="0.05" value="${it.design.scale || 1}" style="flex:1">Giro<input type="range" data-k="tilt" min="-10" max="10" step="1" value="${it.design.tilt || 0}" style="flex:1">
+        <label class="check" style="margin:0"><input type="checkbox" data-k="shade" ${it.design.shade !== false ? 'checked' : ''}> Sombra</label></div>
+      <div class="row" style="gap:6px"><button class="btn sm gold" data-apply>✓ Aplicar</button><a class="btn sm" href="${it.url}" download="miniatura.png" target="_blank">⬇ Descargar</a>
+        <button class="btn sm" data-again title="Otra imagen con la misma idea">↻ Otra imagen</button><button class="btn sm red" data-del>✕</button></div></div></div>`;
+  const drawItems = () => {
+    $('#items').innerHTML = t?.items?.length ? t.items.map(card).join('') : '<div class="empty">Aún no hay miniaturas.</div>';
+    $('#items').querySelectorAll('[data-it]').forEach(el => {
+      const it = t.items.find(x => x.id === el.dataset.it);
+      const val = () => Object.fromEntries([...el.querySelectorAll('[data-k]')].map(i => [i.dataset.k, i.type === 'checkbox' ? i.checked : i.type === 'range' ? Number(i.value) : i.value]));
+      el.querySelector('[data-apply]').onclick = e => busy(e.target, async () => { Object.assign(it, await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'PATCH', body: val() })); drawItems(); });
+      el.querySelector('[data-again]').onclick = e => busy(e.target, () => generate({ ...it.design, prompt: it.prompt }));
+      el.querySelector('[data-del]').onclick = e => busy(e.target, async () => { await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'DELETE' }); t.items = t.items.filter(x => x !== it); drawItems(); });
+    });
+  };
+  const generate = async (idea, base) => {
+    await ensure();
+    $('#st').innerHTML = '<span class="spinner"></span> Generando la imagen con IA… (20–60 s)';
+    try {
+      const it = await api(`/api/thumbs/${t.id}/generate`, { method: 'POST', body: { ...idea, base } });
+      t.items = [it, ...(t.items || [])]; drawItems();
+    } finally { $('#st').textContent = ''; }
+  };
+  f.onsubmit = e => { e.preventDefault(); busy($('#ideasBtn'), async () => {
+    await ensure();
+    t.ideas = (await api(`/api/thumbs/${t.id}/ideas`, { method: 'POST', body: {} })).ideas; drawIdeas();
+  }); };
+  $('#ownBtn').onclick = () => { if (!f.title.value) return toast('Escribe primero el título', 'bad'); $('#ownFile').click(); };
+  $('#ownFile').onchange = e => { const file = e.target.files[0]; if (!file) return; busy($('#ownBtn'), async () => {
+    const base = await uploadFile(file, pct => { $('#st').textContent = `Subiendo… ${pct}%`; });
+    const first = t?.ideas?.[0] || { text: f.title.value.split(' ').slice(0, 3).join(' ').toUpperCase(), position: 'left' };
+    await generate(first, base);
+  }); e.target.value = ''; };
+  main.querySelectorAll('[data-delset]').forEach(b => b.onclick = e => { e.preventDefault(); if (confirm('¿Borrar estas miniaturas?')) busy(b, async () => { await api('/api/thumbs/' + b.dataset.delset, { method: 'DELETE' }); location.hash = '#/miniaturas'; router(); }); });
+  drawIdeas(); drawItems();
+};
+
 // ---------- Analizador ----------
 const fmtN = n => Number(n || 0).toLocaleString('es');
 routes.analizador = async (id) => {
@@ -1239,6 +1324,11 @@ routes.ayuda = () => {
     <li>Cada Short sale en 1080×1920 con <b>Recorte centrado en quien habla</b> (si hay varias personas en plano, detecta quién habla por el movimiento de la boca y corta a esa persona), recorte fijo o fondo difuminado, gancho 4 s arriba, subtítulos con el estilo elegido, palabras clave en color y emojis animados.</li>
     <li>Ajusta inicio/fin con ±1 s, cambia el gancho y pulsa <b>Aplicar cambios</b>.</li>
     <li>Descarga el .zip o publica directamente en YouTube.</li></ol></div>
+  <div class="card stack"><h2>🖼 Miniaturas IA</h2><ol>
+    <li>Escribe el título del vídeo y elige formato (YouTube 16:9, portada de Shorts 9:16 o cuadrada) y estilo.</li>
+    <li>"✨ Ideas con IA" propone textos cortos y escenas pensadas para conseguir clics. Pulsa "🎨 Generar" en las que te gusten.</li>
+    <li>Si subes tu foto o tu personaje, aparece en la imagen (con OpenAI o Gemini).</li>
+    <li>Cambia el texto, la palabra en color, la posición, el tamaño o el giro y pulsa "✓ Aplicar": no se genera otra imagen ni se gasta más.</li></ol></div>
   <div class="card stack"><h2>🏆 Rankings Top</h2><ol>
     <li>Pon un vídeo en cada puesto (el 1 es el mejor). Puedes subirlo o, en la app de escritorio, buscarlo en YouTube Shorts con el buscador del módulo o pegar un enlace de YouTube, TikTok o Instagram. Elige inicio y fin si solo quieres una parte.</li>
     <li>Escribe una etiqueta corta por puesto y el título. La palabra entre *asteriscos* sale en color; si no marcas ninguna, se resalta la última.</li>

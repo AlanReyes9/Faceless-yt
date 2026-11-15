@@ -15,6 +15,7 @@ import './video/shorts.js';
 import { setLive } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
 import { mountLicense, adminFromReq, hasAdmin } from './license.js';
+import { mountThumbs } from './thumbs.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -356,6 +357,9 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
   await updateProject(p.id, { progress: '⏹ Deteniendo: se termina de grabar el segmento actual y se analizan los últimos momentos…' });
   res.json({ ok: true });
 }));
+
+// Miniaturas y portadas con IA
+mountThumbs(app, h);
 
 // Rankings ("Top 5 momentos…"): clips en cuenta atrás con números y etiquetas
 app.get('/api/ranking/search', h(async (req, res) => {

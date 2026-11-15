@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS license_users (
   max_devices INT DEFAULT 1, expires_at TIMESTAMPTZ, active BOOLEAN DEFAULT true, notes TEXT,
   failed INT DEFAULT 0, locked_until TIMESTAMPTZ, last_login TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS thumbnails (
+  id SERIAL PRIMARY KEY, title TEXT, format TEXT DEFAULT 'youtube', style TEXT, niche TEXT,
+  refs JSONB DEFAULT '[]'::jsonb, ideas JSONB DEFAULT '[]'::jsonb, items JSONB DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS license_used_codes (hash TEXT PRIMARY KEY, used_at TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS license_devices (
   id SERIAL PRIMARY KEY, user_id INT NOT NULL, device_id TEXT NOT NULL, name TEXT, platform TEXT, app_version TEXT,
