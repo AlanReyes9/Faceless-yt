@@ -47,6 +47,16 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS percent INT DEFAULT 0;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS src TEXT;
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS src_offset REAL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS license_users (
+  id SERIAL PRIMARY KEY, username TEXT NOT NULL UNIQUE, pass_hash TEXT NOT NULL, role TEXT DEFAULT 'user',
+  max_devices INT DEFAULT 1, expires_at TIMESTAMPTZ, active BOOLEAN DEFAULT true, notes TEXT,
+  failed INT DEFAULT 0, locked_until TIMESTAMPTZ, last_login TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS license_devices (
+  id SERIAL PRIMARY KEY, user_id INT NOT NULL, device_id TEXT NOT NULL, name TEXT, platform TEXT, app_version TEXT,
+  blocked BOOLEAN DEFAULT false, first_seen TIMESTAMPTZ DEFAULT now(), last_seen TIMESTAMPTZ DEFAULT now(), last_ip TEXT,
+  UNIQUE (user_id, device_id)
+);
 CREATE TABLE IF NOT EXISTS live_segments (
   id SERIAL PRIMARY KEY, project_id INT NOT NULL, seg INT NOT NULL, ref TEXT, start REAL, dur REAL,
   words JSONB, segments JSONB, energy JSONB, analyzed BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT now(),

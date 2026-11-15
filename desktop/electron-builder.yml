@@ -15,7 +15,7 @@ files:
   - public/**
   - fonts/**
   - models/**
-  - desktop/main.js
+  - desktop/{main.js,license.js,preload.cjs,login.html,license-pubkey.pem}
   - "!**/*.map"
   - "!**/{test,tests,__tests__,docs,example,examples}/**"
 extraResources:

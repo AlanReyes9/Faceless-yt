@@ -1,7 +1,8 @@
 // Clippers Pro de escritorio (Windows / macOS / Linux).
 // Arranca el mismo servidor de la web dentro de la app (base de datos y vídeos en tu ordenador)
 // y lo muestra en una ventana. ffmpeg y yt-dlp van incluidos.
-import { app, BrowserWindow, shell, Menu, dialog, safeStorage } from 'electron';
+import { app, BrowserWindow, shell, Menu, dialog, safeStorage, ipcMain } from 'electron';
+import * as lic from './license.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -46,6 +47,9 @@ function setupEnv() {
     saveCloud: cfg => writeCloud(Object.fromEntries(CLOUD_KEYS.filter(k => cfg[k]).map(k => [k, String(cfg[k]).trim()]))),
     relaunch: () => setTimeout(() => { app.relaunch(); app.exit(0); }, 600),
     encrypted: () => safeStorage.isEncryptionAvailable(),
+    licensed: () => licensed,
+    license: () => lic.licenseInfo(),
+    logout: () => logout(),
   };
   // yt-dlp incluido (YouTube, Twitch, Kick)
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'desktop', 'bin');
@@ -124,6 +128,8 @@ function buildMenu(logFile) {
       { label: 'Abrir carpeta de datos', click: () => shell.openPath(process.env.DATA_DIR) },
       { label: 'Ver registro', click: () => shell.openPath(logFile) },
       { label: 'Abrir en el navegador', click: () => shell.openExternal(baseUrl) },
+      { type: 'separator' },
+      { label: 'Cerrar sesión', click: () => logout() },
       { type: 'separator' }, process.platform === 'darwin' ? { role: 'close' } : { role: 'quit', label: 'Salir' }] },
     { label: 'Editar', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'Ver', submenu: [{ role: 'reload', label: 'Recargar' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
@@ -132,11 +138,76 @@ function buildMenu(logFile) {
 }
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-app.on('window-all-closed', () => app.quit()); // al cerrar la ventana se detiene el servidor (los trabajos en curso se reanudan al volver a abrir)
-app.on('activate', () => { if (!win && baseUrl) createWindow(); });
+app.on('window-all-closed', () => { if (!loginWin && licensed) app.quit(); }); // al cerrar la ventana se detiene el servidor (los trabajos en curso se reanudan al volver a abrir)
+app.on('activate', () => { if (!win && baseUrl && licensed) createWindow(); });
+
+// ---------- Licencia: solo usuarios autorizados por el administrador ----------
+let licensed = false, loginWin = null, loginMessage = '', loginResolve = null;
+const NO_LICENSE = !app.isPackaged && process.env.CLIPPERS_NO_LICENSE === '1'; // solo para desarrollo
+
+ipcMain.handle('license:info', () => ({ ...lic.licenseInfo(), message: loginMessage }));
+ipcMain.handle('license:login', async (e, { username, password }) => {
+  try {
+    await lic.login(String(username || ''), String(password || ''));
+    loginMessage = '';
+    loginResolve?.(); loginResolve = null;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: /fetch failed|ENOTFOUND|ECONN|timeout/i.test(err.message) ? 'No se pudo conectar con el servidor de licencias. Revisa tu conexión a internet.' : err.message };
+  }
+});
+
+/** Muestra la ventana de inicio de sesión y espera a que el usuario entre. */
+function askLogin(message = '') {
+  loginMessage = message;
+  return new Promise(resolve => {
+    loginResolve = () => { licensed = true; resolve(); }; // la ventana se cierra después de abrir la principal (closeLogin)
+    if (loginWin) { loginWin.focus(); return; }
+    loginWin = new BrowserWindow({ width: 420, height: 540, resizable: false, backgroundColor: '#0e0f13', title: 'Clippers Pro',
+      webPreferences: { preload: path.join(ROOT, 'desktop', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    loginWin.setMenuBarVisibility(false);
+    loginWin.loadFile(path.join(ROOT, 'desktop', 'login.html'));
+    loginWin.on('closed', () => { if (loginWin) { loginWin = null; if (!licensed) app.quit(); } });
+    loginWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  });
+}
+
+function closeLogin() { const w = loginWin; loginWin = null; w?.destroy(); }
+
+/** Comprueba la licencia al arrancar: guardada y vigente (renovándola si hay conexión) o inicio de sesión. */
+async function ensureLicense() {
+  if (NO_LICENSE) { licensed = true; return; }
+  const local = lic.localLicense();
+  if (local) {
+    const r = await lic.refresh();
+    if (r.ok || r.offline) { licensed = true; return; }
+    return askLogin(r.message);
+  }
+  return askLogin(lic.licenseInfo().username ? 'Tu sesión caducó. Vuelve a iniciar sesión.' : '');
+}
+
+/** Pierde la licencia (revocada, vencida o cierre de sesión): se cierra la ventana y se pide iniciar sesión otra vez. */
+async function lock(message) {
+  licensed = false;
+  const waiting = askLogin(message); // primero la ventana de inicio de sesión (si no, al cerrar la otra se saldría de la app)
+  const w = win; win = null; w?.destroy();
+  await waiting;
+  createWindow();
+  closeLogin();
+}
+function logout() { lic.clearLicense(); lock('Has cerrado la sesión.'); }
+
+// Renovación cada hora; sin conexión la licencia local sirve hasta su caducidad (3 días como máximo)
+setInterval(async () => {
+  if (!licensed || NO_LICENSE) return;
+  const r = await lic.refresh();
+  if (r.revoked) return lock(r.message || 'Tu acceso ya no está autorizado.');
+  if (r.offline && !lic.localLicense()) return lock('No se pudo comprobar tu licencia durante varios días. Conéctate a internet e inicia sesión.');
+}, 3600e3).unref();
 
 app.whenReady().then(async () => {
   const logFile = setupEnv();
+  await ensureLicense();
   try {
     baseUrl = await startServer();
   } catch (e) {
@@ -146,4 +217,5 @@ app.whenReady().then(async () => {
   }
   buildMenu(logFile);
   createWindow();
+  closeLogin();
 });

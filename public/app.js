@@ -40,9 +40,15 @@ const NAV = [
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
 ];
+let ME = {};
 function renderNav(route) {
-  $('#nav').innerHTML = NAV.map(([h, items]) => `<div class="nav-h">${h}</div>` + items.map(([r, ic, label]) =>
-    `<a class="nav-a ${route === r ? 'active' : ''}" href="#/${r}"><span class="ic">${ic}</span>${label}</a>`).join('')).join('');
+  const nav = NAV.map(([h, items]) => [h, h === 'ADMINISTRACIÓN' && ME.license ? [...items, ['licencias', '🔑', 'Licencias y usuarios']] : items]);
+  $('#nav').innerHTML = nav.map(([h, items]) => `<div class="nav-h">${h}</div>` + items.map(([r, ic, label]) =>
+    `<a class="nav-a ${route === r ? 'active' : ''}" href="#/${r}"><span class="ic">${ic}</span>${label}</a>`).join('')).join('') +
+    (ME.license && ME.admin ? `<a class="nav-a" href="#" id="logout"><span class="ic">⏻</span>Salir (${esc(ME.admin)})</a>` : '') +
+    (ME.account?.username ? `<div class="small muted" style="padding:14px 10px 4px">👤 ${esc(ME.account.username)}${ME.account.expiresAt ? ` · vence ${new Date(ME.account.expiresAt).toLocaleDateString('es', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}<br><a href="#" id="dlogout">Cerrar sesión</a></div>` : '');
+  const lo = $('#logout'); if (lo) lo.onclick = async e => { e.preventDefault(); await api('/api/logout', { method: 'POST' }); location.hash = '#/login'; router(); };
+  const dl = $('#dlogout'); if (dl) dl.onclick = e => { e.preventDefault(); if (confirm('¿Cerrar sesión en este equipo?')) api('/api/desktop/logout', { method: 'POST' }).catch(() => {}); };
 }
 $('#menuBtn').onclick = () => $('#sidebar').classList.toggle('open');
 
@@ -56,9 +62,10 @@ async function router() {
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const [route, arg] = path.split('/');
   const params = new URLSearchParams(query || '');
+  const me = ME = await api('/api/me').catch(() => ({ authed: false, setup: [] }));
   renderNav(route === 'proyecto' ? 'videos' : route);
-  const me = await api('/api/me').catch(() => ({ authed: false, setup: [] }));
   if (me.blocked) return renderSetup(me.setup, me);
+  if (me.needsAdmin) return renderAdminSetup();
   if (route !== 'login' && !me.authed) { location.hash = '#/login'; return; }
   main.innerHTML = '<div class="muted"><span class="spinner"></span> Cargando…</div>';
   try { await (routes[route] || routes[''])(arg, params); }
@@ -133,7 +140,32 @@ function renderSetup(missing, me = {}) {
 }
 
 // ---------- Login ----------
+/** Primer administrador del sistema de licencias (solo si aún no hay ninguno). */
+function renderAdminSetup() {
+  main.innerHTML = `<div class="card stack" style="max-width:440px;margin:60px auto">
+    <h1>🔑 Crear administrador</h1><p class="sub" style="margin:0">El acceso a Clippers Pro ahora es solo para usuarios autorizados. Crea tu cuenta de administrador: con ella entrarás aquí y gestionarás los usuarios y sus equipos.</p>
+    <form id="f" class="stack">
+      <div><label>APP_SECRET del servidor <span class="muted">(Vercel → Settings → Environment Variables)</span></label><input type="password" name="appSecret" autocomplete="off" required></div>
+      <div><label>Usuario</label><input name="username" autocomplete="username" required></div>
+      <div><label>Contraseña <span class="muted">(mín. 10 caracteres)</span></label><input type="password" name="password" autocomplete="new-password" minlength="10" required></div>
+      <button class="btn gold block">Crear administrador y entrar</button></form></div>`;
+  $('#f').onsubmit = e => { e.preventDefault(); busy(e.target.querySelector('button'), async () => {
+    await api('/api/license/setup', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+    toast('Administrador creado', 'good'); location.hash = '#/licencias'; router();
+  }); };
+}
+
 routes.login = () => {
+  if (ME.license) {
+    main.innerHTML = `<div class="card stack" style="max-width:380px;margin:80px auto">
+      <h1>Entrar</h1><p class="sub" style="margin:0">Acceso solo para administradores. Los suscriptores usan la app de escritorio.</p>
+      <form id="f" class="stack"><input name="username" placeholder="Usuario" autocomplete="username" autofocus><input type="password" name="password" placeholder="Contraseña" autocomplete="current-password"><button class="btn gold block">Entrar</button></form></div>`;
+    $('#f').onsubmit = e => { e.preventDefault(); busy(e.target.querySelector('button'), async () => {
+      await api('/api/license/admin-login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      location.hash = '#/'; router();
+    }); };
+    return;
+  }
   main.innerHTML = `<div class="card" style="max-width:360px;margin:80px auto">
     <h1>Entrar</h1><p class="sub">Introduce la contraseña de tu estudio.</p>
     <form id="f" class="stack"><input type="password" name="password" placeholder="Contraseña" autofocus><button class="btn gold block">Entrar</button></form></div>`;
@@ -941,6 +973,80 @@ routes.ranking = async () => {
   };
   draw();
   $('#list').innerHTML = projectTable(await api('/api/projects?type=ranking'));
+};
+
+// ---------- Licencias y usuarios (solo administradores, en el servidor central) ----------
+routes.licencias = async () => {
+  const users = await api('/api/license/users');
+  const fdate = d => d ? new Date(d).toLocaleDateString('es', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const ago = d => { if (!d) return 'nunca'; const m = Math.round((Date.now() - new Date(d)) / 60000); return m < 60 ? `hace ${m} min` : m < 2880 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} días`; };
+  const state = u => !u.active ? '<span class="pill error">Desactivado</span>' : u.expires_at && new Date(u.expires_at) < new Date() ? '<span class="pill error">Vencido</span>'
+    : u.expires_at && new Date(u.expires_at) - Date.now() < 7 * 864e5 ? '<span class="pill processing">Vence pronto</span>' : '<span class="pill ready">Activo</span>';
+  main.innerHTML = `<h1>🔑 Licencias y usuarios</h1><p class="sub">Solo los usuarios que crees aquí pueden abrir la app de escritorio. Cada cuenta queda ligada a los equipos donde inicia sesión (hasta el máximo que pongas).</p>
+  <div class="grid g2" style="align-items:start">
+    <form id="nf" class="card stack"><h2>Nuevo usuario</h2>
+      <div class="row"><div style="flex:1"><label>Usuario</label><input name="username" required autocomplete="off"></div>
+        <div style="flex:1"><label>Contraseña</label><div class="row" style="flex-wrap:nowrap"><input name="password" required minlength="8" autocomplete="off"><button type="button" class="btn sm" id="gen" title="Generar">🎲</button></div></div></div>
+      <div class="row"><div style="flex:1"><label>Suscripción</label><select name="days"><option value="30">1 mes</option><option value="90">3 meses</option><option value="180">6 meses</option><option value="365">1 año</option><option value="">Sin vencimiento</option></select></div>
+        <div style="flex:1"><label>Equipos máximos</label><input type="number" name="max_devices" value="1" min="1" max="20"></div>
+        <div style="flex:1"><label>Rol</label><select name="role"><option value="user">Suscriptor</option><option value="admin">Administrador</option></select></div></div>
+      <div><label>Notas <span class="muted">(email, pago…)</span></label><input name="notes"></div>
+      <button class="btn gold">＋ Crear usuario</button>
+      <div class="small muted" id="created"></div></form>
+    <div class="card stack"><h2>Cómo funciona</h2><ol class="small">
+      <li>Crea el usuario y pásale su usuario y contraseña.</li>
+      <li>Al abrir la app de escritorio inicia sesión; ese equipo queda registrado (ID único del equipo).</li>
+      <li>Si intenta entrar desde más equipos de los permitidos, se rechaza. Puedes liberar o bloquear equipos abajo.</li>
+      <li>La app comprueba la licencia cada hora. Si desactivas la cuenta, vence o bloqueas el equipo, se cierra el acceso (sin conexión sigue hasta 3 días como máximo).</li></ol></div>
+  </div>
+  <h2 style="margin-top:24px">Usuarios (${users.length})</h2>
+  <div class="stack">${users.map(u => `<div class="card stack" data-u="${u.id}">
+    <div class="row between"><div class="row"><b style="font-size:16px">${esc(u.username)}</b> ${u.role === 'admin' ? '<span class="pill">admin</span>' : ''} ${state(u)}
+      ${u.locked_until && new Date(u.locked_until) > new Date() ? '<span class="pill error">bloqueado por intentos</span> <button class="btn sm" data-act="unlock">Desbloquear</button>' : ''}</div>
+      <div class="small muted">Vence: <b>${fdate(u.expires_at)}</b> · Equipos: <b>${u.devices.filter(d => !d.blocked).length}/${u.max_devices}</b> · Último acceso: ${ago(u.last_login)}</div></div>
+    ${u.notes ? `<div class="small muted">📝 ${esc(u.notes)}</div>` : ''}
+    <div class="row" style="gap:6px">
+      <button class="btn sm" data-act="add" data-v="30">+30 días</button><button class="btn sm" data-act="add" data-v="365">+1 año</button>
+      <button class="btn sm" data-act="date">📅 Fecha…</button><button class="btn sm" data-act="max">Equipos…</button><button class="btn sm" data-act="pass">Nueva contraseña…</button>
+      <button class="btn sm" data-act="notes">Notas…</button>
+      <button class="btn sm ${u.active ? 'red' : 'gold'}" data-act="toggle">${u.active ? 'Desactivar' : 'Activar'}</button>
+      <button class="btn sm red" data-act="del">Eliminar</button></div>
+    ${u.devices.length ? `<table class="small" style="width:100%"><tr class="muted"><td>Equipo</td><td>Sistema</td><td>Versión</td><td>Último uso</td><td>IP</td><td></td></tr>${u.devices.map(d => `<tr data-d="${d.id}">
+      <td>${d.blocked ? '⛔ ' : '💻 '}${esc(d.name || 'Equipo')} <span class="muted">${esc(d.device_id.slice(0, 10))}…</span></td><td>${esc(d.platform || '')}</td><td>${esc(d.app_version || '')}</td>
+      <td>${ago(d.last_seen)}</td><td class="muted">${esc(d.last_ip || '')}</td>
+      <td style="text-align:right"><button class="btn sm" data-dact="block">${d.blocked ? 'Desbloquear' : 'Bloquear'}</button> <button class="btn sm red" data-dact="del" title="Libera el hueco para otro equipo">Liberar</button></td></tr>`).join('')}</table>` : '<div class="small muted">Aún no ha iniciado sesión en ningún equipo.</div>'}
+  </div>`).join('')}</div>`;
+  const nf = $('#nf');
+  $('#gen').onclick = () => { const a = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; nf.password.value = [...crypto.getRandomValues(new Uint32Array(12))].map(x => a[x % a.length]).join(''); };
+  nf.onsubmit = e => { e.preventDefault(); busy(nf.querySelector('.btn.gold'), async () => {
+    const d = Object.fromEntries(new FormData(nf));
+    await api('/api/license/users', { method: 'POST', body: d });
+    toast(`Usuario ${d.username} creado`, 'good');
+    await routes.licencias();
+    $('#created').innerHTML = `Pásale estos datos: <b>Usuario:</b> <code>${esc(d.username.toLowerCase())}</code> · <b>Contraseña:</b> <code>${esc(d.password)}</code>`;
+  }); };
+  const patch = (id, body) => api('/api/license/users/' + id, { method: 'PATCH', body }).then(() => routes.licencias());
+  main.querySelectorAll('[data-u]').forEach(el => {
+    const id = +el.dataset.u, u = users.find(x => x.id === id);
+    el.querySelectorAll('[data-act]').forEach(b => b.onclick = () => busy(b, async () => {
+      const a = b.dataset.act;
+      if (a === 'add') return patch(id, { addDays: +b.dataset.v });
+      if (a === 'unlock') return patch(id, { unlock: true });
+      if (a === 'toggle') return patch(id, { active: !u.active });
+      if (a === 'date') { const v = prompt('Fecha de vencimiento (AAAA-MM-DD). Vacío = sin vencimiento:', u.expires_at ? u.expires_at.slice(0, 10) : ''); if (v === null) return; return patch(id, { expires_at: v ? v + 'T23:59:59' : null }); }
+      if (a === 'max') { const v = prompt('Número máximo de equipos:', u.max_devices); if (v) return patch(id, { max_devices: +v }); return; }
+      if (a === 'pass') { const v = prompt('Nueva contraseña (mín. 8 caracteres):'); if (v) { await patch(id, { password: v }); toast('Contraseña cambiada', 'good'); } return; }
+      if (a === 'notes') { const v = prompt('Notas:', u.notes || ''); if (v !== null) return patch(id, { notes: v }); return; }
+      if (a === 'del' && confirm(`¿Eliminar a ${u.username} y todos sus equipos?`)) { await api('/api/license/users/' + id, { method: 'DELETE' }); return routes.licencias(); }
+    }));
+    el.querySelectorAll('[data-d]').forEach(row => row.querySelectorAll('[data-dact]').forEach(b => b.onclick = () => busy(b, async () => {
+      const did = +row.dataset.d, d = u.devices.find(x => x.id === did);
+      if (b.dataset.dact === 'block') await api('/api/license/devices/' + did, { method: 'PATCH', body: { blocked: !d.blocked } });
+      else if (confirm('¿Liberar este equipo? El usuario tendrá que iniciar sesión de nuevo en él (y ocupará un hueco).')) await api('/api/license/devices/' + did, { method: 'DELETE' });
+      else return;
+      await routes.licencias();
+    })));
+  });
 };
 
 // ---------- Analizador ----------

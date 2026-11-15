@@ -59,6 +59,18 @@ La app de escritorio incluye el servidor completo, ffmpeg y yt-dlp. Funcionan lo
 
 **Compilar los instaladores:** se generan solos con GitHub Actions al crear una etiqueta (`git tag v0.2.0 && git push --tags`), o a mano en *Actions → App de escritorio → Run workflow* escribiendo la versión. Para probar en local: `npm install -D electron electron-builder` y después `npx electron-builder --config desktop/electron-builder.yml --linux dir`.
 
+## Suscripciones y licencias
+
+Solo pueden usar la app de escritorio los usuarios que autorice el administrador:
+
+- **Servidor central:** la web de Vercel con su base de datos Neon (tablas `license_users` y `license_devices`). Las contraseñas se guardan con scrypt.
+- **Inicio de sesión en la app:** usuario + contraseña + **ID del equipo**. El ID es un hash del identificador del sistema: IOPlatformUUID en Mac, MachineGuid en Windows y machine-id en Linux.
+- **Respuesta del servidor:** una **licencia firmada con Ed25519**. La app la verifica con la clave pública incluida (`desktop/license-pubkey.pem`), la renueva cada hora y sin conexión funciona hasta 3 días.
+- **Revocación:** si la cuenta se desactiva, vence o se bloquea el equipo, la app se cierra y pide iniciar sesión.
+- **Panel *Licencias y usuarios* (web):** crear usuarios, suscripción (1 mes, 3 meses, 1 año…), número máximo de equipos, bloquear o liberar equipos y cambiar contraseñas.
+- **Primer acceso a la web:** pide crear el administrador demostrando que conoces el `APP_SECRET`. La web solo admite administradores; los suscriptores usan la app de escritorio, con sus datos en su ordenador.
+- **Clave de firma:** se deriva del `APP_SECRET`. Si lo cambias, todas las licencias dejan de valer y hay que volver a publicar la app con la nueva clave pública.
+
 ## Instalación en tu PC con Linux (espacio ilimitado)
 
 Todo se guarda en tu disco: sin límite de espacio, sin el límite de 5 minutos de Vercel y renders más rápidos.

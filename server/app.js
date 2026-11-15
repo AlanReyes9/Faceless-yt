@@ -14,6 +14,7 @@ import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
 import { setLive } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
+import { mountLicense, adminFromReq, hasAdmin } from './license.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -40,11 +41,17 @@ const SETUP_MISSING = IS_VERCEL ? [
 ].filter(Boolean) : [];
 const BLOCKED = SETUP_MISSING.includes('APP_SECRET');
 const sign = v => crypto.createHmac('sha256', PASSWORD + internalSecret()).update(v).digest('hex');
-const authed = req => !PASSWORD || req.cookies.session === sign('ok');
+// Servidor central (Vercel): solo entran los administradores del sistema de licencias.
+// Servidor local (app de escritorio / instalación propia): la app ya comprobó la licencia; contraseña opcional (APP_PASSWORD).
+const REQUIRE_LOGIN = IS_VERCEL || process.env.LICENSE_SERVER === '1';
+const authed = async req => REQUIRE_LOGIN ? !!(await adminFromReq(req)) : (!PASSWORD || req.cookies.session === sign('ok'));
 const h = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console.error(req.path, e.message); if (!res.headersSent) res.status(400).json({ error: e.message }); });
 
 app.get('/api/me', h(async (req, res) => res.json({
-  authed: !BLOCKED && authed(req), passwordRequired: !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED,
+  authed: !BLOCKED && await authed(req), passwordRequired: REQUIRE_LOGIN || !!PASSWORD, setup: SETUP_MISSING, blocked: BLOCKED,
+  license: REQUIRE_LOGIN, needsAdmin: REQUIRE_LOGIN && !BLOCKED ? !(await hasAdmin()) : false,
+  admin: REQUIRE_LOGIN ? (await adminFromReq(req))?.username || null : null,
+  account: globalThis.__desktop?.license?.() || null,
   ...(BLOCKED ? { ffmpeg: await run(FFMPEG, ['-version']).then(() => true, () => false), faces: await (await import('./video/face.js')).faceSelfTest() } : {}),
 })));
 app.use('/api', (req, res, next) => BLOCKED ? res.status(503).json({ error: 'Configuración pendiente: ' + SETUP_MISSING.join(', ') }) : next());
@@ -57,7 +64,8 @@ app.post('/api/login', (req, res) => {
   }
   res.status(401).json({ error: 'Contraseña incorrecta' });
 });
-app.post('/api/logout', (req, res) => { res.clearCookie('session'); res.json({ ok: true }); });
+app.post('/api/logout', (req, res) => { res.clearCookie('session'); res.clearCookie('adm'); res.json({ ok: true }); });
+mountLicense(app, h);
 
 // ---------- Worker (procesa la cola en segundo plano) ----------
 async function workerEntry(req, res) {
@@ -79,8 +87,10 @@ app.get('/api/worker/cron', h(async (req, res) => { // cron diario de Vercel: li
 }));
 
 app.use(['/api', '/files'], (req, res, next) => {
-  if (authed(req) || req.path === '/youtube/callback' || req.path === '/blob/upload') return next();
-  res.status(401).json({ error: 'No autorizado' });
+  // App de escritorio: sin licencia vigente no responde (ni desde el navegador)
+  if (globalThis.__desktop && !globalThis.__desktop.licensed()) return res.status(403).json({ error: 'Licencia no válida. Inicia sesión en Clippers Pro.' });
+  if (req.path === '/youtube/callback' || req.path === '/blob/upload') return next();
+  authed(req).then(ok => ok ? next() : res.status(401).json({ error: 'No autorizado' }), next);
 });
 
 // ---------- Subida de archivos ----------
@@ -95,7 +105,7 @@ app.post('/api/upload', upload.single('file'), h(async (req, res) => {
 app.post('/api/blob/upload', h(async (req, res) => {
   const { handleUpload } = await import('@vercel/blob/client');
   const isTokenRequest = req.body?.type === 'blob.generate-client-token';
-  if (isTokenRequest && !authed(req)) return res.status(401).json({ error: 'No autorizado' });
+  if (isTokenRequest && !(await authed(req))) return res.status(401).json({ error: 'No autorizado' });
   const result = await handleUpload({
     body: req.body, request: req,
     onBeforeGenerateToken: async () => ({
@@ -137,6 +147,7 @@ app.get('/api/system', h(async (req, res) => res.json({
 // ---------- App de escritorio: conexión a la nube (R2/S3 y base de datos compartida con la web) ----------
 const desk = () => globalThis.__desktop;
 const mask = v => v ? v.slice(0, 4) + '…' + v.slice(-4) : '';
+app.post('/api/desktop/logout', h(async (req, res) => { if (!globalThis.__desktop) return res.status(404).end(); res.json({ ok: true }); setTimeout(() => globalThis.__desktop.logout(), 100); }));
 app.get('/api/desktop/cloud', h(async (req, res) => {
   if (!desk()) return res.status(404).json({ error: 'Solo en la app de escritorio' });
   const c = desk().getCloud();

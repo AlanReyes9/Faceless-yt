@@ -49,6 +49,10 @@ jobs:
           node node_modules/ffmpeg-static/install.js
           node -e "const f=require('ffmpeg-static');require('fs').accessSync(f);console.log('ffmpeg:',f)"
 
+      - name: Clave pública de licencias
+        shell: bash
+        run: grep -q "BEGIN PUBLIC KEY" desktop/license-pubkey.pem || (echo "Falta desktop/license-pubkey.pem (GET /api/license/pubkey del servidor central)" && exit 1)
+
       - name: Prueba de render con el ffmpeg incluido
         shell: bash
         run: node --no-warnings desktop/smoke.mjs 2>&1 | grep -v onnxruntime
