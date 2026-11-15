@@ -1065,12 +1065,13 @@ const POSITIONS = { left: 'Texto a la izquierda', right: 'Texto a la derecha', t
 routes.miniaturas = async (id) => {
   const [chs, list] = await Promise.all([channelsCache.get(), api('/api/thumbs')]);
   let t = id ? await api('/api/thumbs/' + id) : null;
-  main.innerHTML = `<h1>🖼 Miniaturas IA</h1><p class="sub">Escribe el título de tu vídeo: la IA propone ideas, genera la imagen y le pone un texto grande que se lee en el móvil. Cambia el texto, los colores o la posición sin volver a generar la imagen.</p>
+  main.innerHTML = `<h1>🖼 Miniaturas IA</h1><p class="sub">Escribe el título de tu vídeo: la IA propone ideas y Gemini diseña la miniatura completa, con el texto integrado y una tipografía profesional acorde al tema (dorada, 3D, neón, terror…). Para cambiar el texto, la IA edita la propia imagen.</p>
   <div class="grid g2" style="align-items:start">
     <form id="f" class="card stack"><h2>1. Tu vídeo</h2>
       <div><label>Título del vídeo</label><input name="title" required placeholder="Ej: Probé el truco de ahorro que nadie usa" value="${esc(t?.title || '')}"></div>
       <div class="row"><div style="flex:1"><label>Formato</label><select name="format">${opts(THUMB_FORMATS, t?.format || 'youtube')}</select></div>
         <div style="flex:1"><label>Estilo</label><select name="style">${opts(THUMB_STYLES, t?.style || 'impacto')}</select></div></div>
+      <div><label>Texto de la miniatura</label><select name="mode"><option value="ai">✨ Diseñado por la IA (Gemini): tipografía profesional según el tema</option><option value="overlay">Superpuesto y editable al instante (sin coste extra)</option></select></div>
       <div><label>Nicho o canal <span class="muted">(opcional)</span></label><input name="niche" list="chn" value="${esc(t?.niche || '')}"><datalist id="chn">${chs.map(c => `<option value="${esc(c.niche || c.name)}">`).join('')}</datalist></div>
       <div><label>Tu foto o personaje <span class="muted">(opcional: aparecerá en la miniatura; funciona con OpenAI y Gemini)</span></label><input type="file" name="ref" accept="image/*" multiple></div>
       <div class="row"><button class="btn gold" id="ideasBtn">✨ Ideas con IA</button><button type="button" class="btn" id="ownBtn">🖼 Usar mi imagen de fondo</button></div>
@@ -1085,7 +1086,7 @@ routes.miniaturas = async (id) => {
     <span class="small muted">${THUMB_FORMATS[x.format]?.split(' (')[0] || ''} · ${x.items.length} <button class="btn sm red" data-delset="${x.id}">✕</button></span></div>`).join('')}</div>` : ''}`;
   const f = $('#f');
   const ensure = async () => {
-    if (t && t.title === f.title.value && t.format === f.format.value && t.style === f.style.value) return t;
+    if (t && t.title === f.title.value && t.format === f.format.value && t.style === f.style.value && !f.ref.files.length) return t;
     const refs = [];
     for (const file of f.ref.files) refs.push(await uploadFile(file, pct => { $('#st').textContent = `Subiendo foto… ${pct}%`; }));
     $('#st').textContent = '';
@@ -1095,12 +1096,21 @@ routes.miniaturas = async (id) => {
   };
   const drawIdeas = () => {
     $('#ideas').innerHTML = (t?.ideas || []).map((i, k) => `<div class="scene stack" style="gap:4px"><div class="row between"><b style="font-family:Anton,Impact,sans-serif;font-size:20px;letter-spacing:.5px">${esc(i.text).replace(esc(i.highlight || '¤'), `<span style="color:${esc(i.color || '#FFD400')}">${esc(i.highlight || '')}</span>`)}</b>
-      <button class="btn sm gold" data-gen="${k}">🎨 Generar</button></div><div class="small muted">${esc(i.why || '')}</div></div>`).join('') +
+      <button class="btn sm gold" data-gen="${k}">🎨 Generar</button></div><div class="small muted">${esc(i.why || '')}${i.typography ? ` · 🔤 ${esc(i.typography)}` : ''}</div></div>`).join('') +
       (t?.ideas?.length ? '<button class="btn" id="genAll">🎨 Generar todas</button>' : '');
     $('#ideas').querySelectorAll('[data-gen]').forEach(b => b.onclick = () => busy(b, () => generate(t.ideas[+b.dataset.gen])));
     const ga = $('#genAll'); if (ga) ga.onclick = () => busy(ga, async () => { for (const i of t.ideas) await generate(i); });
   };
-  const card = it => `<div class="card th-card" data-it="${it.id}">
+  const card = it => it.design.mode === 'ai' ? `<div class="card th-card" data-it="${it.id}">
+    <a href="${it.url}" target="_blank"><img src="${it.url}?v=${Date.now()}" class="th-img ${t.format}"></a>
+    <div class="stack" style="gap:6px;margin-top:8px">
+      <div class="small muted">✨ Texto diseñado por la IA. Para cambiarlo, la IA edita la imagen (conserva el resto).</div>
+      <div class="row" style="flex-wrap:nowrap"><input data-k="text" value="${esc(it.design.text)}" placeholder="Texto" style="flex:2"><input data-k="highlight" value="${esc(it.design.highlight)}" placeholder="Palabra en color" style="flex:1">
+        <input type="color" data-k="color" value="${esc(it.design.color || '#FFD400')}" title="Color de la palabra resaltada" style="width:44px;height:38px;padding:2px"></div>
+      <input data-k="typography" placeholder="Estilo de letra (opcional): p. ej. letras doradas 3D con brillo" value="">
+      <input data-k="instructions" placeholder="Otros cambios (opcional): p. ej. fondo más oscuro, añade flechas rojas" value="">
+      <div class="row" style="gap:6px"><button class="btn sm gold" data-apply>✏️ Cambiar con IA</button><a class="btn sm" href="${it.url}" download="miniatura.png" target="_blank">⬇ Descargar</a>
+        <button class="btn sm" data-again title="Otra versión con la misma idea">↻ Otra versión</button><button class="btn sm red" data-del>✕</button></div></div></div>` : `<div class="card th-card" data-it="${it.id}">
     <a href="${it.url}" target="_blank"><img src="${it.url}?v=${Date.now()}" class="th-img ${t.format}"></a>
     <div class="stack" style="gap:6px;margin-top:8px">
       <div class="row" style="flex-wrap:nowrap"><input data-k="text" value="${esc(it.design.text)}" placeholder="Texto" style="flex:2"><input data-k="highlight" value="${esc(it.design.highlight)}" placeholder="Palabra en color" style="flex:1"></div>
@@ -1115,17 +1125,20 @@ routes.miniaturas = async (id) => {
     $('#items').innerHTML = t?.items?.length ? t.items.map(card).join('') : '<div class="empty">Aún no hay miniaturas.</div>';
     $('#items').querySelectorAll('[data-it]').forEach(el => {
       const it = t.items.find(x => x.id === el.dataset.it);
-      const val = () => Object.fromEntries([...el.querySelectorAll('[data-k]')].map(i => [i.dataset.k, i.type === 'checkbox' ? i.checked : i.type === 'range' ? Number(i.value) : i.value]));
-      el.querySelector('[data-apply]').onclick = e => busy(e.target, async () => { Object.assign(it, await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'PATCH', body: val() })); drawItems(); });
+      const val = () => Object.fromEntries([...el.querySelectorAll('[data-k]')].map(i => [i.dataset.k, i.type === 'checkbox' ? i.checked : i.type === 'range' ? Number(i.value) : i.value]).filter(([, v]) => v !== ''));
+      el.querySelector('[data-apply]').onclick = e => busy(e.target, async () => {
+        if (it.design.mode === 'ai') $('#st').innerHTML = '<span class="spinner"></span> La IA está cambiando el texto de la miniatura… (20–60 s)';
+        try { Object.assign(it, await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'PATCH', body: val() })); drawItems(); } finally { $('#st').textContent = ''; }
+      });
       el.querySelector('[data-again]').onclick = e => busy(e.target, () => generate({ ...it.design, prompt: it.prompt }));
       el.querySelector('[data-del]').onclick = e => busy(e.target, async () => { await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'DELETE' }); t.items = t.items.filter(x => x !== it); drawItems(); });
     });
   };
   const generate = async (idea, base) => {
     await ensure();
-    $('#st').innerHTML = '<span class="spinner"></span> Generando la imagen con IA… (20–60 s)';
+    $('#st').innerHTML = `<span class="spinner"></span> ${f.mode.value === 'ai' && !base ? 'Gemini está diseñando la miniatura con el texto…' : 'Generando la imagen con IA…'} (20–60 s)`;
     try {
-      const it = await api(`/api/thumbs/${t.id}/generate`, { method: 'POST', body: { ...idea, base } });
+      const it = await api(`/api/thumbs/${t.id}/generate`, { method: 'POST', body: { ...idea, base, mode: base ? 'overlay' : (idea.mode || f.mode.value) } });
       t.items = [it, ...(t.items || [])]; drawItems();
     } finally { $('#st').textContent = ''; }
   };
@@ -1328,7 +1341,8 @@ routes.ayuda = () => {
     <li>Escribe el título del vídeo y elige formato (YouTube 16:9, portada de Shorts 9:16 o cuadrada) y estilo.</li>
     <li>"✨ Ideas con IA" propone textos cortos y escenas pensadas para conseguir clics. Pulsa "🎨 Generar" en las que te gusten.</li>
     <li>Si subes tu foto o tu personaje, aparece en la imagen (con OpenAI o Gemini).</li>
-    <li>Cambia el texto, la palabra en color, la posición, el tamaño o el giro y pulsa "✓ Aplicar": no se genera otra imagen ni se gasta más.</li></ol></div>
+    <li>Con "✨ Diseñado por la IA" (recomendado) Gemini dibuja el texto como parte del diseño, con la tipografía que pide el tema. Para cambiarlo, escribe el texto nuevo y pulsa "✏️ Cambiar con IA": edita la misma imagen. Necesita una clave de Gemini (o de OpenAI).</li>
+    <li>Con "Superpuesto" el texto se pone encima y se cambia al instante sin gastar (texto, colores, posición, tamaño y giro).</li></ol></div>
   <div class="card stack"><h2>🏆 Rankings Top</h2><ol>
     <li>Pon un vídeo en cada puesto (el 1 es el mejor). Puedes subirlo o, en la app de escritorio, buscarlo en YouTube Shorts con el buscador del módulo o pegar un enlace de YouTube, TikTok o Instagram. Elige inicio y fin si solo quieres una parte.</li>
     <li>Escribe una etiqueta corta por puesto y el título. La palabra entre *asteriscos* sale en color; si no marcas ninguna, se resalta la última.</li>

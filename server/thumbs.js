@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { q, one, WORK_DIR } from './db.js';
 import { chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
+import { getSetting } from './settings.js';
 import { ffmpeg, assFilter } from './video/ffmpeg.js';
 import { saveFile, saveBuffer, toLocal, publicUrl, removeFile } from './storage.js';
 
@@ -36,8 +37,9 @@ Propón ${n} ideas de miniatura muy distintas entre sí. Para cada una:
 - "prompt": descripción visual EN INGLÉS de la imagen (sujeto principal grande y expresivo, emoción clara, fondo simple), SIN texto en la imagen
 - "position": dónde va el texto: "left", "right", "top" o "bottom" (el sujeto queda en el lado contrario)
 - "color": color del texto resaltado en hex (#FFD400, #FF3B30, #22C55E…)
+- "typography": estilo de letra EN INGLÉS acorde al tema, como lo haría un diseñador profesional (p. ej. "huge 3D gold metallic letters with glow" para dinero, "cracked blood-red horror font" para terror, "neon cyberpunk glowing letters" para gaming, "chalk handwritten" para educación)
 - "why": por qué funciona (una frase)
-JSON: {"ideas":[{"text":"","highlight":"","prompt":"","position":"left","color":"#FFD400","why":""}]}`, { maxTokens: 2000 });
+JSON: {"ideas":[{"text":"","highlight":"","prompt":"","position":"left","color":"#FFD400","typography":"","why":""}]}`, { maxTokens: 2000 });
   return (r.ideas || []).slice(0, n);
 }
 
@@ -86,6 +88,44 @@ export async function renderThumb(baseRef, design, format = 'youtube') {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
+// ---------- Texto integrado por la IA (Gemini "Nano Banana"; OpenAI como respaldo) ----------
+async function aiProviders() {
+  const order = [];
+  if (await getSetting('gemini_key')) order.push('gemini');
+  if (await getSetting('openai_key')) order.push('openai');
+  if (!order.length) throw new Error('Para el texto integrado por IA necesitas una clave de Gemini (o de OpenAI) en Ajustes y claves. (400)');
+  return order;
+}
+async function generateWith(order, prompt, opts) {
+  let last;
+  for (const provider of order) {
+    try { return await generateImage(prompt, { ...opts, provider }); } catch (e) { last = e; console.warn(`[miniatura] ${provider}: ${e.message.slice(0, 160)}`); }
+  }
+  throw last;
+}
+// Nombre de color aproximado (los modelos de imagen entienden mejor "bright yellow" que "#FFD400")
+function colorName(hex) {
+  const m = String(hex || '').match(/^#?([0-9a-f]{6})$/i); if (!m) return hex || 'bright yellow';
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16));
+  const names = { 'bright yellow': [255, 212, 0], 'gold': [255, 180, 0], 'orange': [255, 120, 0], 'bright red': [255, 40, 40], 'hot pink': [255, 60, 170], 'purple': [150, 60, 255],
+    'electric blue': [30, 120, 255], 'cyan': [0, 220, 255], 'neon green': [40, 220, 90], 'white': [255, 255, 255], 'black': [10, 10, 10] };
+  let best = 'bright yellow', d = Infinity;
+  for (const [n, c] of Object.entries(names)) { const x = (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2; if (x < d) { d = x; best = n; } }
+  return `${best} (${'#' + m[1].toUpperCase()})`;
+}
+const sideOf = p => ({ left: 'on the left side', right: 'on the right side', top: 'across the top', bottom: 'across the bottom', center: 'in the center' }[p] || 'on the left side');
+function aiPrompt(t, b, hasRefs) {
+  const text = clean(b.text).toUpperCase(), hl = clean(b.highlight).toUpperCase();
+  return `Design a professional, high click-through-rate ${t.format === 'short' ? 'vertical 9:16 YouTube Shorts cover' : t.format === 'square' ? 'square social media cover' : 'YouTube thumbnail (16:9)'} for a video titled "${t.title}"${t.niche ? ` from a ${t.niche} channel` : ''}.
+Scene: ${b.prompt || 'a striking image that represents the topic'}. Visual style: ${STYLES[t.style] || ''}.
+${hasRefs ? 'Use the person from the reference photo as the main subject; keep their face recognizable with an exaggerated, expressive emotion.' : ''}
+${text ? `Headline text, rendered as part of the design (NOT as subtitles or captions): "${text}". Spell it EXACTLY like that, letter by letter, keeping accents, with no extra words.
+Typography: ${b.typography || 'bold heavy display typeface designed for the topic'}; huge, thick and readable even at small size, with depth (3D, bevel, strong outline or glow) and integrated with the scene lighting.
+${hl && hl !== text ? `Make the word "${hl}" stand out in ${colorName(b.color)}, the rest in a contrasting color.` : ''}
+Place the headline ${sideOf(b.position)}, and the main subject on the opposite side, large and close to camera.` : 'No text at all.'}
+Only this headline: no other text, letters, numbers, logos, watermarks or UI elements. Sharp, vibrant, professional graphic design like top YouTube creators.`;
+}
+
 // ---------- Rutas ----------
 const out = t => ({ ...t, items: (t.items || []).map(it => ({ ...it, url: publicUrl(it.out), baseUrl: publicUrl(it.base) })), refUrls: (t.refs || []).map(publicUrl) });
 
@@ -111,6 +151,18 @@ export function mountThumbs(app, h) {
     const t = await one('SELECT * FROM thumbnails WHERE id = $1', [req.params.id]);
     const b = req.body || {};
     const F = FORMATS[t.format];
+    const mode = b.mode === 'overlay' || b.base ? 'overlay' : 'ai';
+    if (mode === 'ai') {
+      const refs = [];
+      for (const r of (t.refs || []).slice(0, 2)) { try { refs.push(fs.readFileSync(await toLocal(r, path.join(WORK_DIR, `tref_${crypto.randomBytes(4).toString('hex')}`)))); } catch {} }
+      const buf = await generateWith(await aiProviders(), aiPrompt(t, b, refs.length > 0), { size: F.size, references: refs });
+      const base = await saveBuffer(buf, 'miniatura_ia.png', 'image/png');
+      const design = { mode: 'ai', text: clean(b.text).toUpperCase(), highlight: b.highlight || '', color: b.color || '#FFD400', position: b.position || 'left', typography: b.typography || '' };
+      const ref = await renderThumb(base, { text: '', shade: false, saturation: 1 }, t.format); // solo se ajusta al tamaño exacto
+      const item = { id: crypto.randomBytes(4).toString('hex'), base, out: ref, design, prompt: b.prompt || '' };
+      await q(`UPDATE thumbnails SET items = items || $2::jsonb WHERE id = $1`, [t.id, JSON.stringify([item])]);
+      return res.json({ ...item, url: publicUrl(ref), baseUrl: publicUrl(base) });
+    }
     let base = b.base || null;
     if (!base) {
       const sideText = { left: 'leave empty space on the left third for big text, main subject on the right', right: 'leave empty space on the right third for big text, main subject on the left',
@@ -133,9 +185,24 @@ export function mountThumbs(app, h) {
     const items = t.items || [];
     const it = items.find(x => x.id === req.params.item);
     if (!it) throw new Error('No existe.');
-    it.design = { ...it.design, ...req.body };
     const old = it.out;
-    it.out = await renderThumb(it.base, it.design, t.format);
+    if (it.design.mode === 'ai') {
+      // Texto integrado: la IA edita la propia imagen (cambia el texto y conserva el resto)
+      const next = { ...it.design, ...req.body };
+      const text = clean(next.text).toUpperCase(), hl = clean(next.highlight).toUpperCase();
+      const img = fs.readFileSync(await toLocal(it.base, path.join(WORK_DIR, `tedit_${crypto.randomBytes(4).toString('hex')}`)));
+      const instr = `Edit this thumbnail. Replace the headline text with exactly "${text}" (spelled letter by letter, no other words)${hl && hl !== text ? `, with the word "${hl}" in ${colorName(next.color)}` : ''}.
+${req.body.typography ? `Typography: ${req.body.typography}.` : 'Keep the same typography style, size, effects and position.'} ${req.body.instructions ? `Also: ${req.body.instructions}.` : 'Keep everything else in the image exactly the same.'} No other text, logos or watermarks.`;
+      const buf = await generateWith(await aiProviders(), instr, { size: FORMATS[t.format].size, references: [img] });
+      const oldBase = it.base;
+      it.base = await saveBuffer(buf, 'miniatura_ia.png', 'image/png');
+      it.design = { ...next, text };
+      it.out = await renderThumb(it.base, { text: '', shade: false, saturation: 1 }, t.format);
+      await removeFile(oldBase).catch(() => {});
+    } else {
+      it.design = { ...it.design, ...req.body };
+      it.out = await renderThumb(it.base, it.design, t.format);
+    }
     await q('UPDATE thumbnails SET items = $2 WHERE id = $1', [t.id, JSON.stringify(items)]);
     await removeFile(old).catch(() => {});
     res.json({ ...it, url: publicUrl(it.out), baseUrl: publicUrl(it.base) });
