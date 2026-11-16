@@ -292,10 +292,29 @@ app.get('/api/projects/:id', h(async (req, res) => {
       COUNT(*) FILTER (WHERE NOT analyzed)::int AS pending FROM live_segments WHERE project_id = $1`, [p.id])) } : null;
   res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, live, clips: clips.map(clipOut) });
 }));
+// Ventana "Descargar desde un link": información del vídeo, calidades y tamaño aproximado
+app.post('/api/link/info', h(async (req, res) => {
+  if (IS_VERCEL) throw new Error('Descargar desde enlaces solo está disponible en la app de escritorio. (400)');
+  const url = String(req.body?.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) throw new Error('Pega un enlace válido (https://…).');
+  const { linkInfo } = await import('./video/ytdlp.js');
+  res.json(await linkInfo(url));
+}));
+app.post('/api/projects/:id/cancel', h(async (req, res) => {
+  const { activeDownloads } = await import('./video/shorts.js');
+  const id = Number(req.params.id);
+  activeDownloads.get(id)?.abort();
+  await q("UPDATE jobs SET status = 'failed', error = 'Cancelado' WHERE status IN ('queued','running') AND payload->>'id' = $1", [String(id)]);
+  await updateProject(id, { status: 'error', error: 'Descarga cancelada.', progress: null });
+  res.json({ ok: true });
+}));
 app.post('/api/shorts', h(async (req, res) => {
   const b = req.body;
   if (!b.source && !b.url) throw new Error('Sube un vídeo o pega un enlace.');
+  const dl = b.download || {};
   const options = {
+    download: b.url ? { height: Math.min(2160, Math.max(144, Number(dl.height) || 1080)), from: Number(dl.from) > 0 ? Number(dl.from) : 0,
+      to: Number(dl.to) > Number(dl.from || 0) ? Number(dl.to) : 0, estMB: Number(dl.estMB) || 0 } : undefined,
     count: Math.min(30, Number(b.count) || 10), minSec: Number(b.minSec) || 20, maxSec: Number(b.maxSec) || 60,
     layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
     captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false,

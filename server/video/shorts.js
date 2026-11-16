@@ -16,6 +16,8 @@ import { saveFile, inputPath, removeFile } from '../storage.js';
 const projectFail = async ({ id }, msg) => updateProject(id, { status: 'error', error: msg, progress: null });
 
 // ---------- Paso 1: preparar origen ----------
+/** Descargas en curso por proyecto (para poder cancelarlas). */
+export const activeDownloads = new Map();
 register('shorts.start', async ({ id }) => {
   const p = await getProject(id);
   await updateProject(id, { status: 'processing', error: null, progress: 'Preparando el vídeo…', percent: 1 });
@@ -31,8 +33,17 @@ register('shorts.start', async ({ id }) => {
     if (IS_VERCEL) throw new Error('En Vercel no se pueden descargar enlaces (YouTube bloquea los servidores en la nube). Sube el archivo de vídeo directamente. (400)');
     await updateProject(id, { progress: 'Obteniendo el vídeo del enlace…' });
     for (const n of fs.readdirSync(WORK_DIR)) if (n.startsWith(`dl_${id}.`)) fs.rmSync(path.join(WORK_DIR, n), { force: true }); // restos de un intento anterior
-    const file = await downloadVideo(p.source_url, WORK_DIR, `dl_${id}`,
-      (pct, text) => updateProject(id, { progress: text, percent: Math.max(1, Math.round(pct * 0.1)) }).catch(() => {}));
+    const d = p.data.options?.download || {};
+    const ac = new AbortController();
+    activeDownloads.set(id, ac);
+    let file;
+    try {
+      file = await downloadVideo(p.source_url, WORK_DIR, `dl_${id}`, (pct, text, extra) => {
+        q(`UPDATE projects SET progress = $2, percent = $3, data = jsonb_set(data, '{download}', $4::jsonb, true) WHERE id = $1`,
+          [id, text, Math.max(1, Math.round(pct * 0.1)), JSON.stringify({ pct: Math.round(pct), ...(extra || {}), active: true })]).catch(() => {});
+      }, { height: d.height, from: d.from, to: d.to, estMB: d.estMB, signal: ac.signal });
+    } finally { activeDownloads.delete(id); }
+    await q(`UPDATE projects SET data = jsonb_set(data, '{download}', '{"pct":100,"done":true}'::jsonb, true) WHERE id = $1`, [id]);
     await updateProject(id, { progress: 'Guardando el vídeo…', percent: 10 });
     source = await saveFile(file, `source_${id}.mp4`);
     fs.rmSync(file, { force: true });

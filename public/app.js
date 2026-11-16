@@ -284,7 +284,9 @@ routes.shorts = async () => {
       <h2>1. Vídeo de origen</h2>
       <div class="drop" id="drop"><div style="font-size:30px">⬆</div><b>Arrastra tu vídeo aquí</b><div class="muted small">o haz clic para elegirlo (mp4, mov, mkv…)</div><div id="fname" class="small" style="margin-top:8px;color:var(--gold)"></div></div>
       <input type="file" name="video" accept="video/*" hidden>
-      <div><label>…o pega un enlace (YouTube, etc.) ${sys.ytdlp ? '' : `<span class="muted">— ${sys.vercel ? 'no disponible en Vercel, sube el archivo' : 'yt-dlp no está instalado en el servidor'}</span>`}</label><input name="url" placeholder="https://www.youtube.com/watch?v=…" ${sys.ytdlp ? '' : 'disabled'}></div>
+      ${sys.ytdlp ? `<button type="button" class="btn block" id="linkBtn">🔗 Descargar desde un link (YouTube, Twitch, Kick, TikTok…)</button>`
+        : `<div class="small muted">Descargar desde enlaces: ${sys.vercel ? 'disponible en la app de escritorio' : 'yt-dlp no está instalado en el servidor'}.</div>`}
+      <input type="hidden" name="url">
       <div><label>Título del proyecto (opcional)</label><input name="title"></div>
       <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
     </div>
@@ -324,6 +326,12 @@ routes.shorts = async () => {
       location.hash = '#/proyecto/' + r.id;
     } catch (err) { toast(err.message, 'bad'); go.disabled = false; $('#up').textContent = ''; }
   };
+  const lb = $('#linkBtn');
+  if (lb) lb.onclick = () => linkDialog(() => {
+    const d = Object.fromEntries(new FormData(f)); delete d.video; delete d.url;
+    d.captions = f.captions.checked; d.emojis = f.emojis.checked;
+    return d;
+  });
   const list = await api('/api/projects?type=shorts');
   $('#list').innerHTML = projectTable(list);
 };
@@ -374,6 +382,77 @@ routes.directo = async () => {
   };
   $('#list').innerHTML = projectTable(await api('/api/projects?type=live'));
 };
+
+// ---------- Ventana "Descargar desde un link": info, calidad, tramo y progreso real ----------
+const hhmmss = t => { t = Math.max(0, Math.round(t || 0)); return [Math.floor(t / 3600), Math.floor(t % 3600 / 60), t % 60].map(n => String(n).padStart(2, '0')).join(':'); };
+const parseHms = v => String(v || '').split(':').map(Number).reduce((a, n) => a * 60 + (n || 0), 0);
+function linkDialog(getOptions) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal stack">
+    <div class="row between"><b>🔗 Descargar desde un link</b><button class="btn sm" data-close>✕</button></div>
+    <div class="row" style="flex-wrap:nowrap"><input id="lu" placeholder="https://www.youtube.com/watch?v=…" style="flex:1"><button class="btn" id="lsearch">Buscar</button></div>
+    <div class="small muted">Descarga solo contenido tuyo o que tengas permiso para usar: vídeos públicos de YouTube, Twitch, Kick, TikTok… (directos ya terminados incluidos); nada de contenido de pago, de miembros o privado.</div>
+    <label class="check"><input type="checkbox" id="lperm"> Tengo permiso del creador para clipear este contenido</label>
+    <div id="linfo" class="stack" style="gap:10px"></div>
+    <div id="lprog"></div>
+    <div class="row between"><button class="btn red" id="lcancel" hidden>Cancelar descarga</button><span></span>
+      <div class="row"><button class="btn gold" id="lgo" disabled>Descargar y analizar</button><button class="btn" data-close>Cerrar</button></div></div>
+  </div>`;
+  document.body.appendChild(bg);
+  const $m = s => bg.querySelector(s);
+  let info = null, pid = null, timer = null;
+  const close = () => { clearTimeout(timer); bg.remove(); };
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  const ready = () => { $m('#lgo').disabled = !(info && $m('#lperm').checked) || !!pid; };
+  $m('#lperm').onchange = ready;
+  const est = () => {
+    const q = info.qualities.find(x => String(x.height) === $m('#lq').value);
+    if (!q?.mb) return null;
+    if (!$m('#lpart').checked || !info.duration) return q.mb;
+    const len = Math.max(0, parseHms($m('#lto').value) - parseHms($m('#lfrom').value));
+    return Math.round(q.mb * len / info.duration);
+  };
+  const updEst = () => { const mb = est(); $m('#lsize').textContent = mb ? `≈ ${mb} MB` : ''; };
+  $m('#lsearch').onclick = () => busy($m('#lsearch'), async () => {
+    $m('#linfo').innerHTML = '<div class="muted small"><span class="spinner"></span> Buscando el vídeo…</div>';
+    try {
+      info = await api('/api/link/info', { method: 'POST', body: { url: $m('#lu').value.trim() } });
+    } catch (e) { $m('#linfo').innerHTML = `<div class="err small">${esc(e.message)}</div>`; info = null; ready(); return; }
+    const def = info.qualities.find(x => x.height === 720) || info.qualities[info.qualities.length - 1];
+    $m('#linfo').innerHTML = `<div class="row" style="gap:12px;flex-wrap:nowrap">${info.thumbnail ? `<img src="${esc(info.thumbnail)}" style="width:120px;border-radius:6px">` : ''}
+        <div><b style="font-size:16px">${esc(info.title)}</b><div class="small muted">${esc(info.platform)} · ${esc(info.channel)} · ⏱ ${hhmmss(info.duration)}${info.live ? ' · 🔴 en directo (usa "Clips de directos")' : ''}</div></div></div>
+      <div class="row" style="flex-wrap:nowrap"><label style="margin:0;min-width:64px">Calidad</label><select id="lq" style="flex:1">${info.qualities.map(q => `<option value="${q.height}" ${q === def ? 'selected' : ''}>${q.label}</option>`).join('')}</select><span id="lsize" class="small muted" style="min-width:80px;text-align:right"></span></div>
+      <label class="check"><input type="checkbox" id="lpart"> Descargar solo un tramo (si no, todo el vídeo)</label>
+      <div class="row" id="lrange" style="flex-wrap:nowrap;opacity:.5"><label style="margin:0;min-width:64px">Tramo</label> de <input id="lfrom" value="00:00:00" style="width:110px"> a <input id="lto" value="${hhmmss(info.duration)}" style="width:110px"></div>`;
+    $m('#lq').onchange = updEst;
+    $m('#lpart').onchange = () => { $m('#lrange').style.opacity = $m('#lpart').checked ? 1 : .5; updEst(); };
+    $m('#lfrom').oninput = $m('#lto').oninput = updEst;
+    updEst(); ready();
+  });
+  $m('#lu').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $m('#lsearch').click(); } };
+  const watch = async () => {
+    let p; try { p = await api('/api/projects/' + pid); } catch { timer = setTimeout(watch, 1500); return; }
+    const d = p.data?.download || {};
+    if (p.status === 'error') { $m('#lprog').innerHTML = `<div class="err small">${esc(p.error || 'Error')}</div>`; $m('#lcancel').hidden = true; return; }
+    if (d.done || (p.percent > 10 && !d.active)) { close(); location.hash = '#/proyecto/' + pid; return; } // descargado: a analizar
+    const got = d.gotMB, tot = d.totalMB;
+    $m('#lprog').innerHTML = pbar(d.pct || 0, p.progress || 'Preparando la descarga…') +
+      `<div class="small muted" style="margin-top:4px">${got != null ? `${got.toFixed(0)} MB de ~${(tot || 0).toFixed(0)} MB` : ''}${d.speed ? ' · ' + esc(String(d.speed).replace('iB', 'B')) : ''}</div>`;
+    timer = setTimeout(watch, 1000);
+  };
+  $m('#lgo').onclick = () => busy($m('#lgo'), async () => {
+    const part = $m('#lpart').checked;
+    const body = { ...getOptions(), url: info.webpage || $m('#lu').value.trim(), title: info.title,
+      download: { height: Number($m('#lq').value), from: part ? parseHms($m('#lfrom').value) : 0, to: part ? parseHms($m('#lto').value) : 0, estMB: est() || 0 } };
+    const r = await api('/api/shorts', { method: 'POST', body });
+    pid = r.id; ready();
+    $m('#lcancel').hidden = false;
+    $m('#lcancel').onclick = () => busy($m('#lcancel'), async () => { await api(`/api/projects/${pid}/cancel`, { method: 'POST' }); clearTimeout(timer); $m('#lprog').innerHTML = '<div class="small muted">Descarga cancelada.</div>'; $m('#lcancel').hidden = true; pid = null; ready(); });
+    watch();
+  });
+  setTimeout(() => $m('#lu').focus(), 50);
+}
 
 // ---------- Proyecto (Shorts o completo) ----------
 routes.proyecto = async id => {

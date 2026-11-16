@@ -20,7 +20,7 @@ export function baseArgs() {
  * Ejecuta yt-dlp. Si pasa `stallMs` sin ninguna salida nueva, lo detiene con un error claro.
  * onLine recibe cada línea (stdout y stderr).
  */
-export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3 } = {}) {
+export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3, signal } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(YTDLP, [...baseArgs(), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '', last = Date.now(), reason = null;
@@ -30,6 +30,7 @@ export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4
       if (isErr) { err += s; if (err.length > 20000) err = err.slice(-10000); } else { out += s; if (out.length > 200000) out = out.slice(-100000); }
       for (const line of s.split(/\r?\n|\r/)) if (line.trim()) onLine(line.trim());
     };
+    if (signal) { if (signal.aborted) p.kill('SIGKILL'); signal.addEventListener('abort', () => { reason = 'cancelado'; p.kill('SIGKILL'); }, { once: true }); }
     p.stdout.on('data', d => feed(d, false));
     p.stderr.on('data', d => feed(d, true));
     const started = Date.now();
@@ -42,6 +43,7 @@ export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4
     p.on('close', code => {
       clearInterval(watch);
       if (code === 0 && !reason) return resolve({ out, err });
+      if (reason === 'cancelado') return reject(Object.assign(new Error('Descarga cancelada.'), { cancelled: true }));
       const msg = (err.match(/ERROR:.*$/m)?.[0] || err.trim().split('\n').slice(-3).join(' ') || '').slice(0, 400);
       if (/not a bot|Sign in to confirm/i.test(msg)) return reject(new Error('YouTube pide verificar que no eres un bot. Prueba de nuevo más tarde o sube el archivo de vídeo. (' + msg + ')'));
       reject(new Error(reason ? `${reason}. ${msg}` : `yt-dlp falló: ${msg || 'código ' + code}`));
@@ -49,23 +51,72 @@ export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4
   });
 }
 
-/** Descarga un vídeo (≤1080p, mp4) en `dir` con el prefijo `name`. onProgress(pct, texto). Devuelve la ruta del archivo. */
-export async function downloadVideo(url, dir, name, onProgress = () => {}) {
+const MB = b => b / 1048576;
+const toBytes = (n, u) => Number(n) * ({ B: 1, KIB: 1024, KB: 1000, MIB: 1048576, MB: 1e6, GIB: 1073741824, GB: 1e9 }[String(u).toUpperCase()] || 1);
+const hms = t => { const [h, m, s] = String(t).split(':').map(Number); return h * 3600 + m * 60 + (s || 0); };
+
+/** Información de un enlace antes de descargar: título, canal, duración y tamaño aproximado por calidad. */
+export async function linkInfo(url) {
+  const { out } = await ytdlp(['-J', url], { stallMs: 60000, timeoutMs: 120000 });
+  const j = JSON.parse(out.slice(out.indexOf('{')));
+  const dur = j.duration || 0;
+  const fmts = j.formats || [];
+  const size = f => f.filesize || f.filesize_approx || (f.tbr && dur ? f.tbr * 1000 / 8 * dur : 0);
+  const audio = fmts.filter(f => f.vcodec === 'none' && f.acodec !== 'none').sort((a, b) => size(b) - size(a))[0];
+  const heights = [...new Set(fmts.filter(f => f.height && f.vcodec !== 'none').map(f => f.height))].filter(h => h >= 240).sort((a, b) => a - b);
+  const pick = [240, 360, 480, 720, 1080, 1440, 2160].filter(h => heights.some(x => x >= h * 0.9 && x <= h * 1.1) || h === Math.max(...heights));
+  const qualities = pick.map(h => {
+    const vids = fmts.filter(f => f.height && f.height <= h * 1.1 && f.height >= h * 0.9 && f.vcodec !== 'none');
+    const best = vids.sort((a, b) => (/avc|h264/.test(b.vcodec || '') - /avc|h264/.test(a.vcodec || '')) || size(b) - size(a))[0];
+    const bytes = best ? size(best) + (best.acodec === 'none' && audio ? size(audio) : 0) : 0;
+    return { height: h, label: `${h}p`, mb: bytes ? Math.round(MB(bytes)) : null };
+  }).filter(q => q.height <= 1080 || pick.length === 1);
+  return {
+    title: j.title || '', channel: j.channel || j.uploader || '', platform: j.extractor_key || j.extractor || '', duration: dur,
+    thumbnail: j.thumbnail || null, live: j.live_status === 'is_live', webpage: j.webpage_url || url,
+    qualities: qualities.length ? qualities : [{ height: 720, label: '720p', mb: null }],
+  };
+}
+
+/**
+ * Descarga un vídeo (mp4, H.264 + AAC) en `dir` con el prefijo `name`.
+ * opts: { height (calidad máx.), from, to (segundos: solo un tramo), estMB (tamaño estimado), signal (cancelar) }
+ * onProgress(pct, texto, { gotMB, totalMB, speed }). Devuelve la ruta del archivo.
+ */
+export async function downloadVideo(url, dir, name, onProgress = () => {}, opts = {}) {
   const tmpl = path.join(dir, `${name}.%(ext)s`);
-  let lastPct = -1, phase = 0, lastSent = 0;
-  // Se prefiere H.264 + AAC hasta 1080p (lo lee cualquier ffmpeg); el vídeo y el audio van por separado y se unen
-  await ytdlp(['-f', 'bv*+ba/b', '-S', 'res:1080,vcodec:h264,acodec:aac', '--merge-output-format', 'mp4', '-o', tmpl, url], {
+  const H = Number(opts.height) || 1080;
+  const section = opts.to > (opts.from || 0) ? [Math.max(0, opts.from || 0), opts.to] : null;
+  const secDur = section ? section[1] - section[0] : 0;
+  let lastPct = -1, phase = 0, lastSent = 0, doneMB = 0;
+  const send = (pct, text, extra, force) => { if (force || Date.now() - lastSent > 1500) { lastSent = Date.now(); onProgress(pct, text, extra); } };
+  const args = ['-f', `bv*[height<=${H}]+ba/b[height<=${H}]/bv*+ba/b`, '-S', `res:${H},vcodec:h264,acodec:aac`, '--merge-output-format', 'mp4', '-o', tmpl];
+  if (section) args.push('--download-sections', `*${section[0]}-${section[1]}`);
+  await ytdlp([...args, url], {
+    signal: opts.signal,
     onLine: line => {
       if (/^\[download\] Destination:/.test(line) && lastPct >= 0) phase++; // segundo archivo (audio)
-      const m = line.match(/^\[download\]\s+([\d.]+)%(?:\s+of\s+~?\s*([\d.]+\w+))?(?:.*?at\s+([\d.]+\w+\/s))?(?:.*?ETA\s+([\d:]+))?/);
+      const m = line.match(/^\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)(\w+)(?:.*?at\s+([\d.]+\w+\/s))?(?:.*?ETA\s+([\d:]+))?/);
       if (m) {
         lastPct = Number(m[1]);
-        if (Date.now() - lastSent > 2000 || lastPct >= 100) {
-          lastSent = Date.now();
-          onProgress(lastPct, `Descargando ${phase ? 'audio' : 'vídeo'}… ${lastPct.toFixed(0)}%${m[2] ? ' de ' + m[2] : ''}${m[3] ? ' · ' + m[3] : ''}${m[4] ? ' · quedan ' + m[4] : ''}`);
-        }
-      } else if (/^\[Merger\]|^\[VideoConvertor\]|^\[FixupM3u8\]/.test(line)) onProgress(100, 'Uniendo vídeo y audio…');
-      else if (/^\[(youtube|twitch|kick|generic)[^\]]*\]/i.test(line) && lastPct < 0) onProgress(0, 'Obteniendo el vídeo del enlace…');
+        const total = MB(toBytes(m[2], m[3])), got = total * lastPct / 100;
+        if (lastPct >= 100) doneMB = Math.max(doneMB, phase ? doneMB : total);
+        const g = (phase ? doneMB : 0) + got, tt = (phase ? doneMB : 0) + total;
+        send(phase ? 90 + lastPct * 0.1 : lastPct * 0.9, `Descargando ${phase ? 'audio' : 'vídeo'}… ${g.toFixed(0)} MB de ~${tt.toFixed(0)} MB${m[4] ? ' · ' + m[4].replace('iB', 'B') : ''}${m[5] ? ' · quedan ' + m[5] : ''}`,
+          { gotMB: g, totalMB: opts.estMB || tt, speed: m[4] || '' }, lastPct >= 100);
+        return;
+      }
+      // Tramo: yt-dlp descarga con ffmpeg (progreso por tiempo descargado)
+      const f = section && line.match(/size=\s*([\d.]+)\s*([kKmMgG]i?B).*?time=\s*([\d:.]+).*?(?:speed=\s*([\d.]+x))?/);
+      if (f) {
+        const sec = hms(f[3]), got = MB(toBytes(f[1], f[2]));
+        const pct = Math.min(99, sec / secDur * 100);
+        const total = pct > 3 ? got / (pct / 100) : (opts.estMB || 0);
+        send(pct, `Descargando el tramo… ${got.toFixed(0)} MB de ~${(total || 0).toFixed(0)} MB${f[4] ? ' · ' + f[4] : ''}`, { gotMB: got, totalMB: total, speed: f[4] || '' });
+        return;
+      }
+      if (/^\[Merger\]|^\[VideoConvertor\]|^\[FixupM3u8\]/.test(line)) send(100, 'Uniendo vídeo y audio…', null, true);
+      else if (/^\[(youtube|twitch|kick|generic|tiktok|instagram)[^\]]*\]/i.test(line) && lastPct < 0) send(0, 'Obteniendo el vídeo del enlace…', null);
     },
   });
   const f = fs.readdirSync(dir).find(n => n.startsWith(`${name}.`) && !/\.(part|ytdl|temp)$/.test(n) && !/\.f\d+\./.test(n));

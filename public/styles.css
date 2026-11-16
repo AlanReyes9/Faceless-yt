@@ -120,3 +120,9 @@ details > summary { cursor: pointer; color: #c6c9d1; font-size: 13px; padding: 4
 .th-card { padding: 12px; }
 .th-img { width: 100%; border-radius: 8px; display: block; background: #000; }
 .th-img.short { max-height: 520px; width: auto; margin: 0 auto; }
+
+/* Ventanas emergentes */
+.modal-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: flex; align-items: flex-start; justify-content: center; z-index: 50; padding: 60px 16px; overflow: auto; }
+.modal { width: min(600px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+
+[hidden] { display: none !important; }

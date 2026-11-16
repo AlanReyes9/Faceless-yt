@@ -65,7 +65,7 @@ export async function runOne(deadline = Infinity, lane = 'work') {
   } catch (e) {
     console.error(`[job ${job.id} ${job.type}] error tras ${((Date.now() - t0) / 1000).toFixed(1)} s:`, e.message);
     // Errores de configuración (falta clave, 4xx) no se reintentan.
-    const permanent = /Falta la clave|\((400|401|403|404|410|413|422)\)|no está conectado|No se pudo leer/.test(e.message);
+    const permanent = e.cancelled || /Falta la clave|\((400|401|403|404|410|413|422)\)|no está conectado|No se pudo leer|cancelad/.test(e.message);
     if (permanent || job.attempts >= MAX_ATTEMPTS) await fail(e.message);
     else await q("UPDATE jobs SET status = 'queued', error = $1, locked_at = NULL WHERE id = $2", [e.message, job.id]);
   }
