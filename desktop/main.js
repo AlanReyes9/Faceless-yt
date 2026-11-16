@@ -117,7 +117,8 @@ function createWindow() {
   // Enlaces externos (Google, YouTube, webs de las claves…) en el navegador del sistema.
   // Google no permite iniciar sesión dentro de una ventana embebida.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isApp(url)) return { action: 'allow' };
+    // El editor de clips se abre en su propia ventana
+    if (isApp(url)) return { action: 'allow', overrideBrowserWindowOptions: { width: 1440, height: 900, minWidth: 1050, minHeight: 680, backgroundColor: '#0a0b0f', autoHideMenuBar: true, title: 'Editor · Clippers Pro' } };
     shell.openExternal(url); return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => { if (!isApp(url)) { e.preventDefault(); shell.openExternal(url); } });

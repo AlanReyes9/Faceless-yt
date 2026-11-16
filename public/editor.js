@@ -24,20 +24,21 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const autoKeys = d.autoKeys || [{ t: S.start, cx: 0.5, cut: true }];
 
   main.innerHTML = `<div class="ed">
-    <div class="ed-top row between"><div class="row"><a class="btn" href="#/proyecto/${P.id}">← Volver al vídeo completo</a><span class="small muted" id="saved">✓ Guardado</span></div>
-      <b class="ed-title">${esc(P.title)} · ${esc(c.title || 'Clip ' + c.idx)}</b></div>
+    <div class="ed-top"><div class="row"><button class="btn ed-ghost" id="back">← ${window.opener ? 'Cerrar editor' : 'Volver al vídeo completo'}</button><span class="ed-saved" id="saved">✓ Guardado</span></div>
+      <div class="ed-title"><span class="ed-logo">▶</span> ${esc(c.title || 'Clip ' + c.idx)} <span class="muted">· ${esc(P.title)}</span></div>
+      <div class="row"><span class="small muted mono" id="tdur2"></span></div></div>
     <div class="ed-main">
       <div class="ed-col"><div class="small muted">Original</div><div class="ed-orig" id="orig"><video id="vid" src="${esc(P.sourceUrl)}" preload="auto" playsinline></video><div class="ed-rect" id="rect"><span></span></div></div></div>
       <div class="ed-col"><div class="small muted">Resultado</div><canvas id="out" class="ed-out"></canvas></div>
       <div class="ed-panel">
-        <div class="ed-tabs">${['Encuadre', 'Textos', 'Recortes y audio', 'Plantillas'].map((t, i) => `<button data-tab="${i}" class="${i ? '' : 'on'}">${t}</button>`).join('')}</div>
+        <div class="ed-tabs">${['Encuadre', 'Textos', 'Recortes', 'Plantillas'].map((t, i) => `<button data-tab="${i}" class="${i ? '' : 'on'}">${t}</button>`).join('')}</div>
         <div class="ed-pane" id="pane"></div>
         <button class="btn gold block" id="export">⬇ Exportar MP4</button>
         <div class="small muted" id="exportInfo"></div>
       </div>
     </div>
     <div class="ed-bar row">
-      <button class="btn sm" id="play">▶ Reproducir</button><button class="btn sm" id="stop">■ Detener</button>
+      <button class="ed-round ed-play" id="play" title="Reproducir (espacio)">▶</button><button class="ed-round" id="stop" title="Detener">■</button>
       <input type="range" id="vol" min="0" max="1" step="0.05" value="1" style="width:90px" title="Volumen">
       <span class="small mono" id="tnow"></span><span class="small muted mono" id="trange"></span>
       <span style="flex:1"></span>
@@ -48,6 +49,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     <div class="ed-tl"><canvas id="tl"></canvas></div>
   </div>`;
   const $e = s => main.querySelector(s);
+  document.title = `${c.title || 'Clip'} · Editor · Clippers Pro`;
+  const notify = () => { try { window.opener?.postMessage({ type: 'clip-saved', clipId, projectId: P.id }, location.origin); } catch {} };
+  $e('#back').onclick = () => { notify(); if (window.opener) window.close(); else location.hash = '#/proyecto/' + P.id; };
   const vid = $e('#vid'), out = $e('#out'), ctx = out.getContext('2d'), tl = $e('#tl'), tctx = tl.getContext('2d');
   document.body.classList.add('editing');
 
@@ -170,8 +174,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const px = tx(vid.currentTime); tctx.fillStyle = '#fff'; tctx.fillRect(px - 1, 0, 2, h * 0.82);
     $e('#trange').textContent = `clip ${fmtT(S.start)} – ${fmtT(S.end)}`;
     $e('#tdur').textContent = `Duración: ${(S.end - S.start).toFixed(1)} s`;
+    $e('#tdur2').textContent = `${fmtT(S.start)} → ${fmtT(S.end)}`;
   };
-  const sizeTl = () => { tl.width = tl.parentElement.clientWidth; tl.height = 92; drawTimeline(); };
+  const sizeTl = () => { tl.width = tl.parentElement.clientWidth; tl.height = 110; drawTimeline(); };
   let drag = null;
   tl.onpointerdown = e => {
     const x = e.offsetX, a = tx(S.start), b = tx(S.end);
@@ -326,15 +331,16 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     clearTimeout(saveT);
     await api(`/api/clips/${clipId}/edit`, { method: 'PUT', body: body(true) });
     toast('Exportando el clip…', 'good');
-    location.hash = '#/proyecto/' + P.id;
+    notify();
+    if (window.opener) setTimeout(() => window.close(), 600); else location.hash = '#/proyecto/' + P.id;
   });
 
   // ---------- Reproducción ----------
   $e('#play').onclick = () => { if (vid.paused) { if (vid.currentTime < S.start || vid.currentTime >= S.end - 0.05) vid.currentTime = S.start; vid.play(); } else vid.pause(); };
   $e('#stop').onclick = () => { vid.pause(); vid.currentTime = S.start; };
   $e('#vol').oninput = e => { vid.volume = Number(e.target.value); };
-  vid.onplay = () => { $e('#play').textContent = '❚❚ Pausa'; loop(); };
-  vid.onpause = () => { $e('#play').textContent = '▶ Reproducir'; };
+  vid.onplay = () => { $e('#play').textContent = '❚❚'; loop(); };
+  vid.onpause = () => { $e('#play').textContent = '▶'; };
   vid.onseeked = vid.onloadeddata = () => render();
   const loop = () => { if (!document.body.contains(vid)) return; if (!vid.paused && vid.currentTime >= S.end) { vid.pause(); vid.currentTime = S.start; } render(); if (!vid.paused) requestAnimationFrame(loop); };
   vid.addEventListener('loadedmetadata', () => { vid.currentTime = S.start; sizeOut(); render(); }, { once: true });

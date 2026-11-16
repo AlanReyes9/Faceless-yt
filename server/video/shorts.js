@@ -149,6 +149,7 @@ register('shorts.pick', async ({ id }) => {
     await enqueue('clip.render', { clipId: clip.id });
   }
   await updateProject(id, { progress: `Renderizando ${n} Shorts…`, percent: 55 });
+  await enqueue('shorts.report', { id }); // informe: títulos, descripción, SEO, capítulos y mejoras
 }, projectFail);
 
 // ---------- Paso 4: render de cada clip ----------

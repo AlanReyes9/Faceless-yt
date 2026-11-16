@@ -16,6 +16,7 @@ import { setLive } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
 import { mountLicense, adminFromReq, hasAdmin } from './license.js';
 import { mountThumbs } from './thumbs.js';
+import { mountReport } from './report.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -290,7 +291,12 @@ app.get('/api/projects/:id', h(async (req, res) => {
     at: days > 0 && p.status === 'ready' && base && (p.source || p.data.options?.media?.length) ? new Date(new Date(base).getTime() + days * 864e5).toISOString() : null };
   const live = p.type === 'live' ? { ...(p.data.live || {}), ...(await one(`SELECT COUNT(*)::int AS segs, COALESCE(SUM(dur), 0)::float AS secs,
       COUNT(*) FILTER (WHERE NOT analyzed)::int AS pending FROM live_segments WHERE project_id = $1`, [p.id])) } : null;
-  res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, live, clips: clips.map(clipOut) });
+  // Datos para la línea de tiempo del resumen (energía del audio reducida a ≤ 600 puntos)
+  const en = p.data.transcript?.energy || [];
+  const step = Math.max(1, Math.ceil(en.length / 600));
+  const timeline = en.length ? { energy: en.filter((_, i) => i % step === 0).map(e => [e.t, +Math.max(0, Math.min(1, ((e.db ?? -90) + 60) / 60)).toFixed(3)]), cuts: (p.data.cuts || []).slice(0, 400) } : null;
+  res.json({ ...projectOut(p), percent: projectPercent(p, clips), cleanup, live, timeline, clips: clips.map(clipOut),
+    framesOut: (p.data.frames || []).map(f => ({ ...f, url: publicUrl(f.ref) })) });
 }));
 // Ventana "Descargar desde un link": información del vídeo, calidades y tamaño aproximado
 app.post('/api/link/info', h(async (req, res) => {
@@ -393,6 +399,8 @@ app.post('/api/whisper/download', h(async (req, res) => {
 
 // Miniaturas y portadas con IA
 mountThumbs(app, h);
+// Informe del vídeo (títulos, SEO, capítulos, mejoras, fotogramas, transcripción, preguntas)
+mountReport(app, h);
 
 // Rankings ("Top 5 momentos…"): clips en cuenta atrás con números y etiquetas
 app.get('/api/ranking/search', h(async (req, res) => {

@@ -455,8 +455,138 @@ function linkDialog(getOptions) {
   setTimeout(() => $m('#lu').focus(), 50);
 }
 
+// ---------- Informe del vídeo (pestañas después del análisis) ----------
+const PTABS = { clips: '✂ Clips', resumen: 'Resumen', titulos: 'Títulos', descripcion: 'Descripción', seo: 'Hashtags y SEO', capitulos: 'Capítulos', miniaturas: 'Miniaturas', mejoras: 'Mejoras', transcripcion: 'Transcripción', preguntar: 'Preguntar' };
+const projTab = {};
+const askHistory = {};
+const copyBtn = (text, label = '📋 Copiar') => `<button class="btn sm" data-copy="${esc(text)}">${label}</button>`;
+function bindCopy(root) { root.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy).then(() => toast('Copiado', 'good'), () => toast('No se pudo copiar', 'bad')); }); }
+async function reportTab(p, tab) {
+  const pane = $('#tabpane'); if (!pane) return;
+  if (tab === 'clips') { pane.innerHTML = ''; return; }
+  const R = p.data.report;
+  const needReport = ['resumen', 'titulos', 'descripcion', 'seo', 'capitulos', 'mejoras'].includes(tab);
+  if (needReport && !R) {
+    pane.innerHTML = `<div class="card stack" style="align-items:flex-start"><div>${p.status === 'processing' ? '<span class="spinner"></span> La IA está preparando el informe (títulos, descripción, SEO, capítulos y mejoras)…' : 'Aún no hay informe de este vídeo.'}</div>
+      <button class="btn gold" id="mkrep">✨ Generar informe con IA</button></div>`;
+    $('#mkrep').onclick = e => busy(e.target, async () => { p.data.report = await api(`/api/projects/${p.id}/report`, { method: 'POST' }); reportTab(p, tab); });
+    return;
+  }
+  const fmtT = t => mmss(t);
+  if (tab === 'resumen') {
+    const vertical = (p.data.height || 0) > (p.data.width || 0);
+    const full = [`${p.title}`, R.summary, '', 'TÍTULOS:', ...(R.titles || []), '', 'DESCRIPCIÓN:', R.description, '', 'HASHTAGS: ' + (R.hashtags || []).join(' '), 'ETIQUETAS: ' + (R.tags || []).join(', '), '', 'CAPÍTULOS:', ...(R.chapters || []).map(c => `${fmtT(c.t)} ${c.title}`), '', 'MEJORAS:', ...(R.improvements || []).map(m => `- ${m.area}: ${m.tip}`)].join('\n');
+    pane.innerHTML = `<div class="stack">
+      <div class="row">${copyBtn(full, '📋 Copiar informe completo')}</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${[`🕑 Análisis del ${new Date(p.ready_at || p.created_at).toLocaleString('es')}`, `⏱ ${mmss(p.duration || 0)}`, p.data.width ? `${p.data.width}×${p.data.height}` : '', vertical ? 'vertical' : 'horizontal', R.mood ? `🎭 ${R.mood}` : '', `${p.clips?.length || 0} clips`].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join('')}</div>
+      ${R.summary ? `<div class="card"><b>Resumen</b><p style="margin:6px 0 0">${esc(R.summary)}</p></div>` : ''}
+      <div class="card"><b>Línea de tiempo</b>
+        <div class="row small" style="gap:14px;margin:8px 0"><span><i class="lg" style="background:#2ad4e0"></i>Volumen</span><span><i class="lg" style="background:#b57bff"></i>Cambios de plano</span><span><i class="lg" style="background:#22c55e"></i>Capítulos</span><span><i class="lg" style="background:#FFD400"></i>Picos</span><span><i class="lg" style="background:rgba(42,212,224,.35)"></i>Clips</span></div>
+        <div style="position:relative"><canvas id="rtl" style="width:100%;height:190px;display:block"></canvas><div id="rtip" class="rtip" hidden></div></div>
+        <div class="small muted" style="margin-top:6px">Las franjas son los clips sugeridos (clic para abrir el editor); las líneas verdes, los capítulos.</div></div></div>`;
+    drawReportTimeline(p);
+  } else if (tab === 'titulos') {
+    pane.innerHTML = `<div class="card stack">${(R.titles || []).map(t => `<div class="row between" style="border-bottom:1px solid var(--line);padding:6px 0"><span>${esc(t)} <span class="small muted">(${t.length})</span></span>${copyBtn(t)}</div>`).join('')}</div>`;
+  } else if (tab === 'descripcion') {
+    const chap = (R.chapters || []).map(c => `${fmtT(c.t)} ${c.title}`).join('\n');
+    const desc = `${R.description || ''}\n\n${chap}\n\n${(R.hashtags || []).slice(0, 5).join(' ')}`;
+    pane.innerHTML = `<div class="card stack"><textarea id="rdesc" style="min-height:300px">${esc(desc)}</textarea><div class="row">${copyBtn(desc)}<span class="small muted">Incluye capítulos y hashtags. Puedes editarla antes de copiar.</span></div></div>`;
+    $('#rdesc').oninput = e => { pane.querySelector('[data-copy]').dataset.copy = e.target.value; };
+  } else if (tab === 'seo') {
+    pane.innerHTML = `<div class="grid g2"><div class="card stack"><b>Hashtags</b><div class="row" style="gap:6px;flex-wrap:wrap">${(R.hashtags || []).map(h => `<span class="chip">${esc(h)}</span>`).join('')}</div>${copyBtn((R.hashtags || []).join(' '), '📋 Copiar hashtags')}</div>
+      <div class="card stack"><b>Etiquetas (tags de YouTube)</b><div class="row" style="gap:6px;flex-wrap:wrap">${(R.tags || []).map(h => `<span class="chip">${esc(h)}</span>`).join('')}</div>${copyBtn((R.tags || []).join(', '), '📋 Copiar etiquetas')}</div></div>`;
+  } else if (tab === 'capitulos') {
+    const chap = (R.chapters || []).map(c => `${fmtT(c.t)} ${c.title}`).join('\n');
+    pane.innerHTML = `<div class="grid g2"><div class="card stack"><b>Capítulos de YouTube</b>${(R.chapters || []).map(c => `<div class="row"><code>${fmtT(c.t)}</code> ${esc(c.title)}</div>`).join('')}${copyBtn(chap, '📋 Copiar capítulos')}</div>
+      <div class="card stack"><b>Clips</b>${(p.clips || []).map(c => `<div class="row between"><span><code>${fmtT(c.start)}–${fmtT(c.end)}</code> ${esc(c.title || '')} <span class="pill">${c.score}/10</span></span>${!c.src ? `<a class="btn sm" href="#/editor/${c.id}">✏️ Editor</a>` : ''}</div>`).join('') || '<div class="muted small">Sin clips.</div>'}</div></div>`;
+  } else if (tab === 'mejoras') {
+    pane.innerHTML = `<div class="card stack">${(R.improvements || []).map(m => `<div class="row" style="align-items:flex-start;gap:10px;border-bottom:1px solid var(--line);padding:8px 0"><span class="pill">${esc(m.area)}</span><span>${esc(m.tip)}</span></div>`).join('') || '<div class="muted">Sin sugerencias.</div>'}</div>`;
+  } else if (tab === 'miniaturas') {
+    const draw = frames => {
+      pane.innerHTML = `<div class="stack"><div class="row"><button class="btn gold" id="genth">✨ Crear miniaturas con IA</button><button class="btn" id="refr">🔎 ${frames.length ? 'Buscar otros fotogramas' : 'Buscar los mejores fotogramas'}</button></div>
+        ${frames.length ? `<div class="card"><b>Mejores fotogramas para miniatura</b><div class="fr-grid">${frames.map((f, i) => `<div class="stack" style="gap:4px"><img src="${f.url}" class="fr-img"><div class="small muted"><b>${i + 1}.</b> ${mmss(f.t)} · ${f.faces} cara(s)</div><button class="btn sm" data-fthumb="${esc(f.ref)}">✎ Editar miniatura</button></div>`).join('')}</div></div>` : '<div class="muted small">Analiza el vídeo y elige los fotogramas más nítidos, con caras grandes y buena luz.</div>'}</div>`;
+      $('#refr').onclick = e => busy(e.target, async () => { pane.querySelector('#refr').textContent = 'Analizando fotogramas…'; const fr = await api(`/api/projects/${p.id}/frames`, { method: 'POST' }); p.framesOut = fr; draw(fr); });
+      $('#genth').onclick = e => busy(e.target, async () => { const t = await api('/api/thumbs', { method: 'POST', body: { title: (R?.titles?.[0]) || p.title, format: 'youtube', style: 'impacto' } }); location.hash = '#/miniaturas/' + t.id; });
+      pane.querySelectorAll('[data-fthumb]').forEach(b => b.onclick = () => busy(b, async () => {
+        const r = await api(`/api/projects/${p.id}/frame-thumb`, { method: 'POST', body: { ref: b.dataset.fthumb } });
+        const words = String(R?.titles?.[0] || p.title || '').toUpperCase().split(/\s+/).slice(0, 3).join(' ');
+        await api(`/api/thumbs/${r.thumbId}/generate`, { method: 'POST', body: { base: r.base, mode: 'overlay', text: words, highlight: words.split(' ').pop(), position: 'left' } });
+        location.hash = '#/miniaturas/' + r.thumbId;
+      }));
+    };
+    draw(p.framesOut || []);
+  } else if (tab === 'transcripcion') {
+    pane.innerHTML = '<div class="muted"><span class="spinner"></span> Cargando…</div>';
+    const tr = await api(`/api/projects/${p.id}/transcript.json`);
+    pane.innerHTML = `<div class="card stack"><div class="row"><a class="btn sm" href="/api/projects/${p.id}/transcript.srt" download>⬇ SRT (subtítulos)</a><a class="btn sm" href="/api/projects/${p.id}/transcript.txt" download>⬇ TXT</a>
+      ${copyBtn(tr.segments.map(s => s.text).join(' '), '📋 Copiar texto')}<span class="small muted">${tr.language ? 'Idioma: ' + esc(tr.language) : ''} · ${tr.segments.length} frases</span></div>
+      <div class="tr-list">${tr.segments.map(s => `<div><code>${mmss(s.start)}</code> ${esc(s.text)}</div>`).join('')}</div></div>`;
+  } else if (tab === 'preguntar') {
+    const hist = askHistory[p.id] ||= [];
+    const drawChat = () => {
+      pane.innerHTML = `<div class="card stack"><div class="small muted">Pregunta lo que quieras sobre el vídeo: "¿de qué habla en el minuto 10?", "dame 5 ideas de Shorts", "¿qué frase es la más polémica?"…</div>
+        <div class="chat">${hist.map(m => `<div class="msg ${m.role}">${esc(m.text).replace(/\n/g, '<br>')}</div>`).join('')}</div>
+        <form id="askf" class="row" style="flex-wrap:nowrap"><input id="askq" placeholder="Escribe tu pregunta…" style="flex:1"><button class="btn gold">Preguntar</button></form></div>`;
+      $('#askf').onsubmit = e => { e.preventDefault(); const qv = $('#askq').value.trim(); if (!qv) return;
+        busy(e.target.querySelector('button'), async () => { hist.push({ role: 'user', text: qv }); drawChat();
+          try { const r = await api(`/api/projects/${p.id}/ask`, { method: 'POST', body: { question: qv, history: hist.slice(0, -1) } }); hist.push({ role: 'ai', text: r.answer }); } catch (err) { hist.push({ role: 'ai', text: '⚠ ' + err.message }); }
+          drawChat(); $('#askq').focus(); }); };
+      const ch = pane.querySelector('.chat'); ch.scrollTop = ch.scrollHeight;
+    };
+    drawChat();
+  }
+  bindCopy(pane);
+}
+
+function drawReportTimeline(p) {
+  const cv = $('#rtl'); if (!cv) return;
+  const W = cv.width = cv.clientWidth * (window.devicePixelRatio || 1), Hh = cv.height = 190 * (window.devicePixelRatio || 1), dpr = window.devicePixelRatio || 1;
+  const ctx = cv.getContext('2d'), dur = p.duration || 1;
+  const X = t => 10 * dpr + (t / dur) * (W - 20 * dpr), top = 20 * dpr, bottom = Hh - 30 * dpr;
+  ctx.fillStyle = '#12141a'; ctx.fillRect(0, 0, W, Hh);
+  // clips
+  const clips = p.clips || [];
+  ctx.fillStyle = 'rgba(42,212,224,.18)';
+  for (const c of clips) ctx.fillRect(X(c.start), top, X(c.end) - X(c.start), bottom - top);
+  // capítulos
+  ctx.fillStyle = '#22c55e';
+  for (const c of p.data.report?.chapters || []) ctx.fillRect(X(c.t), top, 1.5 * dpr, bottom - top);
+  // cambios de plano
+  ctx.fillStyle = '#b57bff';
+  for (const t of p.timeline?.cuts || []) ctx.fillRect(X(t), bottom - 14 * dpr, 1.5 * dpr, 14 * dpr);
+  // volumen
+  const en = p.timeline?.energy || [];
+  ctx.strokeStyle = '#2ad4e0'; ctx.lineWidth = 1.5 * dpr; ctx.beginPath();
+  en.forEach(([t, v], i) => { const x = X(t), y = bottom - v * (bottom - top); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+  // picos: máximos locales más altos
+  const peaks = en.map((e, i) => ({ t: e[0], v: e[1], i })).filter(e => e.v > 0.15 && e.v >= Math.max(...en.slice(Math.max(0, e.i - 8), e.i + 9).map(x => x[1]))).sort((a, b) => b.v - a.v).slice(0, 8);
+  ctx.fillStyle = '#FFD400';
+  for (const k of peaks) { ctx.beginPath(); ctx.arc(X(k.t), top - 8 * dpr, 4 * dpr, 0, 7); ctx.fill(); }
+  // eje
+  ctx.fillStyle = '#9399a6'; ctx.font = `${10 * dpr}px sans-serif`;
+  for (let i = 0; i <= 6; i++) { const t = dur * i / 6; ctx.fillText(mmss(t), X(t) - (i === 6 ? 24 * dpr : 0), Hh - 10 * dpr); }
+  const tip = $('#rtip');
+  cv.onmousemove = e => { const t = (e.offsetX * dpr - 10 * dpr) / (W - 20 * dpr) * dur; if (t < 0 || t > dur) return (tip.hidden = true);
+    const c = clips.find(c => t >= c.start && t <= c.end);
+    tip.hidden = false; tip.style.left = e.offsetX + 'px'; tip.textContent = mmss(t) + (c ? ` · Clip #${c.idx}: ${c.title || ''}` : ''); cv.style.cursor = c ? 'pointer' : 'default'; };
+  cv.onmouseleave = () => { tip.hidden = true; };
+  cv.onclick = e => { const t = (e.offsetX * dpr - 10 * dpr) / (W - 20 * dpr) * dur; const c = clips.find(c => t >= c.start && t <= c.end); if (c && !c.src) openEditorWindow(c.id); };
+}
+
 // ---------- Editor de clips (public/editor.js) ----------
 routes.editor = async id => (await import('./editor.js')).openClipEditor(id, { api, esc, toast, busy, main, mmss });
+// El editor se abre en una ventana aparte (como en los editores de vídeo); si el navegador la bloquea, en esta misma
+function openEditorWindow(id) {
+  const w = window.open(`${location.origin}${location.pathname}#/editor/${id}`, 'clip_editor_' + id, 'popup=yes,width=1440,height=900');
+  if (!w) location.hash = '#/editor/' + id; else w.focus();
+}
+document.addEventListener('click', e => {
+  const a = e.target.closest?.('a[href^="#/editor/"]');
+  if (!a || document.body.classList.contains('editing')) return;
+  e.preventDefault(); openEditorWindow(a.getAttribute('href').split('/').pop());
+});
+window.addEventListener('message', e => { if (e.origin === location.origin && e.data?.type === 'clip-saved' && location.hash.startsWith('#/proyecto/')) router(); });
 
 // ---------- Proyecto (Shorts o completo) ----------
 routes.proyecto = async id => {
@@ -471,7 +601,14 @@ routes.proyecto = async id => {
     ${cleanupBanner(p)}${p.live && !p.live.ended ? `<div class="livewrap">${liveEmbed(p)}${liveBanner(p)}</div>` : liveBanner(p)}
     ${['pending', 'processing'].includes(p.status) && !p.live ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
       <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
-  main.innerHTML = head + (isClips ? `<div id="gridwrap">${shortsGrid(p, chs)}</div>` : longView(p, chs));
+  const withReport = p.type === 'shorts' && p.hasTranscript;
+  const tab = withReport ? (projTab[p.id] || 'clips') : 'clips';
+  main.innerHTML = head + (withReport ? `<div class="ptabs">${Object.entries(PTABS).map(([k, l]) => `<button data-ptab="${k}" class="${k === tab ? 'on' : ''}">${l}</button>`).join('')}</div>` : '') +
+    (isClips ? `<div id="gridwrap" ${tab !== 'clips' ? 'hidden' : ''}>${shortsGrid(p, chs)}</div><div id="tabpane"></div>` : longView(p, chs));
+  if (withReport) {
+    main.querySelectorAll('[data-ptab]').forEach(b => b.onclick = () => { projTab[p.id] = b.dataset.ptab; main.querySelectorAll('[data-ptab]').forEach(x => x.classList.toggle('on', x === b)); $('#gridwrap').hidden = b.dataset.ptab !== 'clips'; reportTab(p, b.dataset.ptab); });
+    reportTab(p, tab);
+  }
   const st = $('#stop'); if (st) st.onclick = () => { if (confirm('¿Dejar de grabar el directo? Se analizan los últimos minutos y se terminan los clips pendientes.')) busy(st, async () => { await api(`/api/projects/${p.id}/stop`, { method: 'POST' }); router(); }); };
   const r = $('#retry'); if (r) r.onclick = () => busy(r, async () => { await api(`/api/projects/${p.id}/retry`, { method: 'POST' }); router(); });
   $('#del').onclick = async () => { if (confirm('¿Mover a la papelera?')) { await api('/api/projects/' + p.id, { method: 'DELETE' }); location.hash = '#/videos'; } };
@@ -485,7 +622,7 @@ routes.proyecto = async id => {
 };
 
 // Firma de lo que cambia la estructura de la página (si no cambia, solo se actualizan las barras)
-const projSig = p => [p.status, p.error, p.output, p.live?.ended, p.live?.stopRequested, ...(p.clips || []).map(c => `${c.id}:${c.status}:${c.file}:${Object.keys(c.variants || {}).join(',')}`)].join('|');
+const projSig = p => [p.status, p.error, p.output, p.data?.report?.at, p.live?.ended, p.live?.stopRequested, ...(p.clips || []).map(c => `${c.id}:${c.status}:${c.file}:${Object.keys(c.variants || {}).join(',')}`)].join('|');
 function livePoll(prev) {
   const sig = projSig(prev);
   poll(async () => {
