@@ -30,12 +30,12 @@ jobs:
             target: --mac --arm64
             ytdlp: yt-dlp_macos
             ytdlp_out: yt-dlp
-            wflags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+            wflags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3
           - os: macos-15-intel    # Intel
             target: --mac --x64
             ytdlp: yt-dlp_macos
             ytdlp_out: yt-dlp
-            wflags: -DGGML_METAL=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+            wflags: -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
