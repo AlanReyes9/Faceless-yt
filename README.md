@@ -16,9 +16,6 @@ Estudio web propio para canales de YouTube *faceless* (sin mostrar la cara). Fun
 | **Mis canales** | Canales con nicho e idioma, conectados a YouTube mediante OAuth para publicar. |
 | **Calendario de contenido** | Planificación mensual. La IA puede generar el plan de un canal. |
 | **Mis vídeos / Papelera** | Historial de proyectos y papelera con borrado definitivo. |
-| **Personaje IA** | Personaje con aspecto, personalidad y voz. Genera imágenes coherentes y lo usa como narrador. |
-| **Creador de anuncios IA** | Producto + fotos → anuncio vertical con gancho, voz, subtítulos y llamada a la acción. |
-| **Montar mi material** | Tus clips e imágenes + narración con IA (o tu guion) → vídeo terminado. |
 | **Analizador** | Estadísticas y diagnóstico con IA de cualquier canal o vídeo de YouTube. |
 | **Estado del servidor** | Base de datos, almacenamiento y cola de trabajos con reintentos. |
 | **Ajustes y claves** | Claves API cifradas (AES-256-GCM) en tu servidor y selección de proveedor y modelo. |
@@ -101,7 +98,7 @@ Vercel Blob cobra cada descarga, y los vídeos de móvil son muy pesados. **Clou
    ```
 4. En Vercel → Settings → Environment Variables añade `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` y `S3_SECRET_ACCESS_KEY` (para Backblaze B2 añade también `S3_REGION`, por ejemplo `us-west-004`). Después haz **Redeploy**.
 
-**Limpieza automática:** para ahorrar espacio, los vídeos originales (y las fotos o clips subidos en anuncios y montajes) se borran 7 días después de terminar el proyecto. Se puede cambiar en *Ajustes y claves → Almacenamiento* (0 = nunca) o desactivar por proyecto con "Conservar original". Los Shorts y vídeos terminados se conservan siempre. No se borra nada de proyectos en proceso o con clips con error.
+**Limpieza automática:** para ahorrar espacio, los vídeos originales se borran 7 días después de terminar el proyecto. Se puede cambiar en *Ajustes y claves → Almacenamiento* (0 = nunca) o desactivar por proyecto con "Conservar original". Los Shorts y vídeos terminados se conservan siempre. No se borra nada de proyectos en proceso o con clips con error.
 
 Si S3 está configurado, tiene prioridad sobre Vercel Blob. Los proyectos antiguos guardados en Blob siguen funcionando.
 
