@@ -7,12 +7,21 @@ import { WORK_DIR } from '../db.js';
 import { apiError } from './llm.js';
 import { audioEnergy, sceneCuts } from '../video/signals.js';
 import { proxyBytes } from '../video/netproxy.js';
+import { transcribeLocal, localAvailable } from './localwhisper.js';
 
 // 15 min de mp3 mono 32 kbps ≈ 3,6 MB (< 25 MB límite de Whisper) y cabe en un paso de 300 s
 export const CHUNK_SECONDS = 15 * 60;
 
-async function whisper(file, language) {
-  const provider = await getSetting('transcribe_provider');
+/** Proveedor efectivo: 'local' (whisper.cpp en el equipo), 'openai' o 'groq'. */
+export async function transcribeProvider() {
+  const p = await getSetting('transcribe_provider');
+  if (p === 'local' && !localAvailable()) return 'openai';
+  return p || (localAvailable() ? 'local' : 'openai');
+}
+
+async function whisper(file, language, onProgress) {
+  const provider = await transcribeProvider();
+  if (provider === 'local') return transcribeLocal(file, { language, model: await getSetting('whisper_model'), onProgress });
   const isGroq = provider === 'groq';
   const key = await requireKey(isGroq ? 'groq_key' : 'openai_key', 'transcribir el audio');
   const form = new FormData();
@@ -34,7 +43,7 @@ async function whisper(file, language) {
  * Transcribe un trozo [offset, offset+len] de un vídeo/audio (ruta o URL).
  * Devuelve { language, segments:[{start,end,text}], words:[{word,start,end}] } con tiempos absolutos.
  */
-export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language } = {}) {
+export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language, onProgress } = {}) {
   const out = path.join(WORK_DIR, `audio_${crypto.randomBytes(5).toString('hex')}.mp3`);
   try {
     const log = (m, t) => console.log(`[transcribir ${offset}s] ${m}${t ? ` en ${((Date.now() - t) / 1000).toFixed(1)} s` : ''} · descargado ${(proxyBytes() / 1e6).toFixed(0)} MB`);
@@ -49,7 +58,7 @@ export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, 
     t = Date.now();
     const cutsP = sceneCuts(input, { offset, len, timeoutMs: 40000 }).then(c => { log(`cambios de plano: ${c.length}`, t); return c; }).catch(() => []);
     const [r, energy] = await Promise.all([
-      whisper(out, language).then(x => { log('Whisper respondió', t); return x; }),
+      whisper(out, language, onProgress).then(x => { log('Whisper respondió', t); return x; }),
       audioEnergy(out, offset).catch(() => []),
     ]);
     const cuts = await cutsP;
@@ -63,8 +72,8 @@ export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, 
 /** Tiempos por palabra de una locución corta; si no hay clave de transcripción, se aproximan. */
 export async function wordTimings(audioFile, text, duration) {
   try {
-    const provider = await getSetting('transcribe_provider');
-    if (await getSetting(provider === 'groq' ? 'groq_key' : 'openai_key')) {
+    const provider = await transcribeProvider();
+    if (provider === 'local' || await getSetting(provider === 'groq' ? 'groq_key' : 'openai_key')) {
       const r = await whisper(audioFile);
       const words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start, end: w.end }));
       if (words.length) return words;

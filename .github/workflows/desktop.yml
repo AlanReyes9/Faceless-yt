@@ -25,14 +25,17 @@ jobs:
             target: --win
             ytdlp: yt-dlp.exe
             ytdlp_out: yt-dlp.exe
+            wflags: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
           - os: macos-latest      # Apple Silicon (M1/M2/M3/M4)
             target: --mac --arm64
             ytdlp: yt-dlp_macos
             ytdlp_out: yt-dlp
+            wflags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           - os: macos-15-intel    # Intel
             target: --mac --x64
             ytdlp: yt-dlp_macos
             ytdlp_out: yt-dlp
+            wflags: -DGGML_METAL=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +67,25 @@ jobs:
           curl -fsSL -o "desktop/bin/${{ matrix.ytdlp_out }}" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${{ matrix.ytdlp }}"
           chmod +x "desktop/bin/${{ matrix.ytdlp_out }}"
           ls -la desktop/bin
+
+      - name: Transcripción local (whisper.cpp)
+        shell: bash
+        run: |
+          git clone -q --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp wcpp
+          cmake -S wcpp -B wcpp/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF ${{ matrix.wflags }}
+          cmake --build wcpp/build --config Release -j 4 --target whisper-cli
+          BIN=$(find wcpp/build/bin -name 'whisper-cli*' -type f | head -1)
+          cp "$BIN" desktop/bin/
+          ls -la desktop/bin
+
+      - name: Prueba de transcripción local
+        shell: bash
+        env:
+          WHISPER_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          export WHISPER_CLI="$PWD/desktop/bin/$(ls desktop/bin | grep whisper-cli)"
+          node --no-warnings desktop/smoke-whisper.mjs wcpp/samples/jfk.wav
 
       - name: Versión
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''

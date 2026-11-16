@@ -192,7 +192,7 @@ routes[''] = async () => {
   const hasLLM = v[v.llm_provider + '_key'];
   const steps = [
     [!!hasLLM, `Añade tu clave de IA de texto (${v.llm_provider})`, 'ajustes'],
-    [!!(v.transcribe_provider === 'groq' ? v.groq_key : v.openai_key), 'Añade una clave para transcribir (OpenAI o Groq)', 'ajustes'],
+    [v.transcribe_provider === 'local' || !!(v.transcribe_provider === 'groq' ? v.groq_key : v.openai_key), 'Elige cómo transcribir (local gratis en la app de escritorio, OpenAI o Groq)', 'ajustes'],
     [s.channels > 0, 'Crea tu primer canal', 'canales'],
     [s.shorts > 0, 'Convierte un vídeo largo en Shorts', 'shorts'],
   ];
@@ -1268,9 +1268,30 @@ routes.ajustes = async () => {
     toast(`${b.dataset.test}: conexión correcta (${r.reply})`, 'good');
   }));
   const sys = await getSystem();
+  await whisperCard();
   if (sys.desktop) await cloudCard();
 };
 
+
+/** Transcripción local (whisper.cpp): estado del modelo y descarga. */
+async function whisperCard() {
+  const w = await api('/api/whisper').catch(() => null);
+  if (!w?.available) return;
+  const box = document.createElement('div');
+  box.className = 'card stack'; box.style.marginTop = '20px';
+  const draw = st => {
+    box.innerHTML = `<h2>🎙 Transcripción local (gratis, en tu equipo)</h2>
+      <p class="small muted" style="margin:0">Whisper funciona dentro de la app: no gasta saldo y tu audio no sale del ordenador. Elige "local" en <b>Transcripción</b> y el modelo arriba; el modelo se descarga una sola vez.</p>
+      ${Object.entries(st.models).map(([k, m]) => `<div class="row between"><span>${esc(m.label)} ${k === st.model ? '<span class="pill">elegido</span>' : ''}</span>
+        <span>${m.ready ? '<span class="pill ready">Descargado</span>' : m.download?.active ? pbar(m.download.pct, 'Descargando') : `<button class="btn sm" data-dl="${k}">⬇ Descargar</button>`}</span></div>`).join('')}
+      ${st.provider !== 'local' ? '<div class="small" style="color:var(--gold)">Ahora mismo se transcribe con ' + esc(st.provider) + '. Cambia "Transcripción" a <b>local</b> arriba y guarda para usar Whisper en tu equipo.</div>' : ''}`;
+    box.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => busy(b, async () => { await api('/api/whisper/download', { method: 'POST', body: { model: b.dataset.dl } }); poll(); }));
+  };
+  const poll = async () => { const st = await api('/api/whisper'); draw(st); if (Object.values(st.models).some(m => m.download?.active) && document.body.contains(box)) setTimeout(poll, 1500); };
+  draw(w);
+  main.appendChild(box);
+  if (Object.values(w.models).some(m => m.download?.active)) setTimeout(poll, 1500);
+}
 
 /** App de escritorio: guardar los vídeos en R2/S3 y (opcional) compartir la base de datos con la web. */
 async function cloudCard() {

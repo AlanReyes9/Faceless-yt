@@ -56,7 +56,10 @@ register('shorts.transcribe', async ({ id, chunk }) => {
   const p = await getProject(id);
   const chunks = Math.max(1, Math.ceil(p.duration / CHUNK_SECONDS));
   await updateProject(id, { progress: `Transcribiendo audio (${chunk + 1}/${chunks})…`, percent: Math.round(5 + 45 * chunk / chunks) });
-  const r = await transcribeChunk(inputPath(p.source), { offset: chunk * CHUNK_SECONDS, len: CHUNK_SECONDS, language: p.data.options?.language });
+  let lastP = 0;
+  const r = await transcribeChunk(inputPath(p.source), { offset: chunk * CHUNK_SECONDS, len: CHUNK_SECONDS, language: p.data.options?.language,
+    onProgress: ({ stage, pct }) => { if (Date.now() - lastP < 3000) return; lastP = Date.now();
+      updateProject(id, { progress: `${stage}${pct ? ` ${pct}%` : ''} (${chunk + 1}/${chunks})`, percent: Math.round(5 + 45 * (chunk + (pct || 0) / 100) / chunks) }).catch(() => {}); } });
   const t = p.data.transcript || { segments: [], words: [] };
   // Evita duplicar si este paso se reintenta
   const from = chunk * CHUNK_SECONDS;

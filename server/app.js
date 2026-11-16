@@ -358,6 +358,20 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Transcripción local (whisper.cpp)
+app.get('/api/whisper', h(async (req, res) => {
+  const lw = await import('./ai/localwhisper.js');
+  const { transcribeProvider } = await import('./ai/transcribe.js');
+  res.json({ available: lw.localAvailable(), provider: await transcribeProvider(), model: await getSetting('whisper_model'),
+    models: Object.fromEntries(Object.entries(lw.WHISPER_MODELS).map(([k, m]) => [k, { label: m.label, ready: lw.modelReady(k), download: lw.downloadStatus(k) }])) });
+}));
+app.post('/api/whisper/download', h(async (req, res) => {
+  const lw = await import('./ai/localwhisper.js');
+  if (!lw.localAvailable()) throw new Error('La transcripción local solo está en la app de escritorio.');
+  lw.ensureModel(String(req.body?.model || 'small')).catch(e => console.error('modelo whisper:', e.message));
+  res.json({ ok: true });
+}));
+
 // Miniaturas y portadas con IA
 mountThumbs(app, h);
 

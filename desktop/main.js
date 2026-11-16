@@ -54,6 +54,10 @@ function setupEnv() {
   // yt-dlp incluido (YouTube, Twitch, Kick)
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'desktop', 'bin');
   if (fs.existsSync(bin)) process.env.PATH = bin + path.delimiter + (process.env.PATH || '');
+  // Transcripción local: whisper-cli incluido y modelos en la carpeta del usuario
+  const wcli = path.join(bin, process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli');
+  if (fs.existsSync(wcli)) { process.env.WHISPER_CLI = wcli; process.env.DEFAULT_TRANSCRIBE ||= 'local'; }
+  process.env.WHISPER_MODELS_DIR ||= path.join(app.getPath('userData'), 'models');
   const ytdlpBin = path.join(bin, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
   if (fs.existsSync(ytdlpBin)) process.env.YTDLP_PATH = ytdlpBin;
   // YouTube exige a yt-dlp un motor de JavaScript: se le da el Node que lleva la propia app (Electron en modo Node)
