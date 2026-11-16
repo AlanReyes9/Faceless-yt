@@ -46,7 +46,8 @@ export const FIELDS = {
   google_client_id: { secret: false, label: 'Google OAuth Client ID', group: 'Publicar en YouTube' },
   google_client_secret: { secret: true, label: 'Google OAuth Client Secret', group: 'Publicar en YouTube' },
 
-  llm_provider: { secret: false, default: 'openai', label: 'Proveedor de texto', options: ['openai', 'anthropic', 'gemini', 'groq', 'openrouter'], group: 'Preferencias' },
+  use_cloud: { secret: false, default: '0', label: 'Usar servicios en la nube (con tus claves) en vez de la IA local', options: ['0', '1'], group: 'Nube' },
+  llm_provider: { secret: false, default: process.env.DEFAULT_LLM || 'openai', label: 'Proveedor de texto', options: ['local', 'openai', 'anthropic', 'gemini', 'groq', 'openrouter'], group: 'Preferencias' },
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },
   anthropic_model: { secret: false, default: 'claude-sonnet-5-5', label: 'Modelo Claude', group: 'Preferencias' },
   gemini_model: { secret: false, default: 'gemini-3.8-flash', label: 'Modelo Gemini', group: 'Preferencias' },
@@ -59,7 +60,7 @@ export const FIELDS = {
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
   elevenlabs_voice_id: { secret: false, default: 'pNInz6obpgDQGcFmaJgB', label: 'ElevenLabs voice ID', group: 'Preferencias' },
   cleanup_days: { secret: false, default: '7', label: 'Borrar vídeos originales tras (días, 0 = nunca)', options: ['0', '1', '3', '7', '14', '30'], group: 'Almacenamiento' },
-  image_provider: { secret: false, default: 'openai', label: 'Proveedor de imágenes (si falla se prueban los demás)', options: ['openai', 'gemini', 'pollinations'], group: 'Preferencias' },
+  image_provider: { secret: false, default: process.env.DEFAULT_IMAGE || 'openai', label: 'Proveedor de imágenes (si falla se prueban los demás)', options: ['local', 'openai', 'gemini', 'pollinations'], group: 'Preferencias' },
   image_model: { secret: false, default: 'gpt-image-1', label: 'Modelo de imágenes OpenAI', group: 'Preferencias' },
   gemini_image_model: { secret: false, default: '', label: 'Modelo de imágenes Gemini (vacío = automático)', group: 'Preferencias' },
   pollinations_model: { secret: false, default: 'flux', label: 'Modelo de Pollinations', group: 'Preferencias' },
@@ -79,7 +80,10 @@ async function all() {
 // Modelos retirados por los proveedores → se usa el sustituto automáticamente
 const RETIRED = { 'gemini-2.5-flash': 'gemini-3.8-flash', 'gemini-2.0-flash': 'gemini-3.8-flash', 'gemini-1.5-flash': 'gemini-3.8-flash' };
 
+// App de escritorio: la IA es local (texto, imágenes y transcripción) salvo que se active "usar servicios en la nube"
+const LOCAL_FOR = { llm_provider: 'LLAMA_SERVER', image_provider: 'SD_CLI', transcribe_provider: 'WHISPER_CLI' };
 export async function getSetting(key) {
+  if (LOCAL_FOR[key] && process.env[LOCAL_FOR[key]] && (await all()).use_cloud !== '1') return 'local';
   const raw = (await all())[key];
   let v = null;
   if (raw) { try { v = FIELDS[key]?.secret ? decrypt(raw) : raw; } catch { v = null; } }

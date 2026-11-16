@@ -87,6 +87,35 @@ jobs:
           export WHISPER_CLI="$PWD/desktop/bin/$(ls desktop/bin | grep whisper-cli)"
           node --no-warnings desktop/smoke-whisper.mjs wcpp/samples/jfk.wav
 
+      - name: IA local de texto (llama.cpp) e imágenes (stable-diffusion.cpp)
+        shell: bash
+        run: |
+          git clone -q --depth 1 --branch b6999 https://github.com/ggml-org/llama.cpp lcpp
+          cmake -S lcpp -B lcpp/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF ${{ matrix.wflags }}
+          cmake --build lcpp/build --config Release -j 4 --target llama-server
+          cp "$(find lcpp/build/bin -name 'llama-server*' -type f | head -1)" desktop/bin/
+          git clone -q --depth 1 --recursive https://github.com/leejet/stable-diffusion.cpp sdcpp
+          SDF="-DSD_BUILD_SHARED_LIBS=OFF"
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then SDF="$SDF -DSD_METAL=ON"; fi
+          cmake -S sdcpp -B sdcpp/build -DCMAKE_BUILD_TYPE=Release $SDF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF ${{ matrix.wflags }}
+          cmake --build sdcpp/build --config Release -j 4
+          SDB=$(find sdcpp/build/bin -type f \( -name 'sd' -o -name 'sd.exe' -o -name 'sd-cli' -o -name 'sd-cli.exe' \) | head -1)
+          cp "$SDB" desktop/bin/
+          ls -la desktop/bin
+
+      - name: Prueba de la IA local
+        shell: bash
+        env:
+          WHISPER_MODELS_DIR: ${{ runner.temp }}/models
+        run: |
+          export LLAMA_SERVER="$PWD/desktop/bin/$(ls desktop/bin | grep llama-server)"
+          node --no-warnings desktop/smoke-llm.mjs
+          SDX="$PWD/desktop/bin/$(ls desktop/bin | grep -E '^sd(-cli)?(\.exe)?$' | head -1)"
+          "$SDX" --help > sdhelp.txt 2>&1 || true
+          head -8 sdhelp.txt
+          grep -qi "usage\|--prompt" sdhelp.txt
+
       - name: Versión
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         shell: bash

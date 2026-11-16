@@ -190,15 +190,16 @@ routes.login = () => {
 routes[''] = async () => {
   const [s, sys, settings] = await Promise.all([api('/api/stats'), getSystem(), api('/api/settings')]);
   const v = settings.values;
-  const hasLLM = v[v.llm_provider + '_key'];
+  const local = v.llm_provider === 'local';
+  const hasLLM = local || v[v.llm_provider + '_key'];
   const steps = [
-    [!!hasLLM, `Añade tu clave de IA de texto (${v.llm_provider})`, 'ajustes'],
-    [v.transcribe_provider === 'local' || !!(v.transcribe_provider === 'groq' ? v.groq_key : v.openai_key), 'Elige cómo transcribir (local gratis en la app de escritorio, OpenAI o Groq)', 'ajustes'],
+    ...(local ? [[!!sys.localReady, 'Descarga los modelos de IA locales (una sola vez)', 'ajustes']] : [[!!hasLLM, `Añade tu clave de IA de texto (${v.llm_provider})`, 'ajustes'],
+      [v.transcribe_provider === 'local' || !!(v.transcribe_provider === 'groq' ? v.groq_key : v.openai_key), 'Elige cómo transcribir (OpenAI o Groq)', 'ajustes']]),
     [s.channels > 0, 'Crea tu primer canal', 'canales'],
     [s.shorts > 0, 'Convierte un vídeo largo en Shorts', 'shorts'],
   ];
   main.innerHTML = `
-    <h1>Hola 👋</h1><p class="sub">Tu fábrica de contenido faceless con tus propias claves de IA.</p>
+    <h1>Hola 👋</h1><p class="sub">${local ? 'Tu fábrica de clips con IA que funciona en tu propio equipo: sin claves, sin pagar por uso.' : 'Tu fábrica de contenido faceless con tus propias claves de IA.'}</p>
     ${!sys.ffmpeg ? '<div class="card err" style="margin-bottom:16px">ffmpeg no está instalado en el servidor. Sin él no se pueden renderizar vídeos.</div>' : ''}
     ${sys.vercel && sys.db !== 'postgres' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay base de datos conectada: los datos se perderán. En Vercel abre el proyecto → <b>Storage</b> → conecta una base de datos <b>Neon</b> y vuelve a desplegar.</div>' : ''}
     ${sys.vercel && sys.storage === 'local' ? '<div class="card err" style="margin-bottom:16px">⚠ No hay almacenamiento de archivos: configura <b>Cloudflare R2</b> (ver Ayuda) o conecta un Blob store en Vercel → Storage.</div>' : ''}
@@ -1141,17 +1142,18 @@ const THUMB_STYLES = { impacto: 'Impactante (colores intensos)', misterio: 'Mist
 const THUMB_FORMATS = { youtube: 'YouTube 16:9 (1280×720)', short: 'Portada Shorts / Reels 9:16', square: 'Cuadrada 1:1' };
 const POSITIONS = { left: 'Texto a la izquierda', right: 'Texto a la derecha', top: 'Texto arriba', bottom: 'Texto abajo', center: 'Texto en el centro' };
 routes.miniaturas = async (id) => {
-  const [chs, list] = await Promise.all([channelsCache.get(), api('/api/thumbs')]);
+  const [chs, list, caps] = await Promise.all([channelsCache.get(), api('/api/thumbs'), api('/api/thumbs/caps').catch(() => ({ aiText: true }))]);
   let t = id ? await api('/api/thumbs/' + id) : null;
-  main.innerHTML = `<h1>🖼 Miniaturas IA</h1><p class="sub">Escribe el título de tu vídeo: la IA propone ideas y Gemini diseña la miniatura completa, con el texto integrado y una tipografía profesional acorde al tema (dorada, 3D, neón, terror…). Para cambiar el texto, la IA edita la propia imagen.</p>
+  main.innerHTML = `<h1>🖼 Miniaturas IA</h1><p class="sub">${caps.aiText ? 'Escribe el título de tu vídeo: la IA propone ideas y Gemini diseña la miniatura completa, con el texto integrado y una tipografía profesional acorde al tema (dorada, 3D, neón, terror…). Para cambiar el texto, la IA edita la propia imagen.' : 'Escribe el título de tu vídeo: la IA propone ideas, genera la imagen de fondo y le pone un texto grande y editable. También puedes usar los mejores fotogramas de tu vídeo (pestaña Miniaturas del proyecto).'}</p>
   <div class="grid g2" style="align-items:start">
     <form id="f" class="card stack"><h2>1. Tu vídeo</h2>
       <div><label>Título del vídeo</label><input name="title" required placeholder="Ej: Probé el truco de ahorro que nadie usa" value="${esc(t?.title || '')}"></div>
       <div class="row"><div style="flex:1"><label>Formato</label><select name="format">${opts(THUMB_FORMATS, t?.format || 'youtube')}</select></div>
         <div style="flex:1"><label>Estilo</label><select name="style">${opts(THUMB_STYLES, t?.style || 'impacto')}</select></div></div>
-      <div><label>Texto de la miniatura</label><select name="mode"><option value="ai">✨ Diseñado por la IA (Gemini): tipografía profesional según el tema</option><option value="overlay">Superpuesto y editable al instante (sin coste extra)</option></select></div>
+      ${caps.aiText ? `<div><label>Texto de la miniatura</label><select name="mode"><option value="ai">✨ Diseñado por la IA (Gemini): tipografía profesional según el tema</option><option value="overlay">Superpuesto y editable al instante (sin coste extra)</option></select></div>`
+        : `<input type="hidden" name="mode" value="overlay"><div class="small muted">🧠 La imagen se genera en tu equipo (IA local) y el texto se pone encima, editable al instante. ${caps.local ? 'Cada imagen tarda de 20 s a unos minutos según tu ordenador.' : ''}</div>`}
       <div><label>Nicho o canal <span class="muted">(opcional)</span></label><input name="niche" list="chn" value="${esc(t?.niche || '')}"><datalist id="chn">${chs.map(c => `<option value="${esc(c.niche || c.name)}">`).join('')}</datalist></div>
-      <div><label>Tu foto o personaje <span class="muted">(opcional: aparecerá en la miniatura; funciona con OpenAI y Gemini)</span></label><input type="file" name="ref" accept="image/*" multiple></div>
+      <div ${caps.aiText ? '' : 'hidden'}><label>Tu foto o personaje <span class="muted">(opcional: aparecerá en la miniatura; funciona con OpenAI y Gemini)</span></label><input type="file" name="ref" accept="image/*" multiple></div>
       <div class="row"><button class="btn gold" id="ideasBtn">✨ Ideas con IA</button><button type="button" class="btn" id="ownBtn">🖼 Usar mi imagen de fondo</button></div>
       <input type="file" id="ownFile" accept="image/*" hidden>
       <div class="small muted" id="st"></div>
@@ -1323,22 +1325,36 @@ routes.servidor = async () => {
 
 // ---------- Ajustes y claves ----------
 routes.ajustes = async () => {
-  const { values, fields } = await api('/api/settings');
-  const groups = {};
-  for (const [k, f] of Object.entries(fields)) (groups[f.group] ||= []).push([k, f]);
-  main.innerHTML = `<h1>Ajustes y claves</h1><p class="sub">Tus claves API se guardan cifradas en tu servidor y nunca se envían al navegador. Solo pagas lo que uses en cada proveedor.</p>
-    <form id="f" class="grid g2">${Object.entries(groups).map(([g, list]) => `<div class="card stack"><h2>${g}</h2>
+  const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
+  const localMode = sys0.desktop && sys0.localAvailable;
+  // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
+  const KEEP = ['whisper_model', 'caption_color', 'cleanup_days'];
+  const groups = {}, cloud = {};
+  for (const [k, f] of Object.entries(fields)) {
+    if (localMode && k === 'use_cloud') continue;
+    const target = localMode && !KEEP.includes(k) ? cloud : groups;
+    (target[f.group] ||= []).push([k, f]);
+  }
+  if (!localMode) delete groups.Nube;
+  const card = ([g, list]) => `<div class="card stack"><h2>${g}</h2>
       ${list.map(([k, f]) => `<div><label>${f.label}</label>${f.options
         ? `<select name="${k}">${f.options.map(o => `<option ${values[k] === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
         : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
       ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button></div>` : ''}
       ${g === 'Publicar en YouTube' ? `<div class="small muted">URI de redirección autorizada para tu cliente OAuth:<br><code>${location.origin}/api/youtube/callback</code></div>` : ''}
-      </div>`).join('')}
+      </div>`;
+  main.innerHTML = `<h1>Ajustes</h1><p class="sub">${localMode ? 'La IA funciona en tu equipo: transcripción, elección de clips, títulos e imágenes. No necesitas claves ni pagas por uso.' : 'Tus claves API se guardan cifradas en tu servidor y nunca se envían al navegador. Solo pagas lo que uses en cada proveedor.'}</p>
+    <div id="localModels"></div>
+    <form id="f" class="grid g2">${Object.entries(groups).map(card).join('')}
+      ${localMode ? `<details class="card" style="grid-column:1/-1" ${values.use_cloud === '1' ? 'open' : ''}><summary style="cursor:pointer"><b>☁ Servicios en la nube (opcional)</b> <span class="small muted">— solo para Vídeo completo (voz y vídeos de stock), Analizador, Publicar en YouTube o si prefieres la IA de OpenAI/Gemini</span></summary>
+        <div class="stack" style="margin-top:12px"><label class="check"><input type="checkbox" id="useCloud" ${values.use_cloud === '1' ? 'checked' : ''}> Usar los servicios en la nube con mis claves en vez de la IA local</label>
+        <div class="grid g2">${Object.entries(cloud).map(card).join('')}</div></div></details>` : ''}
       <div style="grid-column:1/-1"><button class="btn gold">Guardar ajustes</button></div></form>`;
   const f = $('#f');
   f.onsubmit = e => {
     e.preventDefault();
-    busy(f.querySelector('.btn.gold'), async () => { await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) }); toast('Ajustes guardados', 'good'); router(); });
+    busy(f.querySelector('.btn.gold'), async () => { const body = Object.fromEntries(new FormData(f)); if ($('#useCloud')) body.use_cloud = $('#useCloud').checked ? '1' : '0';
+      await api('/api/settings', { method: 'PUT', body }); toast('Ajustes guardados', 'good'); systemInfo = null; router(); });
   };
   f.querySelectorAll('[data-test]').forEach(b => b.onclick = () => busy(b, async () => {
     await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
@@ -1346,10 +1362,30 @@ routes.ajustes = async () => {
     toast(`${b.dataset.test}: conexión correcta (${r.reply})`, 'good');
   }));
   const sys = await getSystem();
-  await whisperCard();
+  await localModelsCard();
+  if (!localMode) await whisperCard();
   if (sys.desktop) await cloudCard();
 };
 
+
+/** Modelos de IA locales: estado, descarga (una vez) y progreso. */
+async function localModelsCard() {
+  const box = $('#localModels'); if (!box) return;
+  const st0 = await api('/api/local-models').catch(() => null);
+  if (!st0?.available) return;
+  const draw = st => {
+    box.innerHTML = `<div class="card stack" style="margin-bottom:20px"><h2>🧠 IA local (en tu equipo)</h2>
+      <div class="small muted">Cada modelo se descarga una sola vez. Puedes descargarlos ahora o se descargarán solos la primera vez que se usen.</div>
+      ${st.models.map(m => `<div class="row between" style="border-bottom:1px solid var(--line);padding:8px 0"><div><b>${esc(m.label)}</b><div class="small muted">${esc(m.use)} · ~${m.mb >= 1000 ? (m.mb / 1000).toFixed(1) + ' GB' : m.mb + ' MB'}</div></div>
+        <div style="min-width:180px;text-align:right">${m.ready ? '<span class="pill ready">✓ Listo</span>' : m.download?.active ? pbar(m.download.pct, 'Descargando') : `${m.download?.error ? `<div class="err small">${esc(m.download.error)}</div>` : ''}<button class="btn sm gold" data-dl="${m.kind}:${m.id}">⬇ Descargar</button>`}</div></div>`).join('')}
+      <div class="row"><button class="btn sm" id="dlAll">⬇ Descargar todo</button><span class="small muted">Total ~7,5 GB. La IA de texto necesita unos 6 GB de memoria RAM libre.</span></div></div>`;
+    box.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => busy(b, async () => { const [kind, id] = b.dataset.dl.split(':'); await api('/api/local-models/download', { method: 'POST', body: { kind, id } }); poll(); }));
+    $('#dlAll').onclick = e => busy(e.target, async () => { for (const m of st.models.filter(m => !m.ready)) await api('/api/local-models/download', { method: 'POST', body: { kind: m.kind, id: m.id } }); poll(); });
+  };
+  const poll = async () => { const st = await api('/api/local-models'); draw(st); if (st.models.some(m => m.download?.active) && document.body.contains(box)) setTimeout(poll, 1500); };
+  draw(st0);
+  if (st0.models.some(m => m.download?.active)) setTimeout(poll, 1500);
+}
 
 /** Transcripción local (whisper.cpp): estado del modelo y descarga. */
 async function whisperCard() {

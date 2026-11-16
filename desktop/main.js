@@ -58,6 +58,13 @@ function setupEnv() {
   const wcli = path.join(bin, process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli');
   if (fs.existsSync(wcli)) { process.env.WHISPER_CLI = wcli; process.env.DEFAULT_TRANSCRIBE ||= 'local'; }
   process.env.WHISPER_MODELS_DIR ||= path.join(app.getPath('userData'), 'models');
+  // IA local de texto (llama.cpp) e imágenes (stable-diffusion.cpp) incluidas
+  for (const [env, names] of [['LLAMA_SERVER', ['llama-server']], ['SD_CLI', ['sd', 'sd-cli']]]) {
+    const f = names.map(n => path.join(bin, process.platform === 'win32' ? n + '.exe' : n)).find(x => fs.existsSync(x));
+    if (f) process.env[env] = f;
+  }
+  if (process.env.LLAMA_SERVER) process.env.DEFAULT_LLM ||= 'local';
+  if (process.env.SD_CLI) process.env.DEFAULT_IMAGE ||= 'local';
   const ytdlpBin = path.join(bin, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
   if (fs.existsSync(ytdlpBin)) process.env.YTDLP_PATH = ytdlpBin;
   // YouTube exige a yt-dlp un motor de JavaScript: se le da el Node que lleva la propia app (Electron en modo Node)

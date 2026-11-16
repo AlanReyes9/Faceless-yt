@@ -145,6 +145,9 @@ const has = (cmd, flag = '--version') => run(cmd, [flag]).then(() => true, () =>
 app.get('/api/system', h(async (req, res) => res.json({
   ffmpeg: await has(FFMPEG, '-version'), ytdlp: IS_VERCEL ? false : await has('yt-dlp'),
   queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL, desktop: !!globalThis.__desktop,
+  ...(await (async () => { const lw = await import('./ai/localwhisper.js'), lm = await import('./ai/localmodels.js');
+    const avail = lw.localAvailable() || lm.localLLMAvailable();
+    return { localAvailable: avail, localReady: avail && (!lw.localAvailable() || lw.modelReady(await getSetting('whisper_model') || 'small')) && (!lm.localLLMAvailable() || lm.modelReady(lm.DEFAULT_LLM_MODEL)) }; })()),
 })));
 // ---------- App de escritorio: conexión a la nube (R2/S3 y base de datos compartida con la web) ----------
 const desk = () => globalThis.__desktop;
@@ -380,6 +383,24 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
   if (p?.type !== 'live') throw new Error('Solo se pueden detener directos.');
   await setLive(p.id, { stopRequested: true });
   await updateProject(p.id, { progress: '⏹ Deteniendo: se termina de grabar el segmento actual y se analizan los últimos momentos…' });
+  res.json({ ok: true });
+}));
+
+// IA local: estado y descarga de modelos (Whisper, Qwen, DreamShaper)
+app.get('/api/local-models', h(async (req, res) => {
+  const lw = await import('./ai/localwhisper.js'), lm = await import('./ai/localmodels.js');
+  const wm = await getSetting('whisper_model') || 'small';
+  const available = lw.localAvailable() || lm.localLLMAvailable() || lm.localImageAvailable();
+  const models = [];
+  if (lw.localAvailable()) models.push({ kind: 'whisper', id: wm, label: `Whisper ${wm}`, use: 'Transcripción (voz → texto con tiempos por palabra)', mb: lw.WHISPER_MODELS[wm]?.mb || 466, ready: lw.modelReady(wm), download: lw.downloadStatus(wm) });
+  if (lm.localLLMAvailable()) { const id = lm.DEFAULT_LLM_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
+  if (lm.localImageAvailable()) { const id = lm.DEFAULT_IMAGE_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes de fondo para miniaturas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
+  res.json({ available, models });
+}));
+app.post('/api/local-models/download', h(async (req, res) => {
+  const { kind, id } = req.body || {};
+  if (kind === 'whisper') (await import('./ai/localwhisper.js')).ensureModel(String(id)).catch(e => console.error('modelo:', e.message));
+  else (await import('./ai/localmodels.js')).ensureModel(String(id)).catch(e => console.error('modelo:', e.message));
   res.json({ ok: true });
 }));
 

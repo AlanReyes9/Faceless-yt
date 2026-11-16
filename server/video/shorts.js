@@ -85,7 +85,27 @@ register('shorts.transcribe', async ({ id, chunk }) => {
 }, projectFail);
 
 // ---------- Paso 3: la IA elige los clips ----------
-export async function pickClips(transcript, sig, { count, minSec, maxSec, language }) {
+export async function pickClips(transcript, sig, opts) {
+  const { count } = opts;
+  // IA local (contexto limitado): los vídeos largos se analizan por partes y se juntan los mejores momentos
+  const all = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`);
+  const LIMIT = 55000;
+  if ((await getSetting('llm_provider')) === 'local' && all.join('\n').length > LIMIT) {
+    const parts = []; let cur = [], len = 0;
+    transcript.segments.forEach((s, i) => { cur.push(s); len += all[i].length + 1; if (len > LIMIT) { parts.push(cur); cur = []; len = 0; } });
+    if (cur.length) parts.push(cur);
+    const per = Math.max(2, Math.ceil(count * 1.5 / parts.length));
+    const found = [];
+    for (const [i, segs] of parts.entries()) {
+      opts.onProgress?.(`La IA local analiza la parte ${i + 1} de ${parts.length}…`);
+      found.push(...await pickClipsOnce({ ...transcript, segments: segs }, sig, { ...opts, count: per }).catch(e => { console.warn('parte', i, e.message); return []; }));
+    }
+    return found.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)).slice(0, count + 3);
+  }
+  return pickClipsOnce(transcript, sig, opts);
+}
+
+async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language }) {
   const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`).join('\n');
   const system = `Eres el mejor editor de vídeos cortos virales (YouTube Shorts, TikTok, Reels). Sabes exactamente qué momentos de un vídeo largo retienen a la audiencia y se comparten.
 Criterios (de más a menos importante):
@@ -124,7 +144,7 @@ register('shorts.pick', async ({ id }) => {
   await updateProject(id, { progress: 'La IA está buscando los mejores momentos…', percent: 50 });
   const opts = { count: 10, minSec: 20, maxSec: 60, layout: 'face', ...p.data.options };
   const sig = buildSignals({ energy: p.data.transcript.energy, words: p.data.transcript.words, cuts: p.data.cuts || [] });
-  const picked = await pickClips(p.data.transcript, sig, { ...opts, language: opts.titleLanguage });
+  const picked = await pickClips(p.data.transcript, sig, { ...opts, language: opts.titleLanguage, onProgress: txt => updateProject(id, { progress: txt }).catch(() => {}) });
   if (!picked.length) throw new Error('La IA no encontró clips en la transcripción.');
   for (const old of await q('SELECT file FROM clips WHERE project_id = $1', [id])) await removeFile(old.file);
   await q('DELETE FROM clips WHERE project_id = $1', [id]);

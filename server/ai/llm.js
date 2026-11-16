@@ -43,9 +43,13 @@ const geminiSwitchable = msg => isTemporal(msg) || /\((404)\)|no longer availabl
  * Llama al proveedor de texto configurado. Si falla por saturación o tarda demasiado,
  * prueba automáticamente con los demás proveedores de los que haya clave.
  */
-export async function chat(system, user, { json = false, maxTokens = 4000, provider } = {}) {
-  const deadline = Date.now() + TOTAL_BUDGET_MS;
+export async function chat(system, user, { json = false, maxTokens = 4000, provider, onProgress } = {}) {
   const preferred = provider || await getSetting('llm_provider');
+  if (preferred === 'local') { // IA local (llama.cpp): sin claves ni límite de tiempo de la nube
+    const { chatLocal } = await import('./localmodels.js');
+    return chatLocal(system, user, { json, maxTokens, onProgress });
+  }
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   const order = [preferred];
   // Orden de respaldo: Groq primero (muy rápido), luego el resto de proveedores con clave
   if (!provider) for (const p of ['groq', 'openai', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);

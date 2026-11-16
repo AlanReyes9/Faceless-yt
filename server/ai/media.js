@@ -198,7 +198,8 @@ async function pollinationsImage(prompt, { size }) {
   }
 }
 
-const IMAGE_PROVIDERS = { openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null } };
+const localImage = async (prompt, { size }) => (await import('./localmodels.js')).imageLocal(prompt, { size });
+const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null } };
 
 /**
  * Genera una imagen con el proveedor elegido en Ajustes; si falla, prueba los demás.
@@ -208,7 +209,8 @@ const IMAGE_PROVIDERS = { openai: { fn: openaiImage, key: 'openai_key' }, gemini
 export async function generateImage(prompt, { size = '1024x1536', references = [], provider } = {}) {
   const preferred = provider || await getSetting('image_provider');
   const order = [preferred];
-  if (!provider) for (const p of ['gemini', 'openai', 'pollinations']) if (p !== preferred && (!IMAGE_PROVIDERS[p].key || await getSetting(IMAGE_PROVIDERS[p].key))) order.push(p);
+  // Con la IA local no se recurre a servicios externos
+  if (!provider && preferred !== 'local') for (const p of ['gemini', 'openai', 'pollinations']) if (p !== preferred && (!IMAGE_PROVIDERS[p].key || await getSetting(IMAGE_PROVIDERS[p].key))) order.push(p);
   let lastErr;
   for (const p of order) {
     const prov = IMAGE_PROVIDERS[p];

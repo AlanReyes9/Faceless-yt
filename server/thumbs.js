@@ -130,6 +130,7 @@ Only this headline: no other text, letters, numbers, logos, watermarks or UI ele
 const out = t => ({ ...t, items: (t.items || []).map(it => ({ ...it, url: publicUrl(it.out), baseUrl: publicUrl(it.base) })), refUrls: (t.refs || []).map(publicUrl) });
 
 export function mountThumbs(app, h) {
+  app.get('/api/thumbs/caps', h(async (req, res) => res.json({ aiText: (await getSetting('image_provider')) !== 'local' && !!((await getSetting('gemini_key')) || (await getSetting('openai_key'))), local: (await getSetting('image_provider')) === 'local' })));
   app.get('/api/thumbs/meta', (req, res) => res.json({ formats: Object.fromEntries(Object.entries(FORMATS).map(([k, v]) => [k, v.label])), styles: Object.keys(STYLES) }));
   app.get('/api/thumbs', h(async (req, res) => res.json((await q('SELECT * FROM thumbnails ORDER BY id DESC LIMIT 60')).map(out))));
   app.get('/api/thumbs/:id', h(async (req, res) => res.json(out(await one('SELECT * FROM thumbnails WHERE id = $1', [req.params.id])))));
@@ -151,7 +152,8 @@ export function mountThumbs(app, h) {
     const t = await one('SELECT * FROM thumbnails WHERE id = $1', [req.params.id]);
     const b = req.body || {};
     const F = FORMATS[t.format];
-    const mode = b.mode === 'overlay' || b.base ? 'overlay' : 'ai';
+    const cloudText = (await getSetting('image_provider')) !== 'local' && ((await getSetting('gemini_key')) || (await getSetting('openai_key')));
+    const mode = b.mode === 'overlay' || b.base || !cloudText ? 'overlay' : 'ai';
     if (mode === 'ai') {
       const refs = [];
       for (const r of (t.refs || []).slice(0, 2)) { try { refs.push(fs.readFileSync(await toLocal(r, path.join(WORK_DIR, `tref_${crypto.randomBytes(4).toString('hex')}`)))); } catch {} }
