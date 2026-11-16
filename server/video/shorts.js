@@ -182,18 +182,25 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
   await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
-  const allWords = p.type === 'live' ? await liveWords(p.id, clip.start, clip.end) : (p.data.transcript?.words || []);
+  const E = clip.edit || null; // ajustes del editor (encuadre, formato, subtítulos, texto corregido)
+  let allWords = p.type === 'live' ? await liveWords(p.id, clip.start, clip.end) : (p.data.transcript?.words || []);
+  if (E?.words) allWords = [...allWords.filter(w => w.end <= E.wordsFrom || w.start >= E.wordsTo), ...E.words].sort((a, b) => a.start - b.start);
   const words = lang ? (clip.variants[lang]?.words || []) : sliceWords(allWords, clip.start, clip.end);
-  const hook = lang ? (clip.variants[lang]?.hook || '') : clip.hook;
+  const hook = lang ? (clip.variants[lang]?.hook || '') : (E?.hookOn === false ? '' : clip.hook);
+  const FMT = { v: [1080, 1920], sq: [1080, 1080], p45: [1080, 1350] }[E?.format] || [1080, 1920];
+  const [OW, OH] = FMT;
+  const C = E?.captions || {};
+  const capMargin = C.y != null ? Math.round((1 - Number(C.y)) * OH) : (clip.layout === 'blur' ? 560 : 420) * OH / 1920;
   const tag = `c${clip.id}${lang ? '_' + lang : ''}_${Date.now()}`;
   const assFile = path.join(WORK_DIR, `${tag}.ass`);
   const out = path.join(WORK_DIR, `${tag}.mp4`);
   try {
     fs.writeFileSync(assFile, buildASS(words, {
-      hook, duration: dur, highlight: await getSetting('caption_color'),
-      captionMarginV: clip.layout === 'blur' ? 560 : 420,
-      captions: p.data.options?.captions !== false,
-      style: clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
+      hook, duration: dur, highlight: C.color || await getSetting('caption_color'),
+      captionMarginV: Math.round(capMargin), width: OW, height: OH,
+      captions: C.show != null ? C.show !== false : p.data.options?.captions !== false,
+      style: C.style || clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
+      sizeScale: C.size, upper: C.upper, wpg: C.wpg,
     }));
     const ass = assFilter(assFile);
     const input = inputs[0];
@@ -209,8 +216,9 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       return outAll;
     };
     // Encuadre "face": la ventana vertical sigue a la persona que habla
-    let layout = clip.layout, facePlan = null;
-    if (layout === 'face') {
+    let layout = E?.layout || clip.layout, facePlan = null;
+    const manualKeys = E?.crop?.mode === 'manual' && E.crop.keys?.length ? E.crop.keys : null;
+    if (layout === 'face' && !manualKeys && E?.crop?.mode !== 'fixed') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       // v2: encuadre en quien habla (los encuadres guardados con la versión anterior se recalculan)
       const cached = clip.track && clip.track.v === 2 && clip.track.start === clip.start && clip.track.end === clip.end ? clip.track : null;
@@ -250,7 +258,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
         }
       }
       if (facePlan) facePlan.H = H;
-      else layout = 'blur'; // sin caras detectadas: fondo difuminado
+      else if (!E) layout = 'blur'; // sin caras detectadas: fondo difuminado (en el editor: encuadre fijo)
     }
     let vf;
     // Los subtítulos y emojis se diseñan a 1080x1920; en modo rápido se escala al final
@@ -258,7 +266,23 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     // Varios trozos: se unen (vídeo y audio) antes de aplicar el encuadre
     const vin = parts.length > 1 ? '[cv]' : '[0:v]';
     const pre = parts.length > 1 ? `${parts.map((_, i) => `[${i}:v][${i}:a]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
-    if (layout === 'face') vf = `[0:v]crop=w=${facePlan.cw}:h=${facePlan.H}:x=${cropExpr(facePlan)}:y=0,scale=1080:1920,setsar=1,${ass}[base]`;
+    if (E && layout !== 'blur') {
+      // Encuadre del editor: zoom, posición vertical, fotogramas manuales, seguimiento de cara o fijo
+      const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
+      const z = Math.max(1, Math.min(3, Number(E.crop?.zoom) || 1));
+      let ch = Math.round(H / z / 2) * 2, cw = Math.round(ch * OW / OH / 2) * 2;
+      if (cw > W) { cw = Math.floor(W / 2) * 2; ch = Math.min(H, Math.round(cw * OH / OW / 2) * 2); }
+      const y = Math.max(0, Math.min(H - ch, Math.round((Number(E.crop?.cy ?? 0.5)) * H - ch / 2)));
+      const clampX = cx => Math.max(0, Math.min(W - cw, Math.round(cx * W - cw / 2)));
+      let keys;
+      if (manualKeys) keys = [...manualKeys].sort((a, b) => a.t - b.t).map(k => ({ t: Math.max(0, k.t - clip.start), x: clampX(k.cx), cut: !!k.cut }));
+      else if (layout === 'face' && facePlan) keys = facePlan.keys.map(k => ({ ...k, x: clampX((k.x + facePlan.cw / 2) / W) }));
+      else keys = [{ t: 0, x: clampX(Number(E.crop?.cx ?? 0.5)), cut: true }];
+      if (keys[0].t > 0) keys.unshift({ ...keys[0], t: 0, cut: true });
+      vf = `[0:v]crop=w=${cw}:h=${ch}:x=${cropExpr({ keys })}:y=${y},scale=${OW}:${OH},setsar=1,${ass}[base]`;
+    } else if (layout === 'blur' && E) vf = `[0:v]split=2[a][b];[a]scale=${OW / 4}:${OH / 4}:force_original_aspect_ratio=increase,crop=${OW / 4}:${OH / 4},boxblur=10:2,scale=${OW}:${OH},eq=brightness=-0.06[bg];` +
+      `[b]scale=${OW}:${OH}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
+    else if (layout === 'face') vf = `[0:v]crop=w=${facePlan.cw}:h=${facePlan.H}:x=${cropExpr(facePlan)}:y=0,scale=1080:1920,setsar=1,${ass}[base]`;
     else if (layout === 'crop') vf = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[base]`;
     else vf = `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
       `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
@@ -267,8 +291,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     // Emojis animados sobre los subtítulos cuando se dice la palabra
     const extra = [];
     let last = 'base';
-    const emojiList = lang ? [] : (clip.emojis || []);
-    const capY = clip.layout === 'blur' ? 1920 - 560 : 1920 - 420; // misma altura que los subtítulos
+    const emojiList = lang || E?.emojis === false ? [] : (clip.emojis || []);
+    const capY = OH - capMargin; // misma altura que los subtítulos
     let k = 0;
     for (const e of emojiList) {
       const w = words.find(x => normWord(x.word) === normWord(e.word));
@@ -283,7 +307,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
         `[${last}][e${i}]overlay=x=(W-w)/2:y=${capY - 300}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
       last = `o${i}`;
     }
-    vf += Q.W !== 1080 ? `;[${last}]scale=${Q.W}:${Q.H}[v]` : `;[${last}]null[v]`;
+    vf += Q.W !== 1080 ? `;[${last}]scale=${Q.W}:${Math.round(Q.W * OH / OW / 2) * 2}[v]` : `;[${last}]null[v]`;
     if (ctx.remaining() < 45000) { // no empezar un render sin tiempo suficiente: va a una ejecución nueva
       await prog('En cola para renderizar', 0, true);
       await enqueue('clip.render', { clipId, lang });

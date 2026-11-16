@@ -545,6 +545,81 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   await updateClip(c.id, f);
   res.json({ ok: true });
 }));
+// ---------- Editor de clips ----------
+app.get('/api/clips/:id/editor', h(async (req, res) => {
+  const c = await getClip(req.params.id);
+  if (!c) return res.status(404).json({ error: 'No existe' });
+  const p = await getProject(c.project_id);
+  if (c.src) throw new Error('Los clips de directos todavía no se pueden abrir en el editor.');
+  const dur = p.duration || 0;
+  const pad = Math.max(20, (c.end - c.start) * 0.6);
+  const from = Math.max(0, c.start - pad), to = Math.min(dur || c.end + pad, c.end + pad);
+  const E = c.edit || {};
+  let words = (p.data.transcript?.words || []).filter(w => w.end > from && w.start < to);
+  if (E.words) words = [...words.filter(w => w.end <= E.wordsFrom || w.start >= E.wordsTo), ...E.words].filter(w => w.end > from && w.start < to).sort((a, b) => a.start - b.start);
+  // Encuadre automático ya calculado (centros normalizados, tiempos absolutos)
+  const W = p.data.width || 1920, H = p.data.height || 1080;
+  const plan = c.track?.plan;
+  const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
+  res.json({
+    clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys,
+    project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: publicUrl(p.source), sourceDeleted: !!p.data.sourceDeletedAt, captionStyle: p.data.options?.captionStyle },
+    highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
+  });
+}));
+// Forma de onda del audio entre dos instantes (para la línea de tiempo del editor)
+app.get('/api/projects/:id/waveform', h(async (req, res) => {
+  const p = await getProject(req.params.id);
+  const from = Math.max(0, Number(req.query.from) || 0), to = Math.max(from + 1, Number(req.query.to) || from + 60);
+  const n = Math.min(3000, Math.max(100, Number(req.query.n) || 1000));
+  const { FFMPEG: FF } = await import('./video/ffmpeg.js');
+  const os = await import('node:os');
+  const { spawn } = await import('node:child_process');
+  const { localUrl } = await import('./video/netproxy.js');
+  const input = await localUrl(inputPath(p.source));
+  const rate = 4000;
+  const pcm = await new Promise((resolve, reject) => {
+    const pr = spawn(FF, ['-hide_banner', '-loglevel', 'error', '-ss', String(from), '-t', String(to - from), '-i', input, '-vn', '-ac', '1', '-ar', String(rate), '-f', 's16le', 'pipe:1'],
+      { env: { ...process.env, GCONV_PATH: path.join(os.tmpdir(), 'faceless-gconv-empty') } });
+    const ch = []; pr.stdout.on('data', d => ch.push(d)); pr.on('error', reject); pr.on('close', () => resolve(Buffer.concat(ch)));
+  });
+  const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.length / 2));
+  const per = Math.max(1, Math.floor(samples.length / n));
+  const peaks = [];
+  for (let i = 0; i < samples.length; i += per) { let m = 0; for (let j = i; j < i + per && j < samples.length; j++) { const v = Math.abs(samples[j]); if (v > m) m = v; } peaks.push(+(m / 32768).toFixed(3)); }
+  res.json({ from, to, peaks });
+}));
+app.put('/api/clips/:id/edit', h(async (req, res) => {
+  const c = await getClip(req.params.id);
+  const b = req.body || {};
+  const num = (v, a, z, d) => { const x = Number(v); return Number.isFinite(x) ? Math.max(a, Math.min(z, x)) : d; };
+  const start = num(b.start, 0, 1e7, c.start), end = num(b.end, 0, 1e7, c.end);
+  if (end - start < 2) throw new Error('El clip debe durar al menos 2 segundos.');
+  const words = Array.isArray(b.words) ? b.words.filter(w => w && String(w.word || '').trim()).slice(0, 5000)
+    .map(w => ({ word: String(w.word).slice(0, 60), start: Number(w.start), end: Number(w.end) })).filter(w => Number.isFinite(w.start) && Number.isFinite(w.end)) : null;
+  const edit = {
+    format: ['v', 'sq', 'p45'].includes(b.format) ? b.format : 'v',
+    layout: ['face', 'crop', 'blur'].includes(b.layout) ? b.layout : c.layout,
+    crop: { mode: ['face', 'manual', 'fixed'].includes(b.crop?.mode) ? b.crop.mode : 'face', zoom: num(b.crop?.zoom, 1, 3, 1), cx: num(b.crop?.cx, 0, 1, 0.5), cy: num(b.crop?.cy, 0, 1, 0.5),
+      keys: (b.crop?.keys || []).slice(0, 500).map(k => ({ t: num(k.t, 0, 1e7, 0), cx: num(k.cx, 0, 1, 0.5), cut: !!k.cut })) },
+    captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1),
+      y: num(b.captions?.y, 0.1, 0.95, null), color: /^#[0-9a-f]{6}$/i.test(b.captions?.color || '') ? b.captions.color : null, upper: b.captions?.upper == null ? null : !!b.captions.upper, wpg: num(b.captions?.wpg, 1, 8, null) },
+    hookOn: b.hookOn !== false, emojis: b.emojis !== false,
+    ...(words ? { words, wordsFrom: num(b.wordsFrom, 0, 1e7, start), wordsTo: num(b.wordsTo, 0, 1e7, end) } : (c.edit?.words ? { words: c.edit.words, wordsFrom: c.edit.wordsFrom, wordsTo: c.edit.wordsTo } : {})),
+  };
+  const f = { start, end, edit, layout: edit.layout, style: edit.captions.style };
+  if ('hook' in b) f.hook = String(b.hook || '').slice(0, 120);
+  if ('title' in b) f.title = String(b.title || '').slice(0, 120);
+  await updateClip(c.id, f);
+  if (b.render) {
+    await requireSource(c.id);
+    await updateClip(c.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
+    await updateProject(c.project_id, { status: 'processing', error: null, progress: 'Renderizando cambios…' });
+    await enqueue('clip.render', { clipId: c.id });
+  }
+  res.json({ ok: true });
+}));
+
 const NO_SOURCE = 'El vídeo original de este proyecto se borró para ahorrar espacio (limpieza automática), así que no se puede volver a renderizar. Los Shorts ya hechos siguen disponibles.';
 async function requireSource(clipId) {
   const c = await getClip(clipId);

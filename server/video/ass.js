@@ -39,7 +39,7 @@ function wrap(text, max = 22) {
  * @param words  [{word,start,end}] con tiempos RELATIVOS al inicio del clip
  * @param opts   { hook, hookSeconds, duration, highlight, captionY, wordsPerGroup }
  */
-export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E' } = {}) {
+export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg } = {}) {
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -69,12 +69,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   }
   if (captions && words.length) {
     words = cleanWords(words, duration);
-    const st = CAPTION_STYLES[style] || CAPTION_STYLES.clasico;
+    const st0 = CAPTION_STYLES[style] || CAPTION_STYLES.clasico;
+    // Ajustes del editor: tamaño, mayúsculas y palabras por grupo
+    const st = { ...st0, size: Math.round(st0.size * (Number(sizeScale) || 1)), upper: upper ?? st0.upper, wpg: Number(wpg) || st0.wpg };
     const capEvents = [];
     const hl = assColor(highlight), kw = assColor(keywordColor);
     const kwSet = new Set((keywords || []).map(norm).filter(Boolean));
     const isKw = w => kwSet.has(norm(w));
-    const per = style === 'clasico' || !CAPTION_STYLES[style] ? wordsPerGroup : st.wpg;
+    const per = Number(wpg) || (style === 'clasico' || !CAPTION_STYLES[style] ? wordsPerGroup : st.wpg);
     // Agrupa palabras: corta por número, por signos de puntuación o por pausas largas
     const groups = [];
     let cur = [];

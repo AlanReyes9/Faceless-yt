@@ -58,6 +58,7 @@ function poll(fn, ms = 3000) { clearTimeout(pollTimer); pollTimer = setTimeout(f
 const routes = {};
 async function router() {
   clearTimeout(pollTimer);
+  document.body.classList.remove('editing');
   $('#sidebar').classList.remove('open');
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const [route, arg] = path.split('/');
@@ -454,6 +455,9 @@ function linkDialog(getOptions) {
   setTimeout(() => $m('#lu').focus(), 50);
 }
 
+// ---------- Editor de clips (public/editor.js) ----------
+routes.editor = async id => (await import('./editor.js')).openClipEditor(id, { api, esc, toast, busy, main, mmss });
+
 // ---------- Proyecto (Shorts o completo) ----------
 routes.proyecto = async id => {
   const [p, chs] = await Promise.all([api('/api/projects/' + id), channelsCache.get()]);
@@ -557,7 +561,8 @@ function shortsGrid(p, chs) {
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : 'fondo difuminado'}</span></div>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : 'fondo difuminado'}</span>
+          ${!c.src && !p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
         <div><label>Frase de gancho (sale 4 s arriba)</label><input data-f="hook" value="${esc(c.hook)}"></div>
