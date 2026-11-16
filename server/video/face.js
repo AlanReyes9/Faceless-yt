@@ -1,4 +1,4 @@
-// Detección de caras (UltraFace RFB-320, ONNX en WASM) y plan de reencuadre vertical que sigue a quien habla.
+// Detección de caras local (YuNet 2023; UltraFace RFB-320 de respaldo, ONNX en WASM) y plan de reencuadre vertical que sigue a quien habla.
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -8,7 +8,10 @@ import { localUrl } from './netproxy.js';
 
 const require = createRequire(import.meta.url);
 const MODEL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'models', 'ultraface-rfb-320.onnx');
-const IW = 320, IH = 240;
+const IW = 320, IH = 240; // entrada de UltraFace
+const YUNET = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'models', 'face_detection_yunet_2023mar.onnx');
+const YS = 640; // YuNet: entrada 640x640
+const AW = 640, AH = 360; // resolución de análisis (fotogramas para YuNet y para medir la boca)
 
 let sessionP = null;
 async function session() {
@@ -29,8 +32,53 @@ const iou = (a, b) => {
   return i / ((a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - i || 1);
 };
 
-/** Detecta caras en un fotograma RGB 320x240. Devuelve cajas normalizadas [0..1]. */
+// ---------- YuNet: más preciso con caras pequeñas, de perfil y varias personas ----------
+let yunetP = null;
+async function yunet() {
+  if (!yunetP) yunetP = (async () => {
+    const { ort } = await session();
+    return { ort, s: await ort.InferenceSession.create(YUNET, { logSeverityLevel: 3, graphOptimizationLevel: 'all' }) };
+  })().catch(e => { console.warn('YuNet no disponible, se usa UltraFace:', e.message); return null; });
+  return yunetP;
+}
+async function detectYunet(y, rgb, w, h, threshold) {
+  const { ort, s } = y;
+  // BGR, 0..255, imagen arriba a la izquierda y el resto del cuadrado en negro
+  const n = YS * YS, data = new Float32Array(3 * n);
+  for (let yy = 0; yy < h; yy++) for (let x = 0; x < w; x++) {
+    const si = (yy * w + x) * 3, di = yy * YS + x;
+    data[di] = rgb[si + 2]; data[n + di] = rgb[si + 1]; data[2 * n + di] = rgb[si];
+  }
+  const out = await s.run({ input: new ort.Tensor('float32', data, [1, 3, YS, YS]) });
+  const cand = [];
+  for (const st of [8, 16, 32]) {
+    const cls = out['cls_' + st].data, obj = out['obj_' + st].data, bb = out['bbox_' + st].data, cols = YS / st;
+    for (let i = 0; i < cls.length; i++) {
+      const sc = Math.sqrt(Math.min(1, Math.max(0, cls[i])) * Math.min(1, Math.max(0, obj[i])));
+      if (sc < threshold) continue;
+      const r = Math.floor(i / cols), c = i % cols;
+      const cx = (c + bb[i * 4]) * st, cy = (r + bb[i * 4 + 1]) * st, bw = Math.exp(bb[i * 4 + 2]) * st, bh = Math.exp(bb[i * 4 + 3]) * st;
+      cand.push({ x1: (cx - bw / 2) / w, y1: (cy - bh / 2) / h, x2: (cx + bw / 2) / w, y2: (cy + bh / 2) / h, score: sc });
+    }
+  }
+  cand.sort((a, b) => b.score - a.score);
+  const keep = [];
+  for (const c of cand) if (c.y1 < 1 && !keep.some(k => iou(k, c) > 0.3)) keep.push(c);
+  return keep.map(f => ({ ...f, x1: Math.max(0, f.x1), y1: Math.max(0, f.y1), x2: Math.min(1, f.x2), y2: Math.min(1, f.y2) })).filter(f => f.x2 - f.x1 > 0.015);
+}
+
+/**
+ * Detecta caras en un fotograma RGB de AW×AH (640×360). Devuelve cajas normalizadas [0..1].
+ * Usa YuNet; si no carga, UltraFace.
+ */
 export async function detectFaces(rgb, threshold = 0.7) {
+  const y = await yunet();
+  if (y) return detectYunet(y, rgb, AW, AH, Math.min(threshold, 0.6));
+  return detectUltra(toDetector(rgb), threshold);
+}
+
+/** UltraFace: fotograma RGB 320x240. */
+async function detectUltra(rgb, threshold = 0.7) {
   const { ort, s } = await session();
   const data = new Float32Array(3 * IW * IH);
   for (let i = 0, n = IW * IH; i < n; i++) {
@@ -60,7 +108,7 @@ async function frames(input, start, dur, { fps = 2, keyOnly = false, timeoutMs }
   return new Promise((resolve, reject) => {
     const args = ['-hide_banner', '-loglevel', keyOnly ? 'info' : 'error',
       ...(keyOnly ? ['-skip_frame', 'nokey'] : []), '-ss', String(start), '-i', input, '-t', String(dur),
-      '-vf', keyOnly ? `scale=${IW}:${IH},showinfo` : `fps=${fps},scale=${IW}:${IH}`,
+      '-vf', keyOnly ? `scale=${AW}:${AH},showinfo` : `fps=${fps},scale=${AW}:${AH}`,
       ...(keyOnly ? ['-fps_mode', 'passthrough'] : []), '-an', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'];
     const p = spawn(FFMPEG, args);
     const chunks = []; let err = '';
@@ -71,7 +119,7 @@ async function frames(input, start, dur, { fps = 2, keyOnly = false, timeoutMs }
     p.on('close', code => {
       clearTimeout(timer);
       if (code !== 0) return reject(new Error('ffmpeg (caras): ' + err.slice(-500)));
-      const buf = Buffer.concat(chunks), size = IW * IH * 3, list = [];
+      const buf = Buffer.concat(chunks), size = AW * AH * 3, list = [];
       const times = keyOnly ? [...err.matchAll(/pts_time:\s*([\d.]+)/g)].map(m => parseFloat(m[1])) : [];
       for (let o = 0, i = 0; o + size <= buf.length; o += size, i++) {
         list.push({ t: keyOnly ? Math.max(0, (times[i] ?? i) - (times[0] ?? 0)) : i / fps, img: buf.subarray(o, o + size) });
@@ -118,7 +166,6 @@ export async function trackFaces(input, start, dur, { fps = 2, onProgress, timeo
 // Se mide el movimiento de la boca de cada cara entre fotogramas consecutivos (restando el de la frente,
 // para no confundirlo con movimientos de cabeza o de cámara) y solo cuenta mientras hay voz.
 // ---------------------------------------------------------------------------
-const AW = 640, AH = 360; // resolución de análisis (más detalle en la boca que 320x240)
 
 /** Lee fotogramas AW×AH uno a uno (sin cargar el clip entero en memoria) y llama a onFrame(t, rgb). */
 async function streamFrames(input, start, dur, fps, onFrame, timeoutMs) {
@@ -184,7 +231,7 @@ export async function trackSpeakers(input, start, dur, { words = [], fps = 8, on
 
   await streamFrames(input, start, dur, fps, async (t, rgb) => {
     const gray = toGray(rgb);
-    const faces = await detectFaces(toDetector(rgb), 0.65);
+    const faces = await detectFaces(rgb, 0.65);
     const pos = new Map();
     const used = new Set();
     for (const f of faces) {
@@ -307,5 +354,5 @@ export function cropExpr(plan, ease = 0.6) {
 
 /** Comprobación rápida de que el detector carga y se ejecuta (para diagnóstico). */
 export async function faceSelfTest() {
-  try { await detectFaces(new Uint8Array(IW * IH * 3)); return true; } catch (e) { console.warn('faceSelfTest', e.message); return false; }
+  try { await detectFaces(new Uint8Array(AW * AH * 3)); return true; } catch (e) { console.warn('faceSelfTest', e.message); return false; }
 }
