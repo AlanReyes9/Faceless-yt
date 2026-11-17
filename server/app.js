@@ -3,9 +3,10 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import archiver from 'archiver';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { q, one, insert, update, getProject, updateProject, getClip, updateClip, FILES_DIR, DB_MODE, IS_VERCEL } from './db.js';
+import { q, one, insert, update, getProject, updateProject, getClip, updateClip, FILES_DIR, WORK_DIR, DB_MODE, IS_VERCEL } from './db.js';
 import { publicSettings, setSettings, internalSecret, getSetting } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
@@ -308,6 +309,41 @@ app.post('/api/link/info', h(async (req, res) => {
   if (!/^https?:\/\//i.test(url)) throw new Error('Pega un enlace válido (https://…).');
   const { linkInfo } = await import('./video/ytdlp.js');
   res.json(await linkInfo(url));
+}));
+
+// Descarga sola (sin analizar): el vídeo queda guardado y la página "Convertir a Shorts" lo usa como origen
+const linkDownloads = new Map(); // id -> { pct, text, gotMB, totalMB, speed, done, error, ref, title, ac }
+app.post('/api/link/download', h(async (req, res) => {
+  if (IS_VERCEL) throw new Error('Descargar desde enlaces solo está disponible en la app de escritorio. (400)');
+  const b = req.body || {};
+  const url = String(b.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) throw new Error('Pega un enlace válido (https://…).');
+  const { downloadVideo } = await import('./video/ytdlp.js');
+  const id = crypto.randomBytes(6).toString('hex');
+  const st = { pct: 0, text: 'Preparando la descarga…', done: false, error: null, ref: null, title: String(b.title || ''), ac: new AbortController(), at: Date.now() };
+  linkDownloads.set(id, st);
+  for (const [k, v] of linkDownloads) if (v.done && Date.now() - v.at > 3600e3) linkDownloads.delete(k);
+  const from = Number(b.from) > 0 ? Number(b.from) : 0, to = Number(b.to) > from ? Number(b.to) : 0;
+  (async () => {
+    const file = await downloadVideo(url, WORK_DIR, `link_${id}`, (pct, text, extra) => Object.assign(st, { pct: Math.round(pct), text, ...(extra || {}) }),
+      { height: Math.min(2160, Math.max(144, Number(b.height) || 1080)), from, to, estMB: Number(b.estMB) || 0, signal: st.ac.signal });
+    st.text = 'Guardando el vídeo…'; st.pct = 100;
+    st.ref = await saveFile(file, `source_${id}.mp4`);
+    fs.rmSync(file, { force: true });
+    Object.assign(st, { done: true, text: 'Descargado', at: Date.now() });
+  })().catch(e => Object.assign(st, { done: true, error: e.cancelled ? 'Descarga cancelada.' : e.message, at: Date.now() }));
+  res.json({ id });
+}));
+app.get('/api/link/download/:id', h(async (req, res) => {
+  const st = linkDownloads.get(req.params.id);
+  if (!st) throw new Error('Descarga no encontrada. (404)');
+  const { ac, ...rest } = st;
+  res.json({ ...rest, url: st.ref ? publicUrl(st.ref) : null });
+}));
+app.post('/api/link/download/:id/cancel', h(async (req, res) => {
+  const st = linkDownloads.get(req.params.id);
+  if (st && !st.done) st.ac.abort();
+  res.json({ ok: true });
 }));
 app.post('/api/projects/:id/cancel', h(async (req, res) => {
   const { activeDownloads } = await import('./video/shorts.js');
