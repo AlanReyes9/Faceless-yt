@@ -20,15 +20,15 @@ export function baseArgs() {
  * Ejecuta yt-dlp. Si pasa `stallMs` sin ninguna salida nueva, lo detiene con un error claro.
  * onLine recibe cada línea (stdout y stderr).
  */
-export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3, signal } = {}) {
+export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3, signal, fullOutput = false } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(YTDLP, [...baseArgs(), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '', last = Date.now(), reason = null;
     const feed = (d, isErr) => {
       last = Date.now();
       const s = String(d);
-      if (isErr) { err += s; if (err.length > 20000) err = err.slice(-10000); } else { out += s; if (out.length > 200000) out = out.slice(-100000); }
-      for (const line of s.split(/\r?\n|\r/)) if (line.trim()) onLine(line.trim());
+      if (isErr) { err += s; if (err.length > 20000) err = err.slice(-10000); } else { out += s; if (!fullOutput && out.length > 200000) out = out.slice(-100000); } // con -J se necesita el JSON completo (puede pasar de 1 MB)
+      if (!fullOutput || isErr) for (const line of s.split(/\r?\n|\r/)) if (line.trim()) onLine(line.trim());
     };
     if (signal) { if (signal.aborted) p.kill('SIGKILL'); signal.addEventListener('abort', () => { reason = 'cancelado'; p.kill('SIGKILL'); }, { once: true }); }
     p.stdout.on('data', d => feed(d, false));
@@ -55,10 +55,17 @@ const MB = b => b / 1048576;
 const toBytes = (n, u) => Number(n) * ({ B: 1, KIB: 1024, KB: 1000, MIB: 1048576, MB: 1e6, GIB: 1073741824, GB: 1e9 }[String(u).toUpperCase()] || 1);
 const hms = t => { const [h, m, s] = String(t).split(':').map(Number); return h * 3600 + m * 60 + (s || 0); };
 
+/** JSON de yt-dlp -J: la línea que empieza por '{' (ignora cualquier otra salida). */
+function parseOut(out) {
+  const line = out.split(/\r?\n/).filter(l => l.trimStart().startsWith('{')).sort((a, b) => b.length - a.length)[0];
+  if (!line) throw new Error('yt-dlp no devolvió la información del vídeo.');
+  return JSON.parse(line);
+}
+
 /** Información de un enlace antes de descargar: título, canal, duración y tamaño aproximado por calidad. */
 export async function linkInfo(url) {
-  const { out } = await ytdlp(['-J', url], { stallMs: 60000, timeoutMs: 120000 });
-  const j = JSON.parse(out.slice(out.indexOf('{')));
+  const { out } = await ytdlp(['-J', url], { stallMs: 60000, timeoutMs: 120000, fullOutput: true });
+  const j = parseOut(out);
   const dur = j.duration || 0;
   const fmts = j.formats || [];
   const size = f => f.filesize || f.filesize_approx || (f.tbr && dur ? f.tbr * 1000 / 8 * dur : 0);
@@ -135,7 +142,7 @@ export async function searchShorts(query, { n = 24, maxSec = 90 } = {}) {
   const q = String(query || '').trim().slice(0, 120);
   if (!q) return [];
   // A la vez: Shorts del hashtag (#gatosgraciosos) y búsqueda con el filtro "menos de 4 minutos" (sp=EgIYAQ==)
-  const list = async args => { try { const { out } = await ytdlp(args, { stallMs: 60000, timeoutMs: 90000 }); return JSON.parse(out.slice(out.indexOf('{'))).entries || []; } catch { return []; } };
+  const list = async args => { try { const { out } = await ytdlp(args, { stallMs: 60000, timeoutMs: 90000, fullOutput: true }); return parseOut(out).entries || []; } catch { return []; } };
   const tag = q.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
   const [a, b] = await Promise.all([
     tag ? list(['--flat-playlist', '-J', '--playlist-end', String(Math.min(60, n * 2)), `https://www.youtube.com/hashtag/${encodeURIComponent(tag)}/shorts`]) : [],
