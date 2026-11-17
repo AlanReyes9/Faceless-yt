@@ -97,7 +97,9 @@ export async function downloadVideo(url, dir, name, onProgress = () => {}, opts 
   const secDur = section ? section[1] - section[0] : 0;
   let lastPct = -1, phase = 0, lastSent = 0, doneMB = 0;
   const send = (pct, text, extra, force) => { if (force || Date.now() - lastSent > 1500) { lastSent = Date.now(); onProgress(pct, text, extra); } };
-  const args = ['-f', `bv*[height<=${H}]+ba/b[height<=${H}]/bv*+ba/b`, '-S', `res:${H},vcodec:h264,acodec:aac`, '--merge-output-format', 'mp4', '-o', tmpl];
+  const args = ['-f', `bv*[height<=${H}]+ba/b[height<=${H}]/bv*+ba/b`, '-S', `res:${H},vcodec:h264,acodec:aac`, '--merge-output-format', 'mp4', '-o', tmpl,
+    // Más rápido: 8 fragmentos a la vez (YouTube DASH, Twitch, Kick) y trozos de 10 MB (evita la limitación de velocidad de YouTube)
+    '-N', '8', '--http-chunk-size', '10M'];
   if (section) args.push('--download-sections', `*${section[0]}-${section[1]}`);
   await ytdlp([...args, url], {
     signal: opts.signal,

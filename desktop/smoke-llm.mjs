@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'clippers-lsmoke-'));
-process.env.LOCAL_LLM_MODEL ||= 'qwen2.5-0.5b';
+process.env.LOCAL_LLM_MODEL ||= 'qwen3-0.6b'; // misma arquitectura que Qwen3 4B (el modelo rápido)
 process.env.LOCAL_LLM_CTX ||= '4096';
 const { chatLocal, llamaBinary } = await import('../server/ai/localmodels.js');
 const { parseJSON } = await import('../server/ai/llm.js');

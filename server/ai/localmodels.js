@@ -13,12 +13,27 @@ import { modelsDir } from './localwhisper.js';
 export const LOCAL_MODELS = {
   'qwen2.5-7b': { kind: 'llm', file: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf', mb: 4680, label: 'Qwen 2.5 7B (texto: clips, títulos, informe…)',
     url: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf' },
+  'qwen3-4b': { kind: 'llm', file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', mb: 2497, label: 'Qwen3 4B (texto rápido: clips, títulos, informe…)',
+    url: 'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf' },
+  'qwen3-0.6b': { kind: 'llm', file: 'Qwen3-0.6B-Q4_K_M.gguf', mb: 397, label: 'Qwen3 0.6B (solo pruebas)', hidden: true,
+    url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf' },
   'qwen2.5-0.5b': { kind: 'llm', file: 'qwen2.5-0.5b-instruct-q4_k_m.gguf', mb: 400, label: 'Qwen 2.5 0.5B (solo pruebas)', hidden: true,
     url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf' },
   dreamshaper8: { kind: 'image', file: 'DreamShaper_8_pruned.safetensors', mb: 2130, label: 'DreamShaper 8 (imágenes de fondo para miniaturas)',
     url: 'https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors' },
 };
-export const DEFAULT_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'qwen2.5-7b';
+// Equipos sin gráfica (Mac Intel, Windows): Qwen3 4B, ~2 veces más rápido. Mac M (Metal): Qwen 2.5 7B.
+export const AUTO_LLM_MODEL = process.platform === 'darwin' && process.arch === 'arm64' ? 'qwen2.5-7b' : 'qwen3-4b';
+export const DEFAULT_LLM_MODEL = process.env.LOCAL_LLM_MODEL || AUTO_LLM_MODEL;
+/** Modelo de texto elegido en Ajustes (auto = según el equipo). */
+export async function currentLLMModel() {
+  if (process.env.LOCAL_LLM_MODEL) return process.env.LOCAL_LLM_MODEL;
+  const { getSetting } = await import('../settings.js');
+  const v = await getSetting('local_llm').catch(() => 'auto');
+  return LOCAL_MODELS[v]?.kind === 'llm' ? v : AUTO_LLM_MODEL;
+}
+/** Hilos: núcleos físicos en Intel/AMD (el hyperthreading frena a llama.cpp y whisper.cpp). */
+export const cpuThreads = (max = 12) => { const n = os.cpus().length; return Math.max(2, Math.min(max, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1)); };
 export const DEFAULT_IMAGE_MODEL = 'dreamshaper8';
 
 const bin = names => {
@@ -83,7 +98,7 @@ async function startServer(name, onProgress) {
   const file = await ensureModel(name, pct => onProgress?.({ stage: `Descargando la IA local (solo la primera vez)… ${pct}%`, pct: 0 }));
   const port = await freePort();
   const gpu = process.platform === 'darwin' && process.arch === 'arm64' ? ['-ngl', '99'] : process.env.LOCAL_LLM_GPU_LAYERS ? ['-ngl', process.env.LOCAL_LLM_GPU_LAYERS] : [];
-  const threads = String(Math.max(2, Math.min(12, os.cpus().length - 1)));
+  const threads = String(cpuThreads());
   const proc = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', String(CTX), '-np', '1', '-t', threads, ...gpu],
     { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let log = '';
@@ -107,7 +122,8 @@ async function startServer(name, onProgress) {
 process.on('exit', () => { try { server?.proc.kill(); } catch {} });
 
 /** Chat con la IA local. Devuelve el texto de la respuesta. */
-export async function chatLocal(system, user, { json = false, maxTokens = 4000, model = DEFAULT_LLM_MODEL, onProgress } = {}) {
+export async function chatLocal(system, user, { json = false, maxTokens = 4000, model, onProgress } = {}) {
+  model ||= await currentLLMModel();
   const s = await startServer(model, onProgress);
   // El contexto tiene un límite: si la petición es enorme se recorta el centro del texto (se avisa al modelo)
   const maxChars = (CTX - maxTokens - 600) * 3.2;
@@ -178,7 +194,7 @@ export async function imageLocal(prompt, { size = '1024x1536', steps = Number(pr
   const neg = 'text, letters, words, watermark, logo, signature, blurry, lowres, deformed, extra fingers, bad anatomy, ugly';
   await new Promise((resolve, reject) => {
     const p = spawn(exe, ['-m', model, '-p', prompt.slice(0, 900), '-n', neg, '-W', String(w), '-H', String(h), '--steps', String(steps), '--cfg-scale', '6.5',
-      '--sampling-method', 'dpm++2m', '-t', String(Math.max(2, os.cpus().length - 1)), '-o', out], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      '--sampling-method', 'dpm++2m', '-t', String(cpuThreads(16)), '-o', out], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let log = '';
     const on = d => { const s = String(d); log = (log + s).slice(-3000); const m = s.match(/(\d+)\/(\d+)\s*-/); if (m) onProgress?.(`Generando la imagen en tu equipo… ${Math.round(m[1] / m[2] * 100)}%`); };
     p.stdout.on('data', on); p.stderr.on('data', on);

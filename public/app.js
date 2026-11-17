@@ -1337,10 +1337,10 @@ routes.ajustes = async () => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['local_llm', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
-    if (localMode && k === 'use_cloud') continue;
+    if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
     const target = localMode && !KEEP.includes(k) ? cloud : groups;
     (target[f.group] ||= []).push([k, f]);
   }

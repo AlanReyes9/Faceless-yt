@@ -148,7 +148,7 @@ app.get('/api/system', h(async (req, res) => res.json({
   queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL, desktop: !!globalThis.__desktop,
   ...(await (async () => { const lw = await import('./ai/localwhisper.js'), lm = await import('./ai/localmodels.js');
     const avail = lw.localAvailable() || lm.localLLMAvailable();
-    return { localAvailable: avail, localReady: avail && (!lw.localAvailable() || lw.modelReady(await getSetting('whisper_model') || 'small')) && (!lm.localLLMAvailable() || lm.modelReady(lm.DEFAULT_LLM_MODEL)) }; })()),
+    return { localAvailable: avail, localReady: avail && (!lw.localAvailable() || lw.modelReady(await getSetting('whisper_model') || 'small')) && (!lm.localLLMAvailable() || lm.modelReady(await lm.currentLLMModel())) }; })()),
 })));
 // ---------- App de escritorio: conexión a la nube (R2/S3 y base de datos compartida con la web) ----------
 const desk = () => globalThis.__desktop;
@@ -429,7 +429,7 @@ app.get('/api/local-models', h(async (req, res) => {
   const available = lw.localAvailable() || lm.localLLMAvailable() || lm.localImageAvailable();
   const models = [];
   if (lw.localAvailable()) models.push({ kind: 'whisper', id: wm, label: `Whisper ${wm}`, use: 'Transcripción (voz → texto con tiempos por palabra)', mb: lw.WHISPER_MODELS[wm]?.mb || 466, ready: lw.modelReady(wm), download: lw.downloadStatus(wm) });
-  if (lm.localLLMAvailable()) { const id = lm.DEFAULT_LLM_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
+  if (lm.localLLMAvailable()) { const id = await lm.currentLLMModel(), m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
   if (lm.localImageAvailable()) { const id = lm.DEFAULT_IMAGE_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes de fondo para miniaturas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
   res.json({ available, models });
 }));

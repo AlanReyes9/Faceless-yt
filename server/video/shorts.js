@@ -98,14 +98,16 @@ export async function pickClips(transcript, sig, opts) {
     const found = [];
     for (const [i, segs] of parts.entries()) {
       opts.onProgress?.(`La IA local analiza la parte ${i + 1} de ${parts.length}…`);
-      found.push(...await pickClipsOnce({ ...transcript, segments: segs }, sig, { ...opts, count: per }).catch(e => { console.warn('parte', i, e.message); return []; }));
+      found.push(...await pickClipsOnce({ ...transcript, segments: segs }, sig, { ...opts, count: per, onProgress: t => opts.onProgress?.(`Parte ${i + 1} de ${parts.length} · ${t}`) }).catch(e => { console.warn('parte', i, e.message); return []; }));
     }
     return found.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)).slice(0, count + 3);
   }
   return pickClipsOnce(transcript, sig, opts);
 }
 
-async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language }) {
+async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language, onProgress }) {
+  // IA local: respuesta más corta (sin el desglose de notas) = bastante más rápida en equipos sin gráfica
+  const local = (await getSetting('llm_provider')) === 'local';
   const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`).join('\n');
   const system = `Eres el mejor editor de vídeos cortos virales (YouTube Shorts, TikTok, Reels). Sabes exactamente qué momentos de un vídeo largo retienen a la audiencia y se comparten.
 Criterios (de más a menos importante):
@@ -122,13 +124,12 @@ Devuelve hasta ${count} clips que NO se solapen, de entre ${minSec} y ${maxSec} 
 JSON: {"clips":[{"start":número,"end":número,
  "title":"título para YouTube con gancho (máx 70 caracteres)",
  "hook":"frase de gancho de 3 a 7 palabras para mostrar arriba los primeros 4 segundos",
- "scores":{"hook":1-10,"story":1-10,"emotion":1-10,"value":1-10,"ending":1-10},
- "score":entero 1-10 (potencial viral global),
+ ${local ? '' : '"scores":{"hook":1-10,"story":1-10,"emotion":1-10,"value":1-10,"ending":1-10},\n '}"score":entero 1-10 (potencial viral global),
  "keywords":["3 a 6 palabras EXACTAS que se dicen en el clip y conviene resaltar en los subtítulos"],
  "emojis":[{"word":"palabra exacta que se dice","emoji":"un emoji"}] (2 a 4, solo donde aporten),
- "reason":"por qué funcionará, en una frase"}]}
+ "reason":"por qué funcionará, ${local ? 'máx. 12 palabras' : 'en una frase'}"}]}
 Escribe title, hook y reason en el idioma: ${language || 'el mismo del vídeo'}. keywords y emojis.word deben aparecer tal cual en la transcripción del clip.`;
-  const res = await chatJSON(system, user, { maxTokens: 8000 });
+  const res = await chatJSON(system, user, { maxTokens: local ? 5000 : 8000, onProgress: onProgress && (p => onProgress(p.stage || p)) });
   return Array.isArray(res) ? res : (res.clips || []);
 }
 

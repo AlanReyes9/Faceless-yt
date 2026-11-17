@@ -55,6 +55,7 @@ export const FIELDS = {
   groq_model: { secret: false, default: 'openai/gpt-oss-120b', label: 'Modelo Groq (texto)', group: 'Preferencias' },
   openrouter_model: { secret: false, default: 'openai/gpt-4.1-mini', label: 'Modelo OpenRouter', group: 'Preferencias' },
   transcribe_provider: { secret: false, default: process.env.DEFAULT_TRANSCRIBE || 'openai', label: 'Transcripción (local = gratis en tu equipo, solo app de escritorio)', options: ['local', 'openai', 'groq'], group: 'Preferencias' },
+  local_llm: { secret: false, default: 'auto', label: 'IA de texto local (auto = rápida en equipos sin gráfica, completa en Mac M)', options: ['auto', 'qwen3-4b', 'qwen2.5-7b'], group: 'Preferencias' },
   whisper_model: { secret: false, default: 'small', label: 'Modelo de transcripción local', options: ['base', 'small', 'large-v3-turbo', 'medium'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
