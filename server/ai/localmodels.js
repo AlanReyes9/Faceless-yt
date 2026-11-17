@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { WORK_DIR } from '../db.js';
@@ -88,7 +89,7 @@ async function startServer(name, onProgress) {
   let log = '';
   proc.stdout.on('data', d => { log = (log + d).slice(-4000); });
   proc.stderr.on('data', d => { log = (log + d).slice(-4000); });
-  const s = { proc, port, model: name };
+  const s = { proc, port, model: name, log: () => log };
   s.ready = (async () => {
     onProgress?.({ stage: 'Cargando la IA local…', pct: 0 });
     for (let i = 0; i < 600; i++) { // hasta 5 min (equipos lentos)
@@ -114,15 +115,54 @@ export async function chatLocal(system, user, { json = false, maxTokens = 4000, 
     const keep = Math.max(2000, maxChars - system.length);
     user = user.slice(0, keep * 0.7) + '\n[…texto recortado por longitud…]\n' + user.slice(-keep * 0.3);
   }
-  const r = await fetch(`http://127.0.0.1:${s.port}/v1/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: maxTokens, temperature: 0.5,
-      ...(json ? { response_format: { type: 'json_object' } } : {}) }),
-    signal: AbortSignal.timeout(45 * 60 * 1000),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`IA local (${r.status}): ${text.slice(0, 300)}`);
-  return JSON.parse(text).choices?.[0]?.message?.content || '';
+  // Petición con node:http (sin límite de tiempo: en equipos sin gráfica la IA puede tardar más de 5 min, y fetch
+  // cortaba la conexión con "fetch failed") y en streaming para mostrar el progreso.
+  const body = JSON.stringify({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: maxTokens, temperature: 0.5,
+    stream: true, ...(json ? { response_format: { type: 'json_object' } } : {}) });
+  const t0 = Date.now();
+  onProgress?.({ stage: 'La IA local está leyendo la transcripción…', pct: 0 });
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: s.port, path: '/v1/chat/completions', method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, res => {
+        res.setEncoding('utf8');
+        let buf = '', text = '', raw = '', n = 0, lastSent = 0;
+        res.on('data', chunk => {
+          if (res.statusCode !== 200) { raw += chunk; return; }
+          buf += chunk;
+          let i;
+          while ((i = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+            if (!line.startsWith('data:')) continue;
+            const d = line.slice(5).trim();
+            if (d === '[DONE]') continue;
+            try {
+              const j = JSON.parse(d);
+              if (j.error) { req.destroy(new Error(j.error.message || JSON.stringify(j.error))); return; }
+              const piece = j.choices?.[0]?.delta?.content || '';
+              if (piece) { text += piece; n++; }
+            } catch {}
+          }
+          if (n && Date.now() - lastSent > 3000) { lastSent = Date.now(); onProgress?.({ stage: `La IA local está escribiendo… ${Math.round(text.length / 5)} palabras (${Math.round((Date.now() - t0) / 60000)} min)`, pct: 0 }); }
+        });
+        res.on('end', () => res.statusCode === 200 ? resolve(text) : reject(new Error(`IA local (${res.statusCode}): ${raw.slice(0, 300)}`)));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(0);
+      const kill = setTimeout(() => req.destroy(new Error('la IA local tardó más de 90 min')), 90 * 60 * 1000);
+      req.on('close', () => clearTimeout(kill));
+      req.end(body);
+    });
+  } catch (e) {
+    // Si el proceso de la IA se cayó (p. ej. falta de memoria), se explica y se reinicia en el siguiente intento
+    // el aviso de cierre del proceso puede llegar justo después del error de conexión
+    for (let i = 0; i < 20 && s.proc.exitCode == null && !s.proc.killed; i++) await new Promise(r => setTimeout(r, 100));
+    const dead = s.proc.exitCode != null || s.proc.killed;
+    if (dead) { if (server === s) server = null;
+      throw new Error('La IA local se cerró mientras trabajaba' + (/memory|alloc|oom/i.test(s.log()) ? ' por falta de memoria RAM (cierra otras apps o usa un vídeo más corto)' : '') + '. Pulsa Reintentar. Detalle: ' + s.log().split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300)); }
+    throw new Error('Fallo de conexión con la IA local: ' + e.message + '. Pulsa Reintentar.');
+  }
 }
 
 // ---------- Imágenes: stable-diffusion.cpp ----------

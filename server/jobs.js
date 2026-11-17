@@ -58,6 +58,8 @@ export async function runOne(deadline = Infinity, lane = 'work') {
   }
   const t0 = Date.now();
   console.log(`[job ${job.id} ${job.type}] inicio (intento ${job.attempts}) ${JSON.stringify(job.payload)}`);
+  // Latido: un paso largo (IA local en un equipo lento) no se da por colgado ni se ejecuta dos veces
+  const beat = IS_VERCEL ? null : setInterval(() => q('UPDATE jobs SET locked_at = now() WHERE id = $1', [job.id]).catch(() => {}), 60000);
   try {
     await h.fn(job.payload, ctx);
     await q('DELETE FROM jobs WHERE id = $1', [job.id]);
@@ -68,7 +70,7 @@ export async function runOne(deadline = Infinity, lane = 'work') {
     const permanent = e.cancelled || /Falta la clave|\((400|401|403|404|410|413|422)\)|no está conectado|No se pudo leer|cancelad/.test(e.message);
     if (permanent || job.attempts >= MAX_ATTEMPTS) await fail(e.message);
     else await q("UPDATE jobs SET status = 'queued', error = $1, locked_at = NULL WHERE id = $2", [e.message, job.id]);
-  }
+  } finally { if (beat) clearInterval(beat); }
   return true;
 }
 
