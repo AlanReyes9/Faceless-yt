@@ -68,7 +68,11 @@ const LANG = { spanish: 'es', english: 'en', portuguese: 'pt', french: 'fr', ita
  * Transcribe un archivo de audio con whisper-cli. Devuelve el mismo formato que la API de Whisper:
  * { language, segments:[{start,end,text}], words:[{word,start,end}] } (tiempos relativos al audio).
  */
-export async function transcribeLocal(audioFile, { language, model, onProgress = () => {}, timeoutMs, extraArgs = [], threads: forceThreads } = {}) {
+// Opciones de whisper.cpp más rápidas según el equipo (medido en GitHub Actions con 66 s de audio):
+//  - Intel/AMD (CPU): búsqueda simple (-bs 1): un 15–25 % más rápida; flash attention la hace más LENTA en CPU.
+//  - Mac M (Metal): flash attention (-fa): base 33 → 18 s, small 48 → 41 s.
+export const WHISPER_FAST_ARGS = process.platform === 'darwin' && process.arch === 'arm64' ? ['-fa'] : ['-bs', '1', '-bo', '1'];
+export async function transcribeLocal(audioFile, { language, model, onProgress = () => {}, timeoutMs, extraArgs = WHISPER_FAST_ARGS, threads: forceThreads } = {}) {
   const bin = whisperBinary();
   if (!bin) throw new Error('La transcripción local no está disponible en esta instalación (falta whisper-cli). Usa la app de escritorio o elige OpenAI/Groq en Ajustes.');
   const mp = await ensureModel(model, pct => onProgress({ stage: `Descargando el modelo de transcripción (solo la primera vez)… ${pct}%`, pct: 0 }));
@@ -79,7 +83,6 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
     const lang = !language ? 'auto' : (LANG[String(language).toLowerCase()] || String(language).slice(0, 2).toLowerCase());
     const n = os.cpus().length, threads = String(forceThreads || Math.max(2, Math.min(8, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1))); // núcleos físicos en Intel/AMD
     // -ml 1 + -sow: un segmento por palabra (tiempos por palabra); -oj: salida JSON
-    // (medido en Mac Intel y Windows: el "beam search" por defecto es igual o más rápido que la búsqueda simple con flash attention)
     const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, ...extraArgs, '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
     await runWhisper(bin, args, onProgress, timeoutMs);
     return finish(parseWords(outBase), outBase, lang);
