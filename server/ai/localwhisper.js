@@ -11,6 +11,7 @@ import { ffmpeg } from '../video/ffmpeg.js';
 export const WHISPER_MODELS = {
   base: { file: 'ggml-base.bin', mb: 142, label: 'Base (rápido, ~150 MB)' },
   small: { file: 'ggml-small.bin', mb: 466, label: 'Small (recomendado, ~500 MB)' },
+  'small-q5_1': { file: 'ggml-small-q5_1.bin', mb: 190, label: 'Small comprimido (misma precisión aprox., ~190 MB)' },
   medium: { file: 'ggml-medium.bin', mb: 1500, label: 'Medium (máxima precisión, ~1,5 GB)' },
   'large-v3-turbo': { file: 'ggml-large-v3-turbo-q5_0.bin', mb: 547, label: 'Large v3 Turbo (muy preciso, ~550 MB; mejor con Mac M1–M4)' },
 };
