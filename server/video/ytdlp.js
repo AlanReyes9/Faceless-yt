@@ -56,7 +56,7 @@ const toBytes = (n, u) => Number(n) * ({ B: 1, KIB: 1024, KB: 1000, MIB: 1048576
 const hms = t => { const [h, m, s] = String(t).split(':').map(Number); return h * 3600 + m * 60 + (s || 0); };
 
 /** JSON de yt-dlp -J: la línea que empieza por '{' (ignora cualquier otra salida). */
-function parseOut(out) {
+export function parseOut(out) {
   const line = out.split(/\r?\n/).filter(l => l.trimStart().startsWith('{')).sort((a, b) => b.length - a.length)[0];
   if (!line) throw new Error('yt-dlp no devolvió la información del vídeo.');
   return JSON.parse(line);

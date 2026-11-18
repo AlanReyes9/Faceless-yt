@@ -12,7 +12,7 @@ import { register, enqueue } from '../jobs.js';
 import { saveFile, inputPath } from '../storage.js';
 import { pickClips, snap, checkDone } from './shorts.js';
 import { resolvePlaylist, recordMedia } from './hls.js';
-import { ytdlp } from './ytdlp.js';
+import { ytdlp, parseOut } from './ytdlp.js';
 import { chatJSON } from '../ai/llm.js';
 
 const OVERLAP = 60; // segundos del segmento anterior que se reanalizan (momentos que cruzan el corte)
@@ -24,12 +24,30 @@ export async function setLive(id, patch) {
 }
 
 /** Convierte el enlace del directo en una URL de vídeo (HLS) que ffmpeg pueda grabar. */
-async function resolveStream(url) {
+export async function resolveStream(url) {
   if (/\.m3u8(\?|$)/i.test(url) || /^(rtmps?|srt|rtsp):\/\//i.test(url)) return url;
   if (IS_VERCEL) throw new Error('En Vercel solo se pueden grabar enlaces directos .m3u8 (YouTube/Twitch bloquean los servidores en la nube). Para usar enlaces de YouTube, Twitch o Kick, instala la app en tu PC. (400)');
-  const { out } = await ytdlp(['-g', '-f', 'best[height<=1080]/best', url], { stallMs: 90000, timeoutMs: 120000 })
-    .catch(e => { throw new Error('No se pudo abrir el directo (¿está emitiendo ahora mismo?): ' + e.message.slice(-300)); });
-  const u = out.trim().split('\n').filter(Boolean).pop();
+  // Se pide la información completa y se usa la lista HLS maestra del directo (con todas las calidades y el audio):
+  // así no depende de que exista un formato concreto (YouTube a veces solo ofrece vídeo y audio por separado).
+  let j = null, lastErr = null;
+  for (let i = 0; i < 3 && !j; i++) {
+    try { j = parseOut((await ytdlp(['-J', url], { stallMs: 90000, timeoutMs: 150000, fullOutput: true })).out); }
+    catch (e) { lastErr = e; if (i < 2) await new Promise(r => setTimeout(r, 8000)); }
+  }
+  if (j) {
+    if (j.live_status === 'is_upcoming') throw new Error('El directo aún no ha empezado. Inténtalo cuando esté emitiendo. (400)');
+    if (j.live_status && j.live_status !== 'is_live') throw new Error('Ese directo ya terminó. Para sacar clips de la grabación usa "Convertir a Clips" con el enlace. (400)');
+    const hls = f => /m3u8/.test(f.protocol || '') || /\.m3u8/.test(f.url || '');
+    if (j.manifest_url && /m3u8/.test(j.manifest_url)) return j.manifest_url;
+    const fmts = (j.formats || []).filter(f => f.url && hls(f) && f.vcodec !== 'none');
+    const best = fmts.filter(f => !f.height || f.height <= 1080).sort((a, b) => (b.height || 0) - (a.height || 0) || (b.tbr || 0) - (a.tbr || 0))[0] || fmts[0];
+    if (best) return best.url;
+    if (j.url) return j.url;
+  }
+  // Último recurso: que yt-dlp elija cualquier formato del directo
+  const { out } = await ytdlp(['-g', '-f', 'best[protocol*=m3u8]/best/bv*+ba', url], { stallMs: 90000, timeoutMs: 120000 })
+    .catch(e => { throw new Error('No se pudo abrir el directo (¿está emitiendo ahora mismo?): ' + (lastErr || e).message.slice(-300)); });
+  const u = out.trim().split('\n').filter(Boolean)[0];
   if (!u) throw new Error('No se encontró la emisión en directo de ese enlace.');
   return u;
 }
