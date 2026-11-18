@@ -38,7 +38,8 @@ export function ensureModel(name, onProgress = () => {}) {
   st.promise = (async () => {
     fs.mkdirSync(modelsDir(), { recursive: true });
     const final = modelPath(name), part = final + '.part';
-    const r = await fetch(MODEL_URL(WHISPER_MODELS[name].file), { redirect: 'follow' });
+    const { fetchRetry } = await import('./localmodels.js');
+    const r = await fetchRetry(MODEL_URL(WHISPER_MODELS[name].file), { redirect: 'follow' });
     if (!r.ok || !r.body) throw new Error(`No se pudo descargar el modelo de transcripción (${r.status}).`);
     const total = Number(r.headers.get('content-length')) || WHISPER_MODELS[name].mb * 1e6;
     const out = fs.createWriteStream(part);

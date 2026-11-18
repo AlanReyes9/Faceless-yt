@@ -53,6 +53,20 @@ export const modelFile = name => path.join(modelsDir(), LOCAL_MODELS[name].file)
 export const modelReady = name => { try { return fs.statSync(modelFile(name)).size > LOCAL_MODELS[name].mb * 0.9e6; } catch { return false; } };
 
 // ---------- Descarga (una vez, con progreso y reanudación) ----------
+/** fetch con reintentos ante cortes de red o errores temporales del servidor (502, 503…). */
+export async function fetchRetry(url, opts = {}, tries = 5) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, opts);
+      if (r.status < 500 && r.status !== 429) return r;
+      last = r;
+    } catch (e) { last = e; }
+    await new Promise(res => setTimeout(res, 2000 * 2 ** i)); // 2, 4, 8, 16 s
+  }
+  if (last instanceof Error) throw last;
+  return last;
+}
 const downloads = new Map();
 export const downloadStatus = name => { const d = downloads.get(name); return d ? { pct: d.pct, error: d.error, active: !d.done } : null; };
 export function ensureModel(name, onProgress = () => {}) {
@@ -66,8 +80,8 @@ export function ensureModel(name, onProgress = () => {}) {
     fs.mkdirSync(modelsDir(), { recursive: true });
     const final = modelFile(name), part = final + '.part';
     let have = 0; try { have = fs.statSync(part).size; } catch {}
-    const r = await fetch(m.url, { redirect: 'follow', headers: have ? { range: `bytes=${have}-` } : {} });
-    if (!r.ok || !r.body) throw new Error(`No se pudo descargar el modelo ${m.label} (${r.status}).`);
+    const r = await fetchRetry(m.url, { redirect: 'follow', headers: have ? { range: `bytes=${have}-` } : {} });
+    if (!r.ok || !r.body) throw new Error(`No se pudo descargar el modelo ${m.label} (${r.status}). Comprueba tu conexión y vuelve a intentarlo.`);
     if (r.status !== 206) have = 0; // el servidor no admite reanudar: desde el principio
     const total = have + (Number(r.headers.get('content-length')) || m.mb * 1e6);
     const out = fs.createWriteStream(part, { flags: have ? 'a' : 'w' });
