@@ -78,7 +78,9 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
     const lang = !language ? 'auto' : (LANG[String(language).toLowerCase()] || String(language).slice(0, 2).toLowerCase());
     const n = os.cpus().length, threads = String(Math.max(2, Math.min(8, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1))); // núcleos físicos en Intel/AMD
     // -ml 1 + -sow: un segmento por palabra (tiempos por palabra); -oj: salida JSON
-    const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
+    // -bs 1 -bo 1: búsqueda simple en vez de "beam search" de 5 (varias veces más rápido en el procesador y casi igual de preciso)
+    // -fa: atención rápida (flash attention)
+    const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, '-bs', '1', '-bo', '1', '-fa', '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
     await runWhisper(bin, args, onProgress, timeoutMs);
     return finish(parseWords(outBase), outBase, lang);
   } finally {
