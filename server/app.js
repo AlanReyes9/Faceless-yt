@@ -247,10 +247,24 @@ app.post('/api/channels/:id/disconnect', h(async (req, res) => {
   await update('channels', req.params.id, { yt_refresh_token: null, yt_channel_id: null, yt_title: null });
   res.json({ ok: true });
 }));
-app.get('/api/youtube/auth', h(async (req, res) => res.redirect(await authUrl(req, req.query.channel))));
+app.get('/api/youtube/auth', async (req, res) => {
+  try { res.redirect(await authUrl(req, req.query.channel)); }
+  catch (e) { res.redirect('/#/canales?error=' + encodeURIComponent(e.message)); } // nunca una página de error sin salida
+});
+// En la app de escritorio el inicio de sesión ocurre en el navegador del sistema (Safari, Chrome…):
+// ahí se muestra una página sencilla y la app detecta sola que el canal ya está conectado.
+const oauthPage = (ok, msg) => `<!doctype html><meta charset="utf-8"><title>Clippers Pro</title>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#0f1013;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
+<div style="text-align:center;max-width:480px;padding:24px"><div style="font-size:48px">${ok ? '✅' : '⚠️'}</div>
+<h2>${ok ? 'Canal de YouTube conectado' : 'No se pudo conectar el canal'}</h2>
+<p style="color:#aaa">${ok ? 'Ya puedes cerrar esta pestaña y volver a Clippers Pro.' : msg.replace(/[<>&]/g, '')}</p></div></body>`;
 app.get('/api/youtube/callback', async (req, res) => {
-  try { await handleCallback(req); res.redirect('/#/canales?ok=1'); }
-  catch (e) { res.redirect('/#/canales?error=' + encodeURIComponent(e.message)); }
+  const desktop = !!globalThis.__desktop;
+  try {
+    if (req.query.error) throw new Error(req.query.error === 'access_denied' ? 'Cancelaste el permiso en Google o tu cuenta no está como usuario de prueba en la pantalla de consentimiento.' : 'Google: ' + req.query.error);
+    await handleCallback(req);
+    desktop ? res.send(oauthPage(true)) : res.redirect('/#/canales?ok=1');
+  } catch (e) { desktop ? res.status(400).send(oauthPage(false, e.message)) : res.redirect('/#/canales?error=' + encodeURIComponent(e.message)); }
 });
 
 // ---------- Proyectos ----------

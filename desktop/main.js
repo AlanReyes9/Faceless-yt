@@ -129,6 +129,9 @@ function createWindow() {
     shell.openExternal(url); return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => { if (!isApp(url)) { e.preventDefault(); shell.openExternal(url); } });
+  // Las redirecciones del servidor (p. ej. Conectar YouTube → accounts.google.com) también van al navegador del sistema:
+  // dentro de la app el inicio de sesión de Google no funciona y la ventana se quedaba atrapada sin poder volver.
+  win.webContents.on('will-redirect', (e, url) => { if (!isApp(url)) { e.preventDefault(); shell.openExternal(url); } });
   win.loadURL(baseUrl);
   win.on('closed', () => { win = null; });
 }

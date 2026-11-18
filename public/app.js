@@ -245,6 +245,21 @@ routes.canales = async (_, params) => {
         <div><label>Idioma</label><select name="language">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div><label>Notas de estilo (opcional)</label><textarea name="notes" placeholder="Tono, público, formato…"></textarea></div>
         <button class="btn gold">Guardar canal</button></form></div>`;
+  // App de escritorio: el inicio de sesión de Google se abre en el navegador; aquí se espera a que termine
+  if (sys.desktop) main.querySelectorAll('a[href^="/api/youtube/auth"]').forEach(a => a.onclick = e => {
+    const id = a.closest('[data-id]').dataset.id;
+    a.textContent = 'Esperando a Google…'; a.style.pointerEvents = 'none';
+    toast('Se abrió tu navegador para iniciar sesión con Google. Al terminar, vuelve aquí.', 'good');
+    let n = 0;
+    const check = async () => {
+      if (!location.hash.startsWith('#/canales') || ++n > 100) return;
+      channelsCache.reset();
+      const c = (await channelsCache.get().catch(() => [])).find(x => String(x.id) === id);
+      if (c?.connected) { toast('Canal conectado con YouTube', 'good'); return router(); }
+      setTimeout(check, 3000);
+    };
+    setTimeout(check, 3000);
+  });
   const f = $('#newch');
   f.onsubmit = async e => {
     e.preventDefault();
