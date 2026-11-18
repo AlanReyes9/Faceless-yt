@@ -90,7 +90,7 @@ jobs:
         env:
           WHISPER_MODELS_DIR: ${{ runner.temp }}/models
         run: |
-          export WHISPER_CLI="$PWD/desktop/bin/$(ls desktop/bin | grep whisper-cli)"
+          export WHISPER_CLI="$PWD/desktop/bin/$(ls desktop/bin | grep -E "^whisper-cli(\.exe)?$")"
           node --no-warnings desktop/smoke-whisper.mjs wcpp/samples/jfk.wav
 
       - name: IA local de texto (llama.cpp) e imágenes (stable-diffusion.cpp)
@@ -127,7 +127,7 @@ jobs:
         env:
           WHISPER_MODELS_DIR: ${{ runner.temp }}/models
         run: |
-          export LLAMA_SERVER="$PWD/desktop/bin/$(ls desktop/bin | grep llama-server)"
+          export LLAMA_SERVER="$PWD/desktop/bin/$(ls desktop/bin | grep -E "^llama-server(\.exe)?$")"
           node --no-warnings desktop/smoke-llm.mjs
           SDX="$PWD/desktop/bin/$(ls desktop/bin | grep -E '^sd(-cli)?(\.exe)?$' | head -1)"
           "$SDX" --help > sdhelp.txt 2>&1 || true
