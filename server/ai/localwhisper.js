@@ -67,7 +67,7 @@ const LANG = { spanish: 'es', english: 'en', portuguese: 'pt', french: 'fr', ita
  * Transcribe un archivo de audio con whisper-cli. Devuelve el mismo formato que la API de Whisper:
  * { language, segments:[{start,end,text}], words:[{word,start,end}] } (tiempos relativos al audio).
  */
-export async function transcribeLocal(audioFile, { language, model, onProgress = () => {}, timeoutMs } = {}) {
+export async function transcribeLocal(audioFile, { language, model, onProgress = () => {}, timeoutMs, fast = process.env.WHISPER_FAST !== '0' } = {}) {
   const bin = whisperBinary();
   if (!bin) throw new Error('La transcripción local no está disponible en esta instalación (falta whisper-cli). Usa la app de escritorio o elige OpenAI/Groq en Ajustes.');
   const mp = await ensureModel(model, pct => onProgress({ stage: `Descargando el modelo de transcripción (solo la primera vez)… ${pct}%`, pct: 0 }));
@@ -80,7 +80,7 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
     // -ml 1 + -sow: un segmento por palabra (tiempos por palabra); -oj: salida JSON
     // -bs 1 -bo 1: búsqueda simple en vez de "beam search" de 5 (varias veces más rápido en el procesador y casi igual de preciso)
     // -fa: atención rápida (flash attention)
-    const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, '-bs', '1', '-bo', '1', '-fa', '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
+    const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, ...(fast ? ['-bs', '1', '-bo', '1', '-fa'] : []), '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
     await runWhisper(bin, args, onProgress, timeoutMs);
     return finish(parseWords(outBase), outBase, lang);
   } finally {
