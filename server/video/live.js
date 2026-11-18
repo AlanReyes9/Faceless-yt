@@ -15,6 +15,8 @@ import { resolvePlaylist, recordMedia } from './hls.js';
 import { ytdlp, parseOut } from './ytdlp.js';
 import { chatJSON } from '../ai/llm.js';
 
+/** Directos a los que se pidió "✂ Clip ahora": el segmento en curso se corta ya para no esperar a que termine. */
+export const liveCuts = new Set();
 const OVERLAP = 60; // segundos del segmento anterior que se reanalizan (momentos que cruzan el corte)
 
 /** Actualiza un campo de project.data de forma atómica (grabar y analizar corren a la vez). */
@@ -71,7 +73,8 @@ register('live.capture', async ({ id, seg }, ctx) => {
   if (st.secs >= maxSec) return finish(id, 'duración máxima alcanzada');
 
   // Duración del segmento: lo configurado, sin pasarse del tiempo que queda en esta ejecución
-  const want = Math.max(30, Number(o.segmentSec) || 180);
+  // El primer segmento es corto (máx. 60 s) para que los primeros clips lleguen antes
+  const want = seg === 0 ? Math.min(60, Math.max(30, Number(o.segmentSec) || 120)) : Math.max(30, Number(o.segmentSec) || 120);
   const segSec = Math.floor(Math.min(want, maxSec - st.secs, (ctx.remaining() - 45000) / 1000));
   if (segSec < 20) { await enqueue('live.capture', { id, seg }); return; } // sin tiempo: a una ejecución nueva
 
@@ -91,10 +94,11 @@ register('live.capture', async ({ id, seg }, ctx) => {
       const tick = got => updateProject(id, { progress: `🔴 Grabando el directo · ${fmtMin(st.secs + got)} grabados · ${st.clips} clips` }).catch(() => {});
       let last = 0;
       const [v, a] = await Promise.all([
-        recordMedia(pl.video, vfile, { seconds: segSec, fromSeq: live.vSeq ?? null, deadline, onProgress: g => { if (g - last >= 15) { last = g; tick(g); } } }),
-        pl.audio ? recordMedia(pl.audio, afile, { seconds: segSec, fromSeq: live.aSeq ?? null, deadline }) : null,
+        recordMedia(pl.video, vfile, { seconds: segSec, fromSeq: live.vSeq ?? null, deadline, stop: () => liveCuts.has(id), onProgress: g => { if (g - last >= 15) { last = g; tick(g); } } }),
+        pl.audio ? recordMedia(pl.audio, afile, { seconds: segSec, fromSeq: live.aSeq ?? null, deadline, stop: () => liveCuts.has(id) }) : null,
       ]);
       rec = v;
+      liveCuts.delete(id);
       await setLive(id, { vSeq: v.lastSeq, ...(a ? { aSeq: a.lastSeq } : {}), ...(v.gap ? { gaps: (live.gaps || 0) + 1 } : {}) });
       if (v.seconds > 0) await ffmpeg(['-i', vfile, ...(a ? ['-i', afile, '-map', '0:v:0', '-map', '1:a:0'] : ['-map', '0:v:0', '-map', '0:a:0?']),
         '-c', 'copy', '-movflags', '+faststart', out], { timeoutMs: 120000 });
@@ -116,7 +120,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
     await q(`INSERT INTO live_segments (project_id, seg, ref, start, dur) VALUES ($1,$2,$3,$4,$5)
       ON CONFLICT (project_id, seg) DO UPDATE SET ref = EXCLUDED.ref, start = EXCLUDED.start, dur = EXCLUDED.dur`, [id, seg, ref, start, info.duration]);
     await updateProject(id, { duration: start + info.duration });
-    const endedNow = rec ? rec.ended : info.duration < segSec * 0.5; // se grabó mucho menos de lo pedido: el directo terminó
+    const endedNow = rec ? rec.ended : info.duration < segSec * 0.5; // (un corte por "Clip ahora" no cuenta como final) // se grabó mucho menos de lo pedido: el directo terminó
     const fresh = await getProject(id);
     const stop = endedNow || fresh.data.live?.stopRequested || start + info.duration >= maxSec;
     // Primero se encadena la grabación (para no dejar huecos) y después el análisis de este segmento
@@ -152,7 +156,7 @@ Escribe en ${o.titleLanguage || 'el idioma del texto'} JSON {"title":"título co
         VALUES ($1,$2,$3,$4,$5,$6,10,$7,$8,'rendering',$9,'[]','[]','{}',$10) RETURNING id`,
         [id, idx, start, end, String(meta.title || 'Momento del directo').slice(0, 100), String(meta.hook || '').slice(0, 80), '✂ Marcado por ti durante el directo',
           o.layout || 'face', o.captionStyle || 'clasico', JSON.stringify(parts)]);
-      await enqueue('clip.render', { clipId: clip.id });
+      await enqueue('clip.render', { clipId: clip.id, fast: true });
       console.log(`[directo ${id}] clip manual #${idx} ${start.toFixed(0)}–${end.toFixed(0)} s`);
     }
   }
@@ -180,7 +184,9 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
   if (!row) return;
 
   // 1) Transcribir el segmento (tiempos absolutos del directo)
+  const stage = t => setLive(id, { stage: t ? `Segmento ${seg + 1}: ${t}` : null }).catch(() => {});
   if (!row.analyzed || !row.words) {
+    await stage('transcribiendo…');
     const r = await transcribeChunk(inputPath(row.ref), { offset: 0, len: row.dur + 1, language: o.language });
     const shift = x => ({ ...x, start: x.start + row.start, end: x.end + row.start });
     const words = r.words.filter(w => w.start < row.dur).map(shift);
@@ -200,7 +206,10 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
     words: [...(prev?.words || []).filter(inWin), ...(row.words || [])],
     energy: [...(prev?.energy || []).filter(e => e.t >= winStart), ...(row.energy || [])],
   };
+  // 3) Primero los clips marcados a mano (✂ Clip ahora): salen sin esperar a la IA
+  await manualClips(id, row, prev, winStart, transcript, o, last);
   if (transcript.segments.length) {
+    await stage('la IA busca los mejores momentos…');
     const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
     const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;
     const picked = await pickClips(transcript, sig, { count: Number(o.perSegment) || 3, minSec, maxSec, language: o.titleLanguage });
@@ -235,7 +244,7 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
       console.log(`[directo ${id}] clip #${idx} (${final}/10) ${start.toFixed(0)}–${end.toFixed(0)} s: ${c.title}`);
     }
   }
-  await manualClips(id, row, prev, winStart, transcript, o, last);
+  await stage(null);
   if (last) await finish(id, (await getProject(id)).data.live?.reason || 'terminado');
   else {
     const st = await liveStatus(id);

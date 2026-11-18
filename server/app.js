@@ -13,7 +13,7 @@ import { generateImage } from './ai/media.js';
 import { run, FFMPEG, probe } from './video/ffmpeg.js';
 import { CAPTION_STYLES } from './video/ass.js';
 import './video/shorts.js';
-import { setLive } from './video/live.js';
+import { setLive, liveCuts } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
 import { mountLicense, adminFromReq, hasAdmin } from './license.js';
 import { mountThumbs } from './thumbs.js';
@@ -488,6 +488,7 @@ app.post('/api/projects/:id/mark', h(async (req, res) => {
   const t = l.recWall ? (l.recPos || 0) + (Date.now() - l.recWall) / 1000 : (p.duration || 0);
   const len = Math.min(120, Math.max(10, Number(req.body?.len) || 45));
   await setLive(p.id, { marks: [...(l.marks || []), { t, len, at: Date.now(), done: false }] });
+  liveCuts.add(p.id); // corta el segmento en curso ya: el clip sale en cuanto se transcriba ese trozo
   res.json({ t, len });
 }));
 app.patch('/api/projects/:id/live-options', h(async (req, res) => {
@@ -501,7 +502,8 @@ app.post('/api/projects/:id/stop', h(async (req, res) => {
   const p = await getProject(req.params.id);
   if (p?.type !== 'live') throw new Error('Solo se pueden detener directos.');
   await setLive(p.id, { stopRequested: true });
-  await updateProject(p.id, { progress: '⏹ Deteniendo: se termina de grabar el segmento actual y se analizan los últimos momentos…' });
+  liveCuts.add(p.id); // se corta ya el segmento en curso (no se espera a que termine)
+  await updateProject(p.id, { progress: '⏹ Deteniendo: se analizan los últimos momentos…' });
   res.json({ ok: true });
 }));
 

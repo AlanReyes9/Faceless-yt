@@ -22,11 +22,12 @@ const fixedBase = !!process.env.PUBLIC_URL || (process.env.VERCEL_ENV === 'produ
 export const setBaseUrl = u => { if (u && !fixedBase) baseUrl = u; };
 
 // Carriles: la grabación de directos va aparte para que los análisis/renders no la retrasen (sin huecos).
-export const LANES = ['live', 'work'];
-const laneOf = type => type === 'live.capture' ? 'live' : 'work';
+// 'fast': los clips marcados a mano en un directo (✂ Clip ahora) no esperan a los análisis largos de la IA.
+export const LANES = ['live', 'work', 'fast'];
+const laneOf = (type, payload = {}) => type === 'live.capture' ? 'live' : payload.fast ? 'fast' : 'work';
 
 export async function enqueue(type, payload = {}) {
-  const job = await one('INSERT INTO jobs (type, payload, lane) VALUES ($1, $2, $3) RETURNING id', [type, JSON.stringify(payload), laneOf(type)]);
+  const job = await one('INSERT INTO jobs (type, payload, lane) VALUES ($1, $2, $3) RETURNING id', [type, JSON.stringify(payload), laneOf(type, payload)]);
   kick();
   return job.id;
 }
@@ -74,7 +75,7 @@ export async function runOne(deadline = Infinity, lane = 'work') {
   return true;
 }
 
-const busy = { work: false, live: false };
+const busy = { work: false, live: false, fast: false };
 /**
  * Procesa trabajos de la cola. En Vercel: un trabajo pesado por invocación y nunca dos a la vez
  * en la misma instancia (con "fluid compute" varias peticiones comparten la misma CPU).
@@ -149,7 +150,8 @@ export function startLocalWorker() {
       .then(r => r.length && console.log(`Reanudando ${r.length} trabajo(s) interrumpido(s)`)).catch(() => {})
     : Promise.resolve();
   // un bucle para grabar directos + N bucles para el resto de trabajos
-  for (const lane of ['live', ...Array(n).fill('work')]) resume.then(async function loop() {
+  // un bucle para grabar directos, otro para los clips marcados a mano (✂ Clip ahora) y N para el resto
+  for (const lane of ['live', 'fast', ...Array(n).fill('work')]) resume.then(async function loop() {
     for (;;) {
       try { if (!(await runOne(Infinity, lane))) await new Promise(r => setTimeout(r, 1500)); }
       catch (e) { console.error('worker:', e.message); await new Promise(r => setTimeout(r, 5000)); }

@@ -423,7 +423,7 @@ routes.directo = async () => {
       <div><label>Título del proyecto (opcional)</label><input name="title"></div>
       <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
       <div class="row"><div style="flex:1"><label>Grabar como máximo (min)</label><input type="number" name="maxMinutes" value="120" min="5" max="600"></div>
-        <div style="flex:1"><label>Analizar cada (s)</label><select name="segmentSec"><option value="120">2 min (clips antes)</option><option value="180" selected>3 min</option><option value="240">4 min (más contexto)</option></select></div></div>
+        <div style="flex:1"><label>Analizar cada (s)</label><select name="segmentSec"><option value="60">1 min (clips antes)</option><option value="120" selected>2 min (recomendado)</option><option value="180">3 min (más contexto)</option></select></div></div>
     </div>
     <div class="card stack">
       <h2>2. Opciones de los clips</h2>
@@ -757,6 +757,7 @@ function liveBanner(p) {
     <div class="row" style="gap:22px;margin-top:10px"><div><div class="muted small">Grabado</div><b>${mmss(l.secs || 0)}</b></div>
       <div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>
       <div><div class="muted small">Clips listos</div><b>${ok}</b> <span class="muted small">de ${(p.clips || []).length}</span></div></div>
+    ${l.stage && !l.ended ? `<div class="small" style="margin-top:10px;color:var(--gold)"><span class="spinner"></span> ${esc(l.stage)}</div>` : ''}
     ${l.ended || l.stopRequested ? '' : liveControls(p)}
     ${l.ended ? '' : '<div class="muted small" style="margin-top:8px">Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.</div>'}</div>`;
 }

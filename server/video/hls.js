@@ -77,11 +77,11 @@ async function decrypt(buf, key, seq) {
  * Continúa desde `fromSeq` (exclusivo) si sigue disponible; si no, empieza cerca del final de la lista.
  * Devuelve { seconds, lastSeq, ended, gap }.
  */
-export async function recordMedia(url, out, { seconds, fromSeq = null, deadline = Infinity, startBack = 3, onProgress = () => {} }) {
+export async function recordMedia(url, out, { seconds, fromSeq = null, deadline = Infinity, startBack = 3, onProgress = () => {}, stop = () => false }) {
   const fd = fs.openSync(out, 'w');
   let got = 0, lastSeq = fromSeq, ended = false, gap = false, mapDone = null, idle = 0;
   try {
-    while (got < seconds && Date.now() < deadline) {
+    while (got < seconds && Date.now() < deadline && !stop()) {
       const pl = await readMedia(url);
       let todo;
       if (lastSeq == null) todo = pl.ended ? pl.segs : pl.segs.slice(-startBack);
@@ -90,7 +90,7 @@ export async function recordMedia(url, out, { seconds, fromSeq = null, deadline 
         if (todo.length && todo[0].seq > lastSeq + 1) gap = true; // se perdieron segmentos (la lista avanzó demasiado)
       }
       for (const s of todo) {
-        if (got >= seconds || Date.now() >= deadline) break;
+        if (got >= seconds || Date.now() >= deadline || (stop() && got > 0)) break;
         if (s.map && s.map !== mapDone) { fs.writeSync(fd, await get(s.map, 'buf')); mapDone = s.map; }
         const buf = await decrypt(await get(s.url, 'buf', 30000), s.key, s.seq);
         fs.writeSync(fd, buf);
