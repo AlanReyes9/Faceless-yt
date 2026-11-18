@@ -7,6 +7,8 @@ import net from 'node:net';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+const require_ = createRequire(import.meta.url);
 import { WORK_DIR, DATA_DIR } from '../db.js';
 import { modelsDir } from './localwhisper.js';
 
@@ -36,7 +38,19 @@ export async function currentLLMModel() {
 // Mac M: la IA usa la gráfica del chip (Metal, incluido en la versión normal). Intel/Windows: procesador.
 const appleSilicon = process.platform === 'darwin' && process.arch === 'arm64';
 
-export const cpuThreads = (max = 12) => { const n = os.cpus().length; return Math.max(2, Math.min(max, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1)); };
+/** Núcleos físicos reales (macOS lo dice exactamente; en el resto se estima: la mitad en Intel/AMD por el hyperthreading). */
+let _phys = null;
+export function physicalCores() {
+  if (_phys) return _phys;
+  const n = os.cpus().length;
+  if (process.platform === 'darwin') try {
+    const { execFileSync } = require_('node:child_process');
+    _phys = Number(String(execFileSync('sysctl', ['-n', process.arch === 'arm64' ? 'hw.perflevel0.physicalcpu' : 'hw.physicalcpu'], { timeout: 3000 })).trim()) || 0;
+  } catch {}
+  return (_phys ||= process.arch === 'x64' ? Math.max(1, Math.ceil(n / 2)) : Math.max(1, n - 1));
+}
+/** Hilos para llama.cpp / whisper.cpp / stable-diffusion.cpp: los núcleos físicos (medido: más rápido que la mitad o que todos los lógicos). */
+export const cpuThreads = (max = 12) => Math.max(2, Math.min(max, physicalCores()));
 export const DEFAULT_IMAGE_MODEL = 'dreamshaper8';
 
 const bin = names => {

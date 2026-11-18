@@ -81,7 +81,7 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
   try {
     await ffmpeg(['-i', audioFile, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { timeoutMs: 120000 });
     const lang = !language ? 'auto' : (LANG[String(language).toLowerCase()] || String(language).slice(0, 2).toLowerCase());
-    const n = os.cpus().length, threads = String(forceThreads || Math.max(2, Math.min(8, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1))); // núcleos físicos en Intel/AMD
+    const threads = String(forceThreads || (await import('./localmodels.js')).cpuThreads(8)); // núcleos físicos (en Mac, los reales)
     // -ml 1 + -sow: un segmento por palabra (tiempos por palabra); -oj: salida JSON
     const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, ...extraArgs, '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
     await runWhisper(bin, args, onProgress, timeoutMs);
