@@ -112,8 +112,29 @@ app.post('/api/upload-local', h(async (req, res) => {
   if (!path.isAbsolute(src) || !/\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|flv|wmv|3gp|mp3|m4a|wav|png|jpe?g|webp|gif|heic)$/i.test(src)) throw new Error('Tipo de archivo no admitido. (400)');
   const st = fsx.statSync(src, { throwIfNoEntry: false });
   if (!st?.isFile()) throw new Error('No se encontró el archivo en tu equipo. (400)');
-  const ref = await saveFile(src, path.basename(src).replace(/[^\w.-]+/g, '_'), /\.(png|jpe?g|webp|gif|heic)$/i.test(src) ? 'image/' + src.split('.').pop().toLowerCase().replace('jpg', 'jpeg') : 'video/mp4');
-  res.json({ ref, url: publicUrl(ref) });
+  // Se copia en segundo plano (un vídeo grande, en iCloud o en un disco externo puede tardar) y se informa del progreso
+  const id = crypto.randomBytes(6).toString('hex');
+  const job = { pct: 0, done: false, error: null, ref: null, at: Date.now() };
+  localCopies.set(id, job);
+  (async () => {
+    const name = path.basename(src).replace(/[^\w.-]+/g, '_');
+    const isImg = /\.(png|jpe?g|webp|gif|heic)$/i.test(src);
+    if (STORAGE_MODE === 'local') {
+      const { copyLocal } = await import('./storage.js');
+      const ref = `${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}_${name.slice(-80)}`;
+      await copyLocal(src, path.join(FILES_DIR, ref), p => { job.pct = p; job.at = Date.now(); });
+      job.ref = ref;
+    } else job.ref = await saveFile(src, name, isImg ? 'image/' + src.split('.').pop().toLowerCase().replace('jpg', 'jpeg') : 'video/mp4');
+    Object.assign(job, { pct: 100, done: true });
+  })().catch(e => Object.assign(job, { done: true, error: /EPERM|EACCES/.test(e.code || e.message) ? 'macOS no deja a Clippers Pro leer esa carpeta. Dale permiso en Ajustes del Sistema → Privacidad y seguridad → Archivos y carpetas (o Acceso total al disco), o mueve el vídeo a otra carpeta.' : e.message }));
+  res.json({ id });
+}));
+const localCopies = new Map();
+app.get('/api/upload-local/:id', h(async (req, res) => {
+  const job = localCopies.get(req.params.id);
+  if (!job) throw new Error('Copia no encontrada. (404)');
+  if (job.done) setTimeout(() => localCopies.delete(req.params.id), 60000);
+  res.json({ ...job, url: job.ref ? publicUrl(job.ref) : null, idleSec: Math.round((Date.now() - job.at) / 1000) });
 }));
 // Subida directa del navegador a Vercel Blob (archivos grandes, sin pasar por la función)
 app.post('/api/blob/upload', h(async (req, res) => {
@@ -238,7 +259,7 @@ app.put('/api/settings', h(async (req, res) => {
   const b = req.body || {};
   await setSettings(b);
   // Cambió la IA local (modelo, tarjeta gráfica o local/nube): se reinicia y se vuelve a precargar
-  if (['local_llm', 'local_gpu', 'use_cloud'].some(k => k in b)) {
+  if (['local_llm', 'use_cloud'].some(k => k in b)) {
     const lm = await import('./ai/localmodels.js');
     lm.restartLocalLLM();
     if ((await getSetting('llm_provider')) === 'local') setTimeout(() => lm.warmUp(), 500);
@@ -493,13 +514,7 @@ app.get('/api/local-models', h(async (req, res) => {
   if (lw.localAvailable()) models.push({ kind: 'whisper', id: wm, label: `Whisper ${wm}`, use: 'Transcripción (voz → texto con tiempos por palabra)', mb: lw.WHISPER_MODELS[wm]?.mb || 466, ready: lw.modelReady(wm), download: lw.downloadStatus(wm) });
   if (lm.localLLMAvailable()) { const id = await lm.currentLLMModel(), m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
   if (lm.localImageAvailable()) { const id = lm.DEFAULT_IMAGE_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes de fondo para miniaturas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
-  res.json({ available, models, gpu: await lm.gpuInfo().catch(() => null) });
-}));
-app.post('/api/local-models/gpu-retry', h(async (req, res) => {
-  const lm = await import('./ai/localmodels.js');
-  lm.resetGpuState(); lm.restartLocalLLM();
-  setTimeout(() => lm.warmUp(), 300);
-  res.json({ ok: true });
+  res.json({ available, models });
 }));
 app.post('/api/local-models/download', h(async (req, res) => {
   const { kind, id } = req.body || {};

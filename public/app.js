@@ -112,8 +112,17 @@ async function uploadFile(file, onProgress = () => {}) {
   const local = sys.desktop && window.clippersDesktop?.pathFor?.(file);
   if (local) {
     onProgress(0);
-    try { const r = await api('/api/upload-local', { method: 'POST', body: { path: local } }); onProgress(100); return r.ref; }
-    catch (e) { console.warn('copia local:', e.message); } // si falla, se sube como siempre
+    let id;
+    try { id = (await api('/api/upload-local', { method: 'POST', body: { path: local } })).id; }
+    catch (e) { console.warn('copia local:', e.message); } // si no se puede, se sube como siempre
+    if (id) for (;;) {
+      await new Promise(r => setTimeout(r, 600));
+      const j = await api('/api/upload-local/' + id);
+      if (j.error) throw new Error(j.error);
+      if (j.done) { onProgress(100); return j.ref; }
+      onProgress(j.pct);
+      if (j.pct === 0 && j.idleSec > 45) throw new Error('No se puede leer el vídeo. Si está en iCloud, espera a que se descargue en tu Mac (o muévelo a otra carpeta) y vuelve a intentarlo. Si macOS pidió permiso para acceder a la carpeta, acéptalo.');
+    }
   }
   if (sys.storage === 's3' && !sys.desktop) {
     // Subida directa al bucket (Cloudflare R2 / Backblaze B2) con una URL firmada
@@ -1439,7 +1448,7 @@ routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['local_llm', 'local_gpu', 'whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['local_llm', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
@@ -1480,17 +1489,6 @@ routes.ajustes = async (_, params) => {
 
 
 /** Modelos de IA locales: estado, descarga (una vez) y progreso. */
-/** Estado de la tarjeta gráfica para la IA local. */
-function gpuRow(g) {
-  if (!g || !g.available) return g ? `<div class="gpu-row"><span class="gpu-dot off"></span><div><b>Procesador</b><div class="small muted">Esta versión usa el procesador para la IA local.</div></div></div>` : '';
-  const name = esc(g.name || 'Tarjeta gráfica');
-  if (g.appleSilicon) return `<div class="gpu-row"><span class="gpu-dot on"></span><div><b>${name || 'Chip Apple'} · aceleración activa</b><div class="small muted">La IA usa la tarjeta gráfica del chip (Metal).</div></div></div>`;
-  if (!g.enabled) return `<div class="gpu-row"><span class="gpu-dot off"></span><div><b>${name} · desactivada</b><div class="small muted">Actívala en "Usar la tarjeta gráfica" (más abajo) y guarda.</div></div></div>`;
-  const bad = g.llm === false || g.sd === false, ok = g.llm || g.sd;
-  return `<div class="gpu-row"><span class="gpu-dot ${bad ? 'bad' : ok ? 'on' : 'wait'}"></span><div style="flex:1"><b>${name} · ${bad && !ok ? 'no compatible, se usa el procesador' : ok ? 'aceleración activa (experimental)' : 'se probará en el primer uso (experimental)'}</b>
-    <div class="small muted">Texto: ${g.llm === true ? '✓ tarjeta gráfica' : g.llm === false ? 'procesador' : 'sin probar'} · Imágenes: ${g.sd === true ? '✓ tarjeta gráfica' : g.sd === false ? 'procesador' : 'sin probar'}${bad && g.why ? ' · ' + esc(g.why.slice(0, 120)) : ''}</div></div>
-    ${bad ? '<button class="btn sm" id="gpuRetry">Volver a probar</button>' : ''}</div>`;
-}
 async function localModelsCard() {
   const box = $('#localModels'); if (!box) return;
   const st0 = await api('/api/local-models').catch(() => null);
@@ -1500,9 +1498,7 @@ async function localModelsCard() {
       <div class="small muted">Cada modelo se descarga una sola vez. Puedes descargarlos ahora o se descargarán solos la primera vez que se usen.</div>
       ${st.models.map(m => `<div class="row between" style="border-bottom:1px solid var(--line);padding:8px 0"><div><b>${esc(m.label)}</b><div class="small muted">${esc(m.use)} · ~${m.mb >= 1000 ? (m.mb / 1000).toFixed(1) + ' GB' : m.mb + ' MB'}</div></div>
         <div style="min-width:180px;text-align:right">${m.ready ? '<span class="pill ready">✓ Listo</span>' : m.download?.active ? pbar(m.download.pct, 'Descargando') : `${m.download?.error ? `<div class="err small">${esc(m.download.error)}</div>` : ''}<button class="btn sm gold" data-dl="${m.kind}:${m.id}">⬇ Descargar</button>`}</div></div>`).join('')}
-      ${gpuRow(st.gpu)}
       <div class="row"><button class="btn sm" id="dlAll">⬇ Descargar todo</button><span class="small muted">La IA de texto necesita unos 4–6 GB de memoria RAM libre.</span></div></div>`;
-    const gr = $('#gpuRetry'); if (gr) gr.onclick = () => busy(gr, async () => { await api('/api/local-models/gpu-retry', { method: 'POST' }); toast('Se volverá a probar la tarjeta gráfica en el próximo uso de la IA', 'good'); setTimeout(poll, 4000); });
     box.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => busy(b, async () => { const [kind, id] = b.dataset.dl.split(':'); await api('/api/local-models/download', { method: 'POST', body: { kind, id } }); poll(); }));
     $('#dlAll').onclick = e => busy(e.target, async () => { for (const m of st.models.filter(m => !m.ready)) await api('/api/local-models/download', { method: 'POST', body: { kind: m.kind, id: m.id } }); poll(); });
   };

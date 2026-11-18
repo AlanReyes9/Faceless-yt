@@ -63,8 +63,6 @@ function setupEnv() {
     const f = names.map(n => path.join(bin, process.platform === 'win32' ? n + '.exe' : n)).find(x => fs.existsSync(x));
     if (f) process.env[env] = f;
   }
-  // Mac Intel: versiones con la tarjeta gráfica (Metal, experimental); la app las prueba y si fallan usa el procesador
-  for (const [env, n] of [['LLAMA_SERVER_GPU', 'llama-server-gpu'], ['SD_CLI_GPU', 'sd-gpu'], ['WHISPER_CLI_GPU', 'whisper-cli-gpu']]) { const f = path.join(bin, n); if (fs.existsSync(f)) process.env[env] = f; }
   if (process.env.LLAMA_SERVER) process.env.DEFAULT_LLM ||= 'local';
   if (process.env.SD_CLI) process.env.DEFAULT_IMAGE ||= 'local';
   const ytdlpBin = path.join(bin, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');

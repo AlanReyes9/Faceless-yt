@@ -33,53 +33,8 @@ export async function currentLLMModel() {
   return LOCAL_MODELS[v]?.kind === 'llm' ? v : AUTO_LLM_MODEL;
 }
 /** Hilos: núcleos físicos en Intel/AMD (el hyperthreading frena a llama.cpp y whisper.cpp). */
-// ---------- Tarjeta gráfica ----------
-// Mac M: siempre (Metal). Mac Intel con AMD: versión aparte con Metal (experimental): se prueba y, si falla
-// o da resultados erróneos, se marca como no compatible y se vuelve al procesador sin que el usuario haga nada.
-const gpuStateFile = () => path.join(DATA_DIR, 'gpu-state.json');
-const gpuState = () => { try { return JSON.parse(fs.readFileSync(gpuStateFile(), 'utf8')); } catch { return {}; } };
-function markGpu(kind, ok, why = '') {
-  const st = gpuState(); st[kind] = { ok, why: String(why).slice(0, 300), at: new Date().toISOString() };
-  try { fs.writeFileSync(gpuStateFile(), JSON.stringify(st)); } catch {}
-  console.log(`[gpu] ${kind}: ${ok ? 'funciona' : 'no compatible → procesador'} ${why}`);
-}
+// Mac M: la IA usa la gráfica del chip (Metal, incluido en la versión normal). Intel/Windows: procesador.
 const appleSilicon = process.platform === 'darwin' && process.arch === 'arm64';
-async function gpuWanted() {
-  try { const { getSetting } = await import('../settings.js'); return (await getSetting('local_gpu')) !== 'off'; } catch { return true; }
-}
-/** Binario a usar para texto ('llm') o imágenes ('sd'): { exe, gpu }. */
-async function pickBinary(kind) {
-  const cpu = kind === 'llm' ? llamaBinary() : sdBinary();
-  const gpuExe = kind === 'llm' ? process.env.LLAMA_SERVER_GPU : process.env.SD_CLI_GPU;
-  if (appleSilicon) return { exe: cpu, gpu: true };
-  if (gpuExe && fs.existsSync(gpuExe) && gpuState()[kind]?.ok !== false && await gpuWanted()) return { exe: gpuExe, gpu: true };
-  return { exe: cpu, gpu: false };
-}
-let gpuName = null;
-export async function gpuInfo() {
-  if (gpuName == null) {
-    gpuName = '';
-    if (process.platform === 'darwin') try {
-      const { execFile } = await import('node:child_process');
-      const out = await new Promise(r => execFile('system_profiler', ['SPDisplaysDataType'], { timeout: 8000 }, (e, o) => r(String(o || ''))));
-      gpuName = (out.match(/Chipset Model:\s*(.+)/g) || []).map(l => l.split(':')[1].trim()).find(n => !/Intel/i.test(n)) || (out.match(/Chipset Model:\s*(.+)/) || [])[1] || '';
-    } catch {}
-  }
-  const st = gpuState();
-  const hasGpuBuild = appleSilicon || !!(process.env.LLAMA_SERVER_GPU || process.env.SD_CLI_GPU);
-  return { name: gpuName, available: hasGpuBuild, appleSilicon, enabled: hasGpuBuild && (appleSilicon || await gpuWanted()),
-    llm: appleSilicon ? true : st.llm?.ok ?? null, sd: appleSilicon ? true : st.sd?.ok ?? null, why: st.llm?.why || st.sd?.why || '' };
-}
-export const markGpuPublic = markGpu;
-/** whisper-cli con Metal (Mac Intel): solo cuando la tarjeta ya pasó la prueba de cálculo y no falló antes. */
-export async function whisperGpuBinary() {
-  const g = process.env.WHISPER_CLI_GPU;
-  if (!g || appleSilicon || !fs.existsSync(g) || !(await gpuWanted())) return null;
-  const st = gpuState();
-  // probada con éxito (la prueba de cálculo de la IA de texto o una transcripción anterior) y sin fallos
-  return st.whisper?.ok === false || st.llm?.ok === false || !(st.llm?.ok || st.whisper?.ok) ? null : g;
-}
-export function resetGpuState() { try { fs.rmSync(gpuStateFile(), { force: true }); } catch {} }
 
 export const cpuThreads = (max = 12) => { const n = os.cpus().length; return Math.max(2, Math.min(max, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1)); };
 export const DEFAULT_IMAGE_MODEL = 'dreamshaper8';
@@ -143,39 +98,21 @@ async function startServer(name, onProgress) {
   if (server) { try { server.proc.kill(); } catch {} server = null; }
   if (!llamaBinary()) throw new Error('La IA local de texto solo está en la app de escritorio (falta llama-server).');
   const file = await ensureModel(name, pct => onProgress?.({ stage: `Descargando la IA local (solo la primera vez)… ${pct}%`, pct: 0 }));
-  const { exe, gpu: useGpu } = await pickBinary('llm');
+  const exe = llamaBinary();
   const port = await freePort();
-  // Mac Intel + AMD (4–8 GB de memoria gráfica): el modelo en la tarjeta y el contexto en la RAM (-nkvo);
-  // los modelos grandes solo en parte para que quepan.
-  const gpu = appleSilicon ? ['-ngl', '99'] : useGpu ? ['-ngl', LOCAL_MODELS[name].mb > 3000 ? '20' : '99', '-nkvo']
-    : process.env.LOCAL_LLM_GPU_LAYERS ? ['-ngl', process.env.LOCAL_LLM_GPU_LAYERS] : [];
+  const gpu = appleSilicon ? ['-ngl', '99'] : process.env.LOCAL_LLM_GPU_LAYERS ? ['-ngl', process.env.LOCAL_LLM_GPU_LAYERS] : [];
   const threads = String(cpuThreads());
   const proc = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', String(CTX), '-np', '1', '-t', threads, ...gpu],
     { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let log = '';
   proc.stdout.on('data', d => { log = (log + d).slice(-4000); });
   proc.stderr.on('data', d => { log = (log + d).slice(-4000); });
-  const s = { proc, port, model: name, gpu: useGpu, log: () => log };
+  const s = { proc, port, model: name, log: () => log };
   s.ready = (async () => {
     onProgress?.({ stage: 'Cargando la IA local…', pct: 0 });
     for (let i = 0; i < 600; i++) { // hasta 5 min (equipos lentos)
-      if (proc.exitCode != null) {
-        if (useGpu && !appleSilicon) { markGpu('llm', false, 'no arrancó: ' + log.split('\n').filter(Boolean).slice(-1).join(' ')); server = null; return startServer(name, onProgress); }
-        throw new Error('La IA local no pudo arrancar: ' + log.split('\n').filter(Boolean).slice(-3).join(' '));
-      }
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}/health`);
-        if (r.ok) {
-          // Primera vez con la tarjeta gráfica en un Mac Intel: prueba rápida de que calcula bien
-          if (useGpu && !appleSilicon && gpuState().llm?.ok !== true) {
-            onProgress?.({ stage: 'Probando la tarjeta gráfica…', pct: 0 });
-            const ok = await sanityCheck(port).catch(() => false);
-            markGpu('llm', ok, ok ? '' : 'resultado incorrecto en la prueba');
-            if (!ok) { try { proc.kill(); } catch {} server = null; return startServer(name, onProgress); }
-          }
-          return s;
-        }
-      } catch {}
+      if (proc.exitCode != null) throw new Error('La IA local no pudo arrancar: ' + log.split('\n').filter(Boolean).slice(-3).join(' '));
+      try { const r = await fetch(`http://127.0.0.1:${port}/health`); if (r.ok) return s; } catch {}
       await new Promise(r => setTimeout(r, 500));
     }
     throw new Error('La IA local tardó demasiado en arrancar.');
@@ -186,12 +123,6 @@ async function startServer(name, onProgress) {
   return s.ready;
 }
 process.on('exit', () => { try { server?.proc.kill(); } catch {} });
-async function sanityCheck(port) {
-  const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(120000),
-    body: JSON.stringify({ messages: [{ role: 'user', content: 'What is 17 + 25? Answer with only the number.' }], max_tokens: 8, temperature: 0 }) });
-  const t = (await r.json()).choices?.[0]?.message?.content || '';
-  return /\b42\b/.test(t);
-}
 /** Precarga la IA de texto al abrir la app (si el modelo ya está descargado): la primera respuesta llega antes. */
 export async function warmUp() {
   try {
@@ -199,7 +130,7 @@ export async function warmUp() {
     const name = await currentLLMModel();
     if (!modelReady(name)) return;
     await startServer(name);
-    console.log('[ia local] precargada:', name, server?.gpu ? '(tarjeta gráfica)' : '(procesador)');
+    console.log('[ia local] precargada:', name);
   } catch (e) { console.warn('[ia local] precarga:', e.message); }
 }
 export const restartLocalLLM = () => { try { server?.proc.kill(); } catch {} server = null; };
@@ -266,19 +197,9 @@ export async function chatLocal(system, user, { json = false, maxTokens = 4000, 
 
 // ---------- Imágenes: stable-diffusion.cpp ----------
 export async function imageLocal(prompt, opts = {}) {
-  const { exe, gpu } = await pickBinary('sd');
-  if (gpu && !appleSilicon) {
-    try {
-      const buf = await imageRun(exe, prompt, opts, true);
-      // Una imagen casi vacía (negra) delata un cálculo erróneo en la tarjeta gráfica
-      if (buf.length < 40000) throw new Error('imagen vacía');
-      if (gpuState().sd?.ok !== true) markGpu('sd', true);
-      return buf;
-    } catch (e) { markGpu('sd', false, e.message.slice(0, 200)); opts.onProgress?.('La tarjeta gráfica no funcionó; se usa el procesador…'); }
-  }
-  return imageRun(sdBinary(), prompt, opts, appleSilicon);
+  return imageRun(sdBinary(), prompt, opts);
 }
-async function imageRun(exe, prompt, { size = '1024x1536', steps = Number(process.env.LOCAL_IMAGE_STEPS || 22), onProgress } = {}, onGpu = false) {
+async function imageRun(exe, prompt, { size = '1024x1536', steps = Number(process.env.LOCAL_IMAGE_STEPS || 22), onProgress } = {}) {
   if (!exe) throw new Error('La generación de imágenes local solo está en la app de escritorio (falta stable-diffusion).');
   const model = await ensureModel(DEFAULT_IMAGE_MODEL, pct => onProgress?.(`Descargando el modelo de imágenes (solo la primera vez)… ${pct}%`));
   const [w0, h0] = String(size).split('x').map(Number);
@@ -291,7 +212,7 @@ async function imageRun(exe, prompt, { size = '1024x1536', steps = Number(proces
     const p = spawn(exe, ['-m', model, '-p', prompt.slice(0, 900), '-n', neg, '-W', String(w), '-H', String(h), '--steps', String(steps), '--cfg-scale', '6.5',
       '--sampling-method', 'dpm++2m', '-t', String(cpuThreads(16)), '-o', out], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let log = '';
-    const on = d => { const s = String(d); log = (log + s).slice(-3000); const m = s.match(/(\d+)\/(\d+)\s*-/); if (m) onProgress?.(`Generando la imagen ${onGpu ? 'con la tarjeta gráfica' : 'con el procesador'}… ${Math.round(m[1] / m[2] * 100)}%`); };
+    const on = d => { const s = String(d); log = (log + s).slice(-3000); const m = s.match(/(\d+)\/(\d+)\s*-/); if (m) onProgress?.(`Generando la imagen en tu equipo… ${Math.round(m[1] / m[2] * 100)}%`); };
     p.stdout.on('data', on); p.stderr.on('data', on);
     p.on('error', e => reject(new Error('No se pudo ejecutar stable-diffusion: ' + e.message)));
     p.on('close', code => code === 0 && fs.existsSync(out) ? resolve() : reject(new Error('La generación local de la imagen falló: ' + log.split('\n').filter(Boolean).slice(-2).join(' '))));

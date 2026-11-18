@@ -31,8 +31,22 @@ export async function saveFile(localPath, name, contentType = 'video/mp4') {
     return blob.url;
   }
   const ref = `${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}_${safeName(name)}`;
-  fs.copyFileSync(localPath, path.join(FILES_DIR, ref), fs.constants.COPYFILE_FICLONE); // copia instantánea donde el disco lo permite (APFS)
+  await copyLocal(localPath, path.join(FILES_DIR, ref));
   return ref;
+}
+
+/**
+ * Copia un archivo sin bloquear el programa: primero un "clon" instantáneo (APFS) y, si el disco no lo permite
+ * (otro volumen, disco externo, iCloud…), copia por trozos informando del progreso (0–100).
+ */
+export async function copyLocal(src, dest, onProgress = () => {}) {
+  try { await fs.promises.copyFile(src, dest, fs.constants.COPYFILE_FICLONE_FORCE); onProgress(100); return; } catch {}
+  const total = (await fs.promises.stat(src)).size || 1;
+  let done = 0, last = -1;
+  const { pipeline } = await import('node:stream/promises');
+  const rs = fs.createReadStream(src, { highWaterMark: 4 * 1024 * 1024 });
+  rs.on('data', c => { done += c.length; const p = Math.floor(done / total * 100); if (p !== last) { last = p; onProgress(p); } });
+  await pipeline(rs, fs.createWriteStream(dest));
 }
 
 export async function saveBuffer(buf, name, contentType) {
