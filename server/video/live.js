@@ -41,9 +41,18 @@ export async function resolveStream(url) {
     if (j.live_status && j.live_status !== 'is_live') throw new Error('Ese directo ya terminó. Para sacar clips de la grabación usa "Convertir a Clips" con el enlace. (400)');
     const hls = f => /m3u8/.test(f.protocol || '') || /\.m3u8/.test(f.url || '');
     if (j.manifest_url && /m3u8/.test(j.manifest_url)) return j.manifest_url;
-    const fmts = (j.formats || []).filter(f => f.url && hls(f) && f.vcodec !== 'none');
+    const all = (j.formats || []).filter(f => f.url && hls(f));
+    const fmts = all.filter(f => f.vcodec !== 'none');
     const best = fmts.filter(f => !f.height || f.height <= 1080).sort((a, b) => (b.height || 0) - (a.height || 0) || (b.tbr || 0) - (a.tbr || 0))[0] || fmts[0];
-    if (best) return best.url;
+    if (best) {
+      // YouTube ofrece ahora la imagen y el sonido por separado: si el vídeo elegido no lleva audio, se graba también
+      // la mejor pista de solo audio (sin ella el directo se grababa mudo y no se podía transcribir)
+      if (best.acodec === 'none') {
+        const aud = all.filter(f => f.vcodec === 'none').sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0))[0];
+        if (aud) return { video: best.url, audio: aud.url };
+      }
+      return best.url;
+    }
     if (j.url) return j.url;
   }
   // Último recurso: que yt-dlp elija cualquier formato del directo
@@ -79,7 +88,8 @@ register('live.capture', async ({ id, seg }, ctx) => {
   if (segSec < 20) { await enqueue('live.capture', { id, seg }); return; } // sin tiempo: a una ejecución nueva
 
   await updateProject(id, { status: 'processing', error: null, progress: `🔴 Grabando el directo · ${fmtMin(st.secs)} grabados · ${st.clips} clips` });
-  const url = await resolveStream(p.source_url);
+  const src = await resolveStream(p.source_url);
+  const url = typeof src === 'string' ? src : src.video;
   await setLive(id, { recWall: Date.now(), recPos: st.secs }); // para "✂ Clip ahora": posición del directo en cada momento
   const out = path.join(WORK_DIR, `live_${id}_${seg}_${Date.now()}.mp4`);
   const tmp = [];
@@ -88,6 +98,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
     if (/\.m3u8(\?|$)/i.test(url) || /mpegurl/i.test(url)) {
       // HLS: grabador propio en Node (continúa donde terminó el segmento anterior, sin huecos)
       const pl = await resolvePlaylist(url);
+      if (src.audio && !pl.audio) pl.audio = (await resolvePlaylist(src.audio)).video; // audio en una lista aparte (YouTube)
       const deadline = Date.now() + Math.min(segSec * 1000 + 60000, ctx.remaining() - 30000);
       const vfile = path.join(WORK_DIR, `live_${id}_${seg}_v.ts`), afile = path.join(WORK_DIR, `live_${id}_${seg}_a.ts`);
       tmp.push(vfile, afile);
@@ -187,6 +198,11 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
   const stage = t => setLive(id, { stage: t ? `Segmento ${seg + 1}: ${t}` : null }).catch(() => {});
   if (!row.analyzed || !row.words) {
     await stage('transcribiendo…');
+    const info = await probe(inputPath(row.ref)).catch(() => ({ hasAudio: true }));
+    if (!info.hasAudio) {
+      await setLive(id, { warning: 'La grabación del directo no tiene sonido, así que no se puede transcribir ni buscar momentos. Detén el directo y vuelve a empezarlo; si sigue pasando, avísanos.' });
+      throw new Error('El segmento grabado no tiene audio. (400)');
+    }
     const r = await transcribeChunk(inputPath(row.ref), { offset: 0, len: row.dur + 1, language: o.language });
     const shift = x => ({ ...x, start: x.start + row.start, end: x.end + row.start });
     const words = r.words.filter(w => w.start < row.dur).map(shift);
@@ -195,6 +211,7 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
     await q('UPDATE live_segments SET words = $3, segments = $4, energy = $5, analyzed = true WHERE project_id = $1 AND seg = $2',
       [id, seg, JSON.stringify(words), JSON.stringify(segments), JSON.stringify(energy)]);
     Object.assign(row, { words, segments, energy });
+    await setLive(id, { warning: null }); // se transcribió bien: se quita cualquier aviso anterior
   }
 
   // 2) Ventana: final del segmento anterior + este (para no perder momentos que cruzan el corte)
@@ -251,7 +268,8 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
     const pr = await getProject(id);
     if (!pr.data.live?.ended) await updateProject(id, { progress: `🔴 Grabando el directo · ${fmtMin(st.secs)} grabados · ${st.clips} clips` });
   }
-}, async ({ id, last }, msg) => {
+}, async ({ id, seg, last }, msg) => {
   console.warn(`[directo ${id}] análisis fallido: ${msg}`);
+  await setLive(id, { stage: null, warning: `No se pudo analizar el segmento ${seg + 1}: ${String(msg).replace(/\s*\(\d{3}\)$/, '').slice(0, 300)}` }).catch(() => {});
   if (last) await finish(id, 'terminado');
 });

@@ -126,7 +126,7 @@ app.post('/api/upload-local', h(async (req, res) => {
       job.ref = ref;
     } else job.ref = await saveFile(src, name, isImg ? 'image/' + src.split('.').pop().toLowerCase().replace('jpg', 'jpeg') : 'video/mp4');
     Object.assign(job, { pct: 100, done: true });
-  })().catch(e => Object.assign(job, { done: true, error: /EPERM|EACCES/.test(e.code || e.message) ? 'macOS no deja a Clippers Pro leer esa carpeta. Dale permiso en Ajustes del Sistema → Privacidad y seguridad → Archivos y carpetas (o Acceso total al disco), o mueve el vídeo a otra carpeta.' : e.message }));
+  })().catch(e => Object.assign(job, { done: true, error: /-81\b|ENEEDAUTH|EDEADLK|dataless/i.test(`${e.code} ${e.errno} ${e.message}`) ? 'El vídeo está en iCloud y no está descargado en el Mac. En el Finder: clic derecho → "Descargar ahora" (o cópialo a otra carpeta) y vuelve a intentarlo.' : /EPERM|EACCES/.test(e.code || e.message) ? 'macOS no deja a Clippers Pro leer esa carpeta. Dale permiso en Ajustes del Sistema → Privacidad y seguridad → Archivos y carpetas (o Acceso total al disco), o mueve el vídeo a otra carpeta.' : e.message }));
   res.json({ id });
 }));
 const localCopies = new Map();

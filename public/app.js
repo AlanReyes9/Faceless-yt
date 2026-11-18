@@ -115,14 +115,18 @@ async function uploadFile(file, onProgress = () => {}) {
     let id;
     try { id = (await api('/api/upload-local', { method: 'POST', body: { path: local } })).id; }
     catch (e) { console.warn('copia local:', e.message); } // si no se puede, se sube como siempre
-    if (id) for (;;) {
-      await new Promise(r => setTimeout(r, 600));
-      const j = await api('/api/upload-local/' + id);
-      if (j.error) throw new Error(j.error);
-      if (j.done) { onProgress(100); return j.ref; }
-      onProgress(j.pct);
-      if (j.pct === 0 && j.idleSec > 45) throw new Error('No se puede leer el vídeo. Si está en iCloud, espera a que se descargue en tu Mac (o muévelo a otra carpeta) y vuelve a intentarlo. Si macOS pidió permiso para acceder a la carpeta, acéptalo.');
-    }
+    // Si el sistema no deja leer el archivo directamente (iCloud sin descargar, permisos de carpeta, error -81…),
+    // se sube por la vía del navegador, que sí puede leerlo porque lo eligió el usuario
+    if (id) try {
+      for (;;) {
+        await new Promise(r => setTimeout(r, 600));
+        const j = await api('/api/upload-local/' + id);
+        if (j.error) throw new Error(j.error);
+        if (j.done) { onProgress(100); return j.ref; }
+        onProgress(j.pct);
+        if (j.pct === 0 && j.idleSec > 45) throw new Error('sin avance');
+      }
+    } catch (e) { console.warn('copia directa no disponible, se sube el archivo:', e.message); onProgress(0); }
   }
   if (sys.storage === 's3' && !sys.desktop) {
     // Subida directa al bucket (Cloudflare R2 / Backblaze B2) con una URL firmada
@@ -152,7 +156,7 @@ async function uploadFile(file, onProgress = () => {}) {
     const xhr = new XMLHttpRequest();
     xhr.upload.onprogress = e => onProgress(Math.round(e.loaded / e.total * 100));
     xhr.onload = () => { const j = JSON.parse(xhr.responseText || '{}'); xhr.status >= 400 ? reject(new Error(j.error || 'Error al subir')) : resolve(j.ref); };
-    xhr.onerror = () => reject(new Error('Se cortó la conexión al subir el vídeo. Vuelve a intentarlo; si el archivo es muy grande, recórtalo o usa la app de escritorio actualizada.'));
+    xhr.onerror = () => reject(new Error('No se pudo leer o enviar el vídeo. Si está en el Escritorio o en Documentos con iCloud, en el Finder haz clic derecho sobre el vídeo → "Descargar ahora" (o cópialo a otra carpeta, p. ej. Películas) y vuelve a intentarlo.'));
     xhr.open('POST', '/api/upload'); xhr.send(fd);
   });
 }
@@ -758,6 +762,7 @@ function liveBanner(p) {
       <div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>
       <div><div class="muted small">Clips listos</div><b>${ok}</b> <span class="muted small">de ${(p.clips || []).length}</span></div></div>
     ${l.stage && !l.ended ? `<div class="small" style="margin-top:10px;color:var(--gold)"><span class="spinner"></span> ${esc(l.stage)}</div>` : ''}
+    ${l.warning ? `<div class="small err" style="margin-top:10px">⚠️ ${esc(l.warning)}</div>` : ''}
     ${l.ended || l.stopRequested ? '' : liveControls(p)}
     ${l.ended ? '' : '<div class="muted small" style="margin-top:8px">Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.</div>'}</div>`;
 }
