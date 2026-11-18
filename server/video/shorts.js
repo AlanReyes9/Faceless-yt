@@ -51,7 +51,7 @@ register('shorts.start', async ({ id }) => {
   }
   const info = await probe(inputPath(source));
   if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
-  if (!info.hasVideo) throw new Error('El archivo no tiene imagen (solo audio): no se pueden crear Shorts. Sube el vídeo completo. (400)');
+  if (!info.hasVideo) throw new Error('El archivo no tiene imagen (solo audio): no se pueden crear clips. Sube el vídeo completo. (400)');
   // Los cambios de plano se detectan durante la transcripción (misma lectura del vídeo)
   p.data = { ...p.data, cuts: p.data.cuts || [], width: info.width, height: info.height };
   if (p.data.transcript?.words?.length) { // ya transcrito (reintento): saltar a la selección
@@ -169,7 +169,7 @@ register('shorts.pick', async ({ id }) => {
         JSON.stringify(keywords), JSON.stringify(opts.emojis === false ? [] : emojis), JSON.stringify(signals)]);
     await enqueue('clip.render', { clipId: clip.id });
   }
-  await updateProject(id, { progress: `Renderizando ${n} Shorts…`, percent: 55 });
+  await updateProject(id, { progress: `Renderizando ${n} clips…`, percent: 55 });
   await enqueue('shorts.report', { id }); // informe: títulos, descripción, SEO, capítulos y mejoras
 }, projectFail);
 
@@ -378,7 +378,7 @@ export async function checkDone(projectId) {
   if (!r.ready && r.failed) {
     await updateProject(projectId, { status: 'error', error: `No se pudo renderizar ningún Short (${r.failed} con error). Pulsa "Reintentar" para volver a renderizarlos.`, progress: null });
   } else {
-    await updateProject(projectId, { status: 'ready', ready_at: new Date().toISOString(), error: null, percent: 100, progress: `${r.ready} Shorts listos${r.failed ? ` · ${r.failed} con error` : ''}` });
+    await updateProject(projectId, { status: 'ready', ready_at: new Date().toISOString(), error: null, percent: 100, progress: `${r.ready} clips listos${r.failed ? ` · ${r.failed} con error` : ''}` });
   }
 }
 const clipFail = async ({ clipId }, msg) => {

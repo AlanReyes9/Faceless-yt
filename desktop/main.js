@@ -107,6 +107,7 @@ async function startServer() {
   const { runCleanup } = await import(pathToFileURL(path.join(ROOT, 'server', 'cleanup.js')).href);
   const real = await new Promise((resolve, reject) => {
     const s = server.listen(port, '127.0.0.1', () => resolve(s.address().port)).on('error', reject);
+    s.requestTimeout = 0; s.timeout = 0; // sin límite de tiempo por petición (vídeos grandes)
   });
   if (!port) process.env.PUBLIC_URL = `http://localhost:${real}`;
   startLocalWorker();
@@ -122,7 +123,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1360, height: 880, minWidth: 900, minHeight: 600, backgroundColor: '#0f1013', title: 'Clippers Pro',
     autoHideMenuBar: process.platform !== 'darwin',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { preload: path.join(ROOT, 'desktop', 'preload-app.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const isApp = u => { try { return new URL(u).origin === new URL(baseUrl).origin; } catch { return false; } };
   // Enlaces externos (Google, YouTube, webs de las claves…) en el navegador del sistema.

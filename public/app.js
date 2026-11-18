@@ -35,7 +35,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 // ---------- Navegación ----------
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
-  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Shorts'], ['directo', '🔴', 'Clips de directos'],
+  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'],
     ['ranking', '🏆', 'Rankings Top'], ['miniaturas', '🖼', 'Miniaturas IA'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
@@ -108,6 +108,13 @@ const getSystem = async () => (systemInfo ||= await api('/api/system'));
 /** Sube un archivo y devuelve su referencia. En Vercel va directo a Blob (archivos grandes). */
 async function uploadFile(file, onProgress = () => {}) {
   const sys = await getSystem();
+  // App de escritorio: el archivo ya está en el equipo → se copia directamente, sin subirlo (rápido y sin cortes)
+  const local = sys.desktop && window.clippersDesktop?.pathFor?.(file);
+  if (local) {
+    onProgress(0);
+    try { const r = await api('/api/upload-local', { method: 'POST', body: { path: local } }); onProgress(100); return r.ref; }
+    catch (e) { console.warn('copia local:', e.message); } // si falla, se sube como siempre
+  }
   if (sys.storage === 's3' && !sys.desktop) {
     // Subida directa al bucket (Cloudflare R2 / Backblaze B2) con una URL firmada
     const { ref, url } = await api('/api/s3/presign', { method: 'POST', body: { filename: file.name } });
@@ -136,7 +143,7 @@ async function uploadFile(file, onProgress = () => {}) {
     const xhr = new XMLHttpRequest();
     xhr.upload.onprogress = e => onProgress(Math.round(e.loaded / e.total * 100));
     xhr.onload = () => { const j = JSON.parse(xhr.responseText || '{}'); xhr.status >= 400 ? reject(new Error(j.error || 'Error al subir')) : resolve(j.ref); };
-    xhr.onerror = () => reject(new Error('Error de red al subir'));
+    xhr.onerror = () => reject(new Error('Se cortó la conexión al subir el vídeo. Vuelve a intentarlo; si el archivo es muy grande, recórtalo o usa la app de escritorio actualizada.'));
     xhr.open('POST', '/api/upload'); xhr.send(fd);
   });
 }
@@ -147,7 +154,7 @@ async function uploadMany(files, el) {
   el.textContent = '';
   return refs;
 }
-const TYPE_LABEL = { shorts: '✂ Shorts', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje', ranking: '🏆 Ranking' };
+const TYPE_LABEL = { shorts: '✂ Clips', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje', ranking: '🏆 Ranking' };
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -224,7 +231,7 @@ routes[''] = async () => {
     ...(local ? [[!!sys.localReady, 'Descarga los modelos de IA locales (una sola vez)', 'ajustes']] : [[!!hasLLM, `Añade tu clave de IA de texto (${v.llm_provider})`, 'ajustes'],
       [v.transcribe_provider === 'local' || !!(v.transcribe_provider === 'groq' ? v.groq_key : v.openai_key), 'Elige cómo transcribir (OpenAI o Groq)', 'ajustes']]),
     [s.channels > 0, 'Crea tu primer canal', 'canales'],
-    [s.shorts > 0, 'Convierte un vídeo largo en Shorts', 'shorts'],
+    [s.shorts > 0, 'Convierte un vídeo largo en clips', 'shorts'],
   ];
   main.innerHTML = `
     <h1>Hola 👋</h1><p class="sub">${local ? 'Tu fábrica de clips con IA que funciona en tu propio equipo: sin claves, sin pagar por uso.' : 'Tu fábrica de contenido faceless con tus propias claves de IA.'}</p>
@@ -234,12 +241,12 @@ routes[''] = async () => {
     <div class="grid g4" style="margin-bottom:16px">
       <div class="card"><div class="muted small">Canales</div><div class="stat">${s.channels}</div></div>
       <div class="card"><div class="muted small">Proyectos</div><div class="stat">${s.projects}</div></div>
-      <div class="card"><div class="muted small">Shorts listos</div><div class="stat">${s.shorts}</div></div>
+      <div class="card"><div class="muted small">Clips listos</div><div class="stat">${s.shorts}</div></div>
       <div class="card"><div class="muted small">Publicados</div><div class="stat">${s.published}</div></div>
     </div>
     <div class="grid g2">
       <div class="card"><h2>Primeros pasos</h2>${steps.map(([ok, t, r]) => `<div style="display:flex;gap:10px;padding:6px 0"><span>${ok ? '✅' : '⬜'}</span><a href="#/${r}" style="color:${ok ? 'var(--muted)' : 'var(--text)'}">${t}</a></div>`).join('')}
-        <div class="row" style="margin-top:14px"><a class="btn gold" href="#/shorts">✂ Convertir a Shorts</a><a class="btn" href="#/completo">▶ Vídeo completo</a></div></div>
+        <div class="row" style="margin-top:14px"><a class="btn gold" href="#/shorts">✂ Convertir a Clips</a><a class="btn" href="#/completo">▶ Vídeo completo</a></div></div>
       <div class="card"><h2>Próximas publicaciones</h2>${s.upcoming.length ? s.upcoming.map(i => `<div class="row between" style="padding:5px 0"><span>${esc(i.title)}</span><span class="muted small">${i.date}</span></div>`).join('') : '<p class="muted">Nada programado. <a href="#/calendario">Planifica tu calendario</a>.</p>'}</div>
       <div class="card" style="grid-column:1/-1"><h2>Proyectos recientes</h2>${projectTable(s.recent)}</div>
     </div>`;
@@ -306,8 +313,8 @@ routes.canales = async (_, params) => {
 // ---------- Mis vídeos / Papelera ----------
 routes.videos = async () => {
   const rows = await api('/api/projects');
-  main.innerHTML = `<div class="row between"><div><h1>Mis vídeos</h1><p class="sub">Todos tus proyectos de Shorts y vídeos completos.</p></div>
-    <div class="row"><a class="btn gold" href="#/shorts">✂ Nuevo Shorts</a><a class="btn" href="#/completo">▶ Nuevo vídeo</a></div></div>
+  main.innerHTML = `<div class="row between"><div><h1>Mis vídeos</h1><p class="sub">Todos tus proyectos de clips y vídeos completos.</p></div>
+    <div class="row"><a class="btn gold" href="#/shorts">✂ Nuevos clips</a><a class="btn" href="#/completo">▶ Nuevo vídeo</a></div></div>
     <div class="card">${projectTable(rows)}</div>`;
   if (rows.some(p => ['pending', 'processing'].includes(p.status))) poll(router, 4000);
 };
@@ -320,10 +327,10 @@ routes.papelera = async () => {
   });
 };
 
-// ---------- Convertir a Shorts ----------
+// ---------- Convertir a Clips ----------
 routes.shorts = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
-  main.innerHTML = `<h1>Convertir a Shorts</h1><p class="sub">Sube un vídeo largo. La IA lo transcribe, encuentra los mejores momentos y crea Shorts verticales con gancho y subtítulos.</p>
+  main.innerHTML = `<h1>Convertir a Clips</h1><p class="sub">Sube un vídeo largo. La IA lo transcribe, encuentra los mejores momentos y crea clips verticales con gancho y subtítulos.</p>
   <form id="f" class="grid g2">
     <div class="card stack">
       <h2>1. Vídeo de origen</h2>
@@ -338,7 +345,7 @@ routes.shorts = async () => {
     </div>
     <div class="card stack">
       <h2>2. Opciones</h2>
-      <div class="row"><div style="flex:1"><label>Nº de Shorts</label><input type="number" name="count" value="10" min="1" max="30"></div>
+      <div class="row"><div style="flex:1"><label>Nº de clips</label><input type="number" name="count" value="10" min="1" max="30"></div>
         <div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="20" min="5"></div>
         <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="180"></div></div>
       <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
@@ -351,10 +358,10 @@ routes.shorts = async () => {
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
       <div id="up" class="small muted"></div>
       <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
-      <button class="btn gold block" id="go">✂ Crear Shorts</button>
+      <button class="btn gold block" id="go">✂ Crear clips</button>
     </div>
   </form>
-  <h2 style="margin-top:28px">Proyectos de Shorts</h2><div id="list" class="card"></div>`;
+  <h2 style="margin-top:28px">Proyectos de clips</h2><div id="list" class="card"></div>`;
   const f = $('#f'), file = f.video, drop = $('#drop');
   drop.onclick = () => file.click();
   const clearLink = () => { f.source.value = ''; f.filename.value = ''; $('#dlready').hidden = true; $('#dlready').innerHTML = ''; };
@@ -384,11 +391,11 @@ routes.shorts = async () => {
     const box = $('#dlready');
     box.innerHTML = `<div class="card" style="padding:10px;border-color:var(--gold)"><div class="row between"><b class="small">✅ Vídeo descargado y listo</b><button type="button" class="btn sm" id="dlx">Quitar</button></div>
       ${dl.url ? `<video src="${esc(dl.url)}" controls preload="metadata" style="width:100%;max-height:220px;border-radius:6px;margin-top:8px;background:#000"></video>` : ''}
-      <div class="small" style="margin-top:6px">${esc(dl.title || '')}</div><div class="small muted">Elige las opciones y pulsa <b>✂ Crear Shorts</b>.</div></div>`;
+      <div class="small" style="margin-top:6px">${esc(dl.title || '')}</div><div class="small muted">Elige las opciones y pulsa <b>✂ Crear clips</b>.</div></div>`;
     box.hidden = false;
     $('#dlx').onclick = clearLink;
     box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    toast('Vídeo descargado. Pulsa "Crear Shorts" cuando quieras.', 'good');
+    toast('Vídeo descargado. Pulsa "Crear clips" cuando quieras.', 'good');
   });
   const list = await api('/api/projects?type=shorts');
   $('#list').innerHTML = projectTable(list);
@@ -397,7 +404,7 @@ routes.shorts = async () => {
 // ---------- Clips de un directo ----------
 routes.directo = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
-  main.innerHTML = `<h1>🔴 Clips de directos</h1><p class="sub">Pega el enlace de un directo. La app lo va grabando por segmentos, la IA analiza cada uno y crea Shorts verticales de los momentos más virales mientras el directo sigue en marcha.</p>
+  main.innerHTML = `<h1>🔴 Clips de directos</h1><p class="sub">Pega el enlace de un directo. La app lo va grabando por segmentos, la IA analiza cada uno y crea clips verticales de los momentos más virales mientras el directo sigue en marcha.</p>
   ${sys.vercel ? `<div class="card warn" style="margin-bottom:16px">En la versión de Vercel solo funcionan enlaces directos <b>.m3u8</b> (HLS). Para directos de YouTube, Twitch o Kick instala la app en tu PC con Linux (ver Ayuda): allí yt-dlp obtiene el vídeo del directo.</div>`
     : sys.ytdlp ? '' : '<div class="card warn" style="margin-bottom:16px">yt-dlp no está instalado: solo funcionarán enlaces .m3u8, rtmp, srt o rtsp.</div>'}
   <form id="f" class="grid g2">
@@ -579,7 +586,7 @@ async function reportTab(p, tab) {
   } else if (tab === 'preguntar') {
     const hist = askHistory[p.id] ||= [];
     const drawChat = () => {
-      pane.innerHTML = `<div class="card stack"><div class="small muted">Pregunta lo que quieras sobre el vídeo: "¿de qué habla en el minuto 10?", "dame 5 ideas de Shorts", "¿qué frase es la más polémica?"…</div>
+      pane.innerHTML = `<div class="card stack"><div class="small muted">Pregunta lo que quieras sobre el vídeo: "¿de qué habla en el minuto 10?", "dame 5 ideas de clips", "¿qué frase es la más polémica?"…</div>
         <div class="chat">${hist.map(m => `<div class="msg ${m.role}">${esc(m.text).replace(/\n/g, '<br>')}</div>`).join('')}</div>
         <form id="askf" class="row" style="flex-wrap:nowrap"><input id="askq" placeholder="Escribe tu pregunta…" style="flex:1"><button class="btn gold">Preguntar</button></form></div>`;
       $('#askf').onsubmit = e => { e.preventDefault(); const qv = $('#askq').value.trim(); if (!qv) return;
@@ -655,7 +662,7 @@ routes.proyecto = async id => {
     ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
     ${cleanupBanner(p)}${p.live && !p.live.ended ? `<div class="livewrap">${liveEmbed(p)}${liveBanner(p)}</div>` : liveBanner(p)}
     ${['pending', 'processing'].includes(p.status) && !p.live ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
-      <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los Shorts se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
+      <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los clips se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
   const withReport = p.type === 'shorts' && p.hasTranscript;
   const tab = withReport ? (projTab[p.id] || 'clips') : 'clips';
   main.innerHTML = head + (withReport ? `<div class="ptabs">${Object.entries(PTABS).map(([k, l]) => `<button data-ptab="${k}" class="${k === tab ? 'on' : ''}">${l}</button>`).join('')}</div>` : '') +
@@ -1021,14 +1028,14 @@ routes.calendario = async (_, params) => {
 
 // ---------- Rankings Top ("Top 5 momentos…") ----------
 const RANK_COLORS = ['#FFE600', '#FFFFFF', '#FF2D2D', '#2EE62E', '#FF7AD9', '#3FB6FF', '#FF9F1A', '#B57BFF', '#00F0D0', '#FFC2E0'];
-/** Elegir uno de tus clips ya creados (Convertir a Shorts / Directos). */
+/** Elegir uno de tus clips ya creados (Convertir a Clips / Directos). */
 async function clipLibrary(onPick) {
   const list = await api('/api/clips/library');
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal stack" style="width:min(920px,96vw)"><div class="row between"><b>📂 Mis clips</b><button class="btn sm" data-close>✕</button></div>
     ${list.length ? `<div class="lib-grid">${list.map((c, k) => `<div class="lib-card"><video src="${esc(c.url)}" preload="metadata" muted playsinline onmouseenter="this.play()" onmouseleave="this.pause()"></video>
       <div class="small" style="height:34px;overflow:hidden">${esc(c.title || 'Clip')}</div><div class="row between small muted"><span>${esc((c.project || '').slice(0, 22))} · ${c.dur}s</span><button class="btn sm gold" data-k="${k}">Usar</button></div></div>`).join('')}</div>`
-      : '<div class="muted">Aún no tienes clips listos. Créalos en Convertir a Shorts o Clips de directos.</div>'}</div>`;
+      : '<div class="muted">Aún no tienes clips listos. Créalos en Convertir a Clips o Clips de directos.</div>'}</div>`;
   document.body.appendChild(bg);
   const close = () => bg.remove();
   bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
@@ -1360,7 +1367,7 @@ routes.analizador = async (id) => {
           <div><div class="muted small">% likes</div><div class="stat">${r.stats.likeRate}</div></div><div><div class="muted small">Nota del título</div><div class="stat">${esc(ai.title_score)}</div></div></div>
           <p>${esc(ai.summary)}</p><p class="small"><b>Audiencia:</b> ${esc(ai.audience_sentiment)}</p></div>
         <div class="card"><h3>Títulos mejores</h3><ul>${li(ai.better_titles)}</ul><h3>SEO</h3><ul>${li(ai.seo)}</ul></div>
-        <div class="card"><h3>Lo que pide la audiencia</h3><ul>${li(ai.audience_requests)}</ul><h3>Ideas de Shorts</h3><ul>${li(ai.shorts_ideas)}</ul></div>
+        <div class="card"><h3>Lo que pide la audiencia</h3><ul>${li(ai.audience_requests)}</ul><h3>Ideas de clips</h3><ul>${li(ai.shorts_ideas)}</ul></div>
         <div class="card"><h3>Recomendaciones</h3><ul>${li(ai.recommendations)}</ul></div></div>`;
       return;
     }
@@ -1408,13 +1415,13 @@ routes.servidor = async () => {
   api('/api/admin/cleanup').then(c => {
     const mb = b => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : Math.round(b / 1e6) + ' MB';
     $('#cleanup').innerHTML = `<h2>🧹 Limpieza automática de originales</h2>
-      <p class="small">${c.days > 0 ? `Los vídeos originales se borran <b>${c.days} día${c.days > 1 ? 's' : ''}</b> después de terminar el proyecto (cada día, automáticamente). Los Shorts y vídeos terminados se conservan.` : 'Desactivada: los originales no se borran.'}
+      <p class="small">${c.days > 0 ? `Los vídeos originales se borran <b>${c.days} día${c.days > 1 ? 's' : ''}</b> después de terminar el proyecto (cada día, automáticamente). Los clips y vídeos terminados se conservan.` : 'Desactivada: los originales no se borran.'}
         Cámbialo en <a href="#/ajustes">Ajustes y claves → Almacenamiento</a>.</p>
       ${c.count ? `<p class="small">Ahora mismo se pueden borrar <b>${c.count}</b> proyecto(s), unos <b>${mb(c.bytes)}</b>:</p>
         <ul class="small">${c.items.slice(0, 8).map(i => `<li><a href="#/proyecto/${i.id}">${esc(i.title || 'Proyecto ' + i.id)}</a> · ${mb(i.bytes)}</li>`).join('')}</ul>
         <div><button class="btn gold sm" id="cleanNow">🧹 Liberar espacio ahora</button></div>` : c.days > 0 ? '<p class="small muted">No hay originales pendientes de borrar.</p>' : ''}`;
     const bn = $('#cleanNow');
-    if (bn) bn.onclick = () => { if (confirm(`Se borrarán los originales de ${c.count} proyecto(s). Los Shorts terminados se conservan, pero esos proyectos no se podrán volver a renderizar. ¿Continuar?`)) busy(bn, async () => { const r = await api('/api/admin/cleanup', { method: 'POST' }); toast(`${r.files} archivo(s) borrados`, 'good'); router(); }); };
+    if (bn) bn.onclick = () => { if (confirm(`Se borrarán los originales de ${c.count} proyecto(s). Los clips terminados se conservan, pero esos proyectos no se podrán volver a renderizar. ¿Continuar?`)) busy(bn, async () => { const r = await api('/api/admin/cleanup', { method: 'POST' }); toast(`${r.files} archivo(s) borrados`, 'good'); router(); }); };
   }).catch(e => { $('#cleanup').innerHTML = `<h2>🧹 Limpieza automática</h2><p class="err small">${esc(e.message)}</p>`; });
   const cb = $('#cors');
   if (cb) cb.onclick = e => busy(e.target, async () => {
@@ -1531,7 +1538,7 @@ async function cloudCard() {
   box.className = 'card stack'; box.style.marginTop = '20px';
   const on = c.storage === 's3';
   box.innerHTML = `<h2>☁ Nube: guardar en R2 / S3 ${on ? '<span class="pill ready">Activa</span>' : '<span class="pill">Desactivada: se guarda en este ordenador</span>'}</h2>
-    <p class="small muted">Los vídeos subidos y los Shorts se guardan en tu bucket (Cloudflare R2, Backblaze B2, AWS S3…). Si además pegas la <b>DATABASE_URL</b> de Neon y tu <b>APP_SECRET</b> de Vercel,
+    <p class="small muted">Los vídeos subidos y los clips se guardan en tu bucket (Cloudflare R2, Backblaze B2, AWS S3…). Si además pegas la <b>DATABASE_URL</b> de Neon y tu <b>APP_SECRET</b> de Vercel,
       la app de escritorio y la web comparten los mismos proyectos, vídeos y claves API, y tu ordenador también procesa la cola de la web (más rápido y sin el límite de 5 minutos).</p>
     <form id="cf" class="grid g2">
       <div><label>Endpoint S3</label><input name="S3_ENDPOINT" value="${esc(c.S3_ENDPOINT)}" placeholder="https://<cuenta>.r2.cloudflarestorage.com"></div>
@@ -1578,7 +1585,7 @@ routes.ayuda = () => {
   <div class="card stack"><h2>Herramientas</h2><ul>
     <li><b>Analizador:</b> pega un canal o vídeo de YouTube para ver estadísticas, mejores días, patrones de títulos e ideas.</li>
     <li><b>Estado del servidor:</b> mira la cola de trabajos y reintenta los que fallen.</li></ul></div>
-  <div class="card stack"><h2>Convertir a Shorts</h2><ol>
+  <div class="card stack"><h2>Convertir a Clips</h2><ol>
     <li>Sube un vídeo largo (o pega un enlace si el servidor tiene yt-dlp).</li>
     <li>Se transcribe con marcas de tiempo por palabra.</li>
     <li>La IA elige los mejores momentos, les pone nota del 1 al 10 y escribe un gancho.</li>
@@ -1600,7 +1607,7 @@ routes.ayuda = () => {
   <div class="card stack"><h2>🔴 Clips de directos</h2><ol>
     <li>Pega el enlace de un directo que esté emitiendo. La app lo graba por segmentos (2–4 min) sin recodificar y sin huecos entre ellos.</li>
     <li>Cada segmento se transcribe y la IA busca los momentos virales. También revisa el final del segmento anterior, así que los momentos que cruzan el corte no se pierden.</li>
-    <li>Solo se cortan los momentos con la nota mínima que elijas. Los Shorts aparecen mientras el directo sigue.</li>
+    <li>Solo se cortan los momentos con la nota mínima que elijas. Los clips aparecen mientras el directo sigue.</li>
     <li>Pulsa <b>Detener directo</b> cuando quieras. Si el directo termina o se llega al máximo de minutos, se detiene solo.</li>
     <li><b>En Vercel</b> solo funcionan enlaces directos <code>.m3u8</code>. Para <b>YouTube, Twitch o Kick</b> instala la app en tu PC con Linux: yt-dlp obtiene la emisión. Allí también funcionan <code>rtmp://</code>, <code>srt://</code> y <code>rtsp://</code>.</li></ol></div>
   <div class="card stack"><h2>Almacenamiento gratis: Cloudflare R2</h2>
@@ -1619,7 +1626,7 @@ routes.ayuda = () => {
   <div class="card stack"><h2>Consejos</h2><ul>
     <li>Usa vídeos que sean tuyos o con permiso: subir contenido ajeno puede generar reclamaciones de derechos de autor.</li>
     <li>Los ganchos cortos (3–6 palabras) funcionan mejor.</li>
-    <li>Programa 1–3 Shorts al día con el calendario.</li></ul></div></div>`;
+    <li>Programa 1–3 clips al día con el calendario.</li></ul></div></div>`;
 };
 
 router();

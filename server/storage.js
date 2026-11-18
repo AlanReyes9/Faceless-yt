@@ -31,7 +31,7 @@ export async function saveFile(localPath, name, contentType = 'video/mp4') {
     return blob.url;
   }
   const ref = `${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}_${safeName(name)}`;
-  fs.copyFileSync(localPath, path.join(FILES_DIR, ref));
+  fs.copyFileSync(localPath, path.join(FILES_DIR, ref), fs.constants.COPYFILE_FICLONE); // copia instantánea donde el disco lo permite (APFS)
   return ref;
 }
 

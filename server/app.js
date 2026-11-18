@@ -104,6 +104,17 @@ app.post('/api/upload', upload.single('file'), h(async (req, res) => {
   (await import('node:fs')).rmSync(req.file.path, { force: true });
   res.json({ ref, url: publicUrl(ref) });
 }));
+// App de escritorio: usar un archivo del propio equipo sin subirlo (se copia a la carpeta de la app; en APFS es instantáneo)
+app.post('/api/upload-local', h(async (req, res) => {
+  if (!globalThis.__desktop) throw new Error('Solo en la app de escritorio. (400)');
+  const fsx = await import('node:fs');
+  const src = String(req.body?.path || '');
+  if (!path.isAbsolute(src) || !/\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|flv|wmv|3gp|mp3|m4a|wav|png|jpe?g|webp|gif|heic)$/i.test(src)) throw new Error('Tipo de archivo no admitido. (400)');
+  const st = fsx.statSync(src, { throwIfNoEntry: false });
+  if (!st?.isFile()) throw new Error('No se encontró el archivo en tu equipo. (400)');
+  const ref = await saveFile(src, path.basename(src).replace(/[^\w.-]+/g, '_'), /\.(png|jpe?g|webp|gif|heic)$/i.test(src) ? 'image/' + src.split('.').pop().toLowerCase().replace('jpg', 'jpeg') : 'video/mp4');
+  res.json({ ref, url: publicUrl(ref) });
+}));
 // Subida directa del navegador a Vercel Blob (archivos grandes, sin pasar por la función)
 app.post('/api/blob/upload', h(async (req, res) => {
   const { handleUpload } = await import('@vercel/blob/client');
@@ -588,7 +599,7 @@ app.post('/api/projects/:id/retry', h(async (req, res) => {
     return res.json({ ok: true, restarted: true });
   }
   if ((p.type === 'shorts' && p.data.transcript?.words?.length || p.type === 'live') && failed.length) {
-    await updateProject(p.id, { status: 'processing', error: null, progress: `Renderizando ${failed.length} Shorts…` });
+    await updateProject(p.id, { status: 'processing', error: null, progress: `Renderizando ${failed.length} clips…` });
     for (const c of failed) {
       await updateClip(c.id, { status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
       await enqueue('clip.render', { clipId: c.id });
@@ -749,7 +760,7 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const NO_SOURCE = 'El vídeo original de este proyecto se borró para ahorrar espacio (limpieza automática), así que no se puede volver a renderizar. Los Shorts ya hechos siguen disponibles.';
+const NO_SOURCE = 'El vídeo original de este proyecto se borró para ahorrar espacio (limpieza automática), así que no se puede volver a renderizar. Los clips ya hechos siguen disponibles.';
 async function requireSource(clipId) {
   const c = await getClip(clipId);
   const p = c && await getProject(c.project_id);
