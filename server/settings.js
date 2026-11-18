@@ -17,6 +17,8 @@ function masterKey() {
 let _key = null;
 const key = () => (_key ||= masterKey()); // perezosa: la app arranca aunque falte APP_SECRET
 
+export const encryptSecret = t => encrypt(String(t));
+export const decryptSecret = b => { try { return decrypt(b); } catch { return null; } };
 function encrypt(text) {
   const iv = crypto.randomBytes(12);
   const c = crypto.createCipheriv('aes-256-gcm', key(), iv);
@@ -46,6 +48,11 @@ export const FIELDS = {
   google_client_id: { secret: false, label: 'Google OAuth Client ID', group: 'Publicar en YouTube' },
   google_client_secret: { secret: true, label: 'Google OAuth Client Secret', group: 'Publicar en YouTube' },
 
+  meta_app_id: { secret: false, default: '', label: 'Meta App ID (Facebook e Instagram)', group: 'Redes sociales' },
+  meta_app_secret: { secret: true, default: '', label: 'Meta App Secret', group: 'Redes sociales' },
+  meta_config_id: { secret: false, default: '', label: 'Meta Configuration ID (opcional: solo apps con "Facebook Login for Business")', group: 'Redes sociales' },
+  tiktok_client_key: { secret: false, default: '', label: 'TikTok Client Key', group: 'Redes sociales' },
+  tiktok_client_secret: { secret: true, default: '', label: 'TikTok Client Secret', group: 'Redes sociales' },
   use_cloud: { secret: false, default: '0', label: 'Usar servicios en la nube (con tus claves) en vez de la IA local', options: ['0', '1'], group: 'Nube' },
   llm_provider: { secret: false, default: process.env.DEFAULT_LLM || 'openai', label: 'Proveedor de texto', options: ['local', 'openai', 'anthropic', 'gemini', 'groq', 'openrouter'], group: 'Preferencias' },
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },

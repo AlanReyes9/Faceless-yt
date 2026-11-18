@@ -273,9 +273,78 @@ function projectTable(rows, trash = false) {
     <td style="text-align:right">${trash ? `<button class="btn sm" data-restore="${p.id}">Restaurar</button> <button class="btn sm red" data-purge="${p.id}">Borrar definitivamente</button>` : ''}</td></tr>`).join('')}</table>`;
 }
 
+// ---------- Redes sociales (Facebook, Instagram, TikTok) ----------
+const NET = { facebook: { icon: '📘', name: 'Facebook' }, instagram: { icon: '📸', name: 'Instagram' }, tiktok: { icon: '🎵', name: 'TikTok' } };
+const POST_ST = { scheduled: '⏰ Programado', queued: '⏳ En cola', publishing: '⬆ Publicando…', published: '✅ Publicado', scheduled_native: '⏰ Programado en Facebook', inbox: '📥 En borradores de TikTok', error: '⚠️ Error' };
+async function socialSection(sys) {
+  const box = $('#socialBox'); if (!box) return;
+  const [st, accs, posts] = await Promise.all([api('/api/social/status'), api('/api/social/accounts'), api('/api/social/posts')]);
+  box.innerHTML = `<h2>📱 Redes sociales</h2><p class="sub" style="margin-bottom:14px">Conecta tus cuentas para publicar o programar Reels de tus clips en Instagram, Facebook y TikTok.</p>
+    <div class="grid g3">
+      <div class="card stack"><div class="row between"><h3>📘 Facebook + 📸 Instagram</h3></div>
+        <div class="small muted">Páginas de Facebook y cuentas profesionales de Instagram vinculadas a ellas.</div>
+        ${st.meta ? `<a class="btn gold sm" data-conn href="/api/social/meta/auth">Conectar Facebook / Instagram</a>` : `<div class="small">Añade tu <b>Meta App ID y Secret</b> en <a href="#/ajustes">Ajustes</a> (pasos en <a href="#/ayuda">Ayuda</a>).</div>`}</div>
+      <div class="card stack"><div class="row between"><h3>🎵 TikTok</h3></div>
+        <div class="small muted">Sin la auditoría de TikTok los vídeos van a tus borradores (los publicas desde la app de TikTok).</div>
+        ${st.tiktok ? `<a class="btn gold sm" data-conn href="/api/social/tiktok/auth">Conectar TikTok</a>` : `<div class="small">Añade tu <b>TikTok Client Key y Secret</b> en <a href="#/ajustes">Ajustes</a> (pasos en <a href="#/ayuda">Ayuda</a>).</div>`}</div>
+      <div class="card stack"><h3>Cuentas conectadas</h3>${accs.length ? accs.map(a => `<div class="row between"><span>${NET[a.platform]?.icon || ''} <b>${esc(a.name)}</b> <span class="muted small">${NET[a.platform]?.name || a.platform}${a.data?.pageName ? ' · ' + esc(a.data.pageName) : ''}</span></span>
+        <button class="btn sm red" data-unlink="${a.id}">✕</button></div>`).join('') : '<div class="muted small">Ninguna todavía.</div>'}</div>
+    </div>
+    <h3 style="margin-top:22px">Publicaciones</h3>
+    <div class="card">${posts.length ? `<table><tr><th>Cuenta</th><th>Texto</th><th>Cuándo</th><th>Estado</th><th></th></tr>${posts.map(p => `<tr>
+      <td>${NET[p.platform]?.icon || ''} ${esc(p.account || '—')}</td><td class="small">${esc((p.caption || '').slice(0, 70))}</td>
+      <td class="small muted">${p.scheduled_at ? new Date(p.scheduled_at).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }) : 'Ahora'}</td>
+      <td class="small">${POST_ST[p.status] || p.status}${p.result_url ? ` · <a target="_blank" href="${esc(p.result_url)}">ver</a>` : ''}${p.error ? `<div class="err small">${esc(p.error.slice(0, 200))}</div>` : ''}</td>
+      <td style="text-align:right">${p.status === 'error' ? `<button class="btn sm" data-pretry="${p.id}">↻</button> ` : ''}${['scheduled', 'error'].includes(p.status) ? `<button class="btn sm red" data-pdel="${p.id}">✕</button>` : ''}</td></tr>`).join('')}</table>`
+      : '<div class="muted small">Aún no hay publicaciones. Usa el botón "📱 Instagram · Facebook · TikTok" de cada clip.</div>'}
+      ${posts.some(p => p.status === 'scheduled' && p.platform !== 'facebook') ? '<div class="small muted" style="margin-top:8px">⏰ Instagram y TikTok se publican a la hora indicada solo si Clippers Pro está abierto en ese momento.</div>' : ''}</div>`;
+  box.querySelectorAll('[data-unlink]').forEach(b => b.onclick = () => { if (confirm('¿Desconectar esta cuenta?')) busy(b, async () => { await api('/api/social/accounts/' + b.dataset.unlink, { method: 'DELETE' }); socialSection(sys); }); });
+  box.querySelectorAll('[data-pdel]').forEach(b => b.onclick = () => busy(b, async () => { await api('/api/social/posts/' + b.dataset.pdel, { method: 'DELETE' }); socialSection(sys); }));
+  box.querySelectorAll('[data-pretry]').forEach(b => b.onclick = () => busy(b, async () => { await api(`/api/social/posts/${b.dataset.pretry}/retry`, { method: 'POST' }); socialSection(sys); }));
+  // Escritorio: el inicio de sesión se abre en el navegador; aquí se espera a que aparezcan las cuentas
+  if (sys.desktop) box.querySelectorAll('[data-conn]').forEach(a => a.onclick = () => {
+    a.textContent = 'Esperando…'; a.style.pointerEvents = 'none';
+    toast('Se abrió tu navegador para iniciar sesión. Al terminar, vuelve aquí.', 'good');
+    const n0 = accs.length; let k = 0;
+    const check = async () => { if (!location.hash.startsWith('#/canales') || ++k > 100) return; const a2 = await api('/api/social/accounts').catch(() => accs); if (a2.length !== n0) { toast('Cuenta conectada', 'good'); return socialSection(sys); } setTimeout(check, 3000); };
+    setTimeout(check, 3000);
+  });
+  if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
+}
+/** Publicar o programar un clip/vídeo en varias redes a la vez. */
+async function socialDialog({ clip_id, project_id, caption = '', langs = [] }) {
+  const accs = await api('/api/social/accounts');
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal stack"><div class="row between"><b>📱 Publicar en redes</b><button class="btn sm" data-close>✕</button></div>
+    ${accs.length ? `<div class="stack" style="gap:6px">${accs.map(a => `<label class="check" style="font-size:14px"><input type="checkbox" value="${a.id}" data-acc="${a.platform}" checked> ${NET[a.platform]?.icon || ''} ${esc(a.name)} <span class="muted small">· ${NET[a.platform]?.name}</span></label>`).join('')}</div>
+      <div><label>Texto de la publicación (descripción y hashtags)</label><textarea id="sc" rows="4">${esc(caption)}${caption ? '\n\n' : ''}#reels #viral</textarea></div>
+      ${langs.length ? `<div><label>Versión</label><select id="sl"><option value="">Original</option>${langs.map(l => `<option value="${l}">${LANGS[l] || l}</option>`).join('')}</select></div>` : ''}
+      ${accs.some(a => a.platform === 'tiktok') ? `<div><label>TikTok</label><select id="stt"><option value="draft">Enviar a borradores de TikTok (funciona sin auditoría)</option><option value="direct">Publicar directamente (requiere app auditada; si no, privado)</option></select></div>` : ''}
+      <div><label>¿Cuándo?</label><div class="row"><select id="swhen" style="flex:1"><option value="now">Publicar ahora</option><option value="at">Programar…</option></select><input type="datetime-local" id="sat" style="flex:1" hidden></div></div>
+      <div class="small muted" id="snote"></div>
+      <div class="row between"><span></span><div class="row"><button class="btn gold" id="sgo">📤 Publicar</button><button class="btn" data-close>Cerrar</button></div></div>`
+    : '<div class="muted">Aún no has conectado ninguna cuenta. Ve a <a href="#/canales">Mis canales → Redes sociales</a>.</div>'}</div>`;
+  document.body.appendChild(bg);
+  const $m = s => bg.querySelector(s), close = () => bg.remove();
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  if (!accs.length) return;
+  const note = () => { const at = $m('#swhen').value === 'at'; $m('#sat').hidden = !at; $m('#sgo').textContent = at ? '⏰ Programar' : '📤 Publicar';
+    $m('#snote').textContent = at ? 'Facebook programa por su cuenta. Instagram y TikTok se publican a esa hora si Clippers Pro está abierto.' : ''; };
+  $m('#swhen').onchange = note;
+  $m('#sgo').onclick = () => busy($m('#sgo'), async () => {
+    const ids = [...bg.querySelectorAll('[data-acc]:checked')].map(i => i.value);
+    if (!ids.length) throw new Error('Elige al menos una cuenta.');
+    const at = $m('#swhen').value === 'at' ? $m('#sat').value : '';
+    if ($m('#swhen').value === 'at' && !at) throw new Error('Elige la fecha y hora.');
+    await api('/api/social/posts', { method: 'POST', body: { clip_id, project_id, accounts: ids, caption: $m('#sc').value, lang: $m('#sl')?.value || '', tiktokMode: $m('#stt')?.value, at: at ? new Date(at).toISOString() : undefined } });
+    toast(at ? '⏰ Programado. Lo verás en Mis canales → Publicaciones.' : '📤 Publicando… El estado aparece en Mis canales → Publicaciones.', 'good');
+    close();
+  });
+}
+
 // ---------- Canales ----------
 routes.canales = async (_, params) => {
-  if (params.get('ok')) toast('Canal conectado con YouTube', 'good');
+  if (params.get('ok')) toast(params.get('ok') === '1' ? 'Canal conectado con YouTube' : params.get('ok'), 'good');
   if (params.get('error')) toast(params.get('error'), 'bad');
   channelsCache.reset();
   const [list, sys] = await Promise.all([channelsCache.get(), getSystem()]);
@@ -292,7 +361,9 @@ routes.canales = async (_, params) => {
         <div><label>Nicho</label><input name="niche" placeholder="Ej: gameplay GTA con narración"></div>
         <div><label>Idioma</label><select name="language">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div><label>Notas de estilo (opcional)</label><textarea name="notes" placeholder="Tono, público, formato…"></textarea></div>
-        <button class="btn gold">Guardar canal</button></form></div>`;
+        <button class="btn gold">Guardar canal</button></form></div>
+    <div id="socialBox" style="margin-top:28px"></div>`;
+  socialSection(sys);
   // App de escritorio: el inicio de sesión de Google se abre en el navegador; aquí se espera a que termine
   if (sys.desktop) main.querySelectorAll('a[href^="/api/youtube/auth"]').forEach(a => a.onclick = e => {
     const id = a.closest('[data-id]').dataset.id;
@@ -821,7 +892,8 @@ function shortsGrid(p, chs) {
           <select data-lang>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
           ${langs.map(([l, v]) => `<a href="${v.url}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
-        <details><summary>📤 Publicar este Short</summary><div class="stack" style="margin-top:6px">
+        <button class="btn sm" data-social>📱 Instagram · Facebook · TikTok</button>
+        <details><summary>📤 Publicar en YouTube</summary><div class="stack" style="margin-top:6px">
           ${c.yt_video_id ? `<a class="small" target="_blank" href="https://youtube.com/shorts/${c.yt_video_id}">✓ Publicado en YouTube</a>` : ''}
           <select data-ch>${channelOptions(chs.filter(x => x.connected), p.channel_id, 'Elige canal conectado')}</select>
           <select data-pub-lang><option value="">Versión original</option>${langs.map(([l]) => `<option value="${l}">${LANGS[l] || l}</option>`).join('')}</select>
@@ -886,6 +958,7 @@ function bindClips(p) {
     if (rb) rb.onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/render`, { method: 'POST' }); toast('Reintentando…'); router(); });
     $('[data-x]', el).onclick = async () => { if (confirm('¿Eliminar este clip?')) { await api('/api/clips/' + c.id, { method: 'DELETE' }); router(); } };
     $('[data-tr]', el).onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/translate`, { method: 'POST', body: { lang: $('[data-lang]', el).value } }); toast('Traduciendo y renderizando…'); router(); });
+    $('[data-social]', el).onclick = () => socialDialog({ clip_id: c.id, caption: $('[data-f=title]', el).value, langs: Object.keys(c.variants || {}).filter(l => c.variants[l]?.url) });
     $('[data-pub]', el).onclick = e => busy(e.target, async () => {
       const channel_id = $('[data-ch]', el).value;
       if (!channel_id) throw new Error('Elige un canal conectado a YouTube (Mis canales).');
@@ -943,7 +1016,8 @@ function longView(p, chs) {
   const s = p.data.script;
   return `<div class="grid g2">
     <div class="card">${p.outputUrl ? `<video src="${p.outputUrl}" controls style="width:100%;max-height:70vh;border-radius:8px;background:#000"></video>
-      <div class="row" style="margin-top:10px"><a class="btn" href="${p.outputUrl}" download="video_${p.id}.mp4" target="_blank">⬇ Descargar MP4</a></div>` : '<div class="empty">El vídeo aparecerá aquí cuando termine.</div>'}</div>
+      <div class="row" style="margin-top:10px"><a class="btn" href="${p.outputUrl}" download="video_${p.id}.mp4" target="_blank">⬇ Descargar MP4</a>
+        <button class="btn gold" id="psocial">📱 Instagram · Facebook · TikTok</button></div>` : '<div class="empty">El vídeo aparecerá aquí cuando termine.</div>'}</div>
     <div class="card stack"><h2>Publicar en YouTube</h2>
       ${p.data.yt_video_id ? `<a target="_blank" href="https://youtube.com/watch?v=${p.data.yt_video_id}">✓ Publicado en YouTube</a>` : ''}
       <div><label>Título</label><input id="pt" value="${esc(s?.title || p.title)}"></div>
@@ -960,6 +1034,7 @@ function longView(p, chs) {
   </div>`;
 }
 function bindLong(p) {
+  const ps = $('#psocial'); if (ps) ps.onclick = () => socialDialog({ project_id: p.id, caption: p.data.script?.title || p.title || '' });
   const b = $('#pub'); if (!b) return;
   b.onclick = () => busy(b, async () => {
     if (!$('#pch').value) throw new Error('Elige un canal conectado a YouTube.');
@@ -1454,7 +1529,7 @@ routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['local_llm', 'whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['local_llm', 'meta_app_id', 'meta_app_secret', 'meta_config_id', 'tiktok_client_key', 'tiktok_client_secret', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
@@ -1468,6 +1543,7 @@ routes.ajustes = async (_, params) => {
         : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
       ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button></div>` : ''}
       ${g === 'Publicar en YouTube' ? `<div class="small muted">URI de redirección autorizada para tu cliente OAuth:<br><code>${location.origin}/api/youtube/callback</code></div>` : ''}
+      ${g === 'Redes sociales' ? `<div class="small muted">URIs de redirección para tus apps (cópialas tal cual):<br>Meta: <code>${location.origin}/api/social/meta/callback</code><br>TikTok: <code>${location.origin}/api/social/tiktok/callback</code><br>Pasos completos en <a href="#/ayuda">Ayuda</a>.</div>` : ''}
       </div>`;
   main.innerHTML = `<h1>Ajustes</h1><p class="sub">${localMode ? 'La IA funciona en tu equipo: transcripción, elección de clips, títulos e imágenes. No necesitas claves ni pagas por uso.' : 'Tus claves API se guardan cifradas en tu servidor y nunca se envían al navegador. Solo pagas lo que uses en cada proveedor.'}</p>
     <div id="localModels"></div>
@@ -1625,6 +1701,22 @@ routes.ayuda = () => {
     <li>En "Credenciales" crea un <b>ID de cliente OAuth → Aplicación web</b> con la URI de redirección:<br><code>${location.origin}/api/youtube/callback</code></li>
     <li>Pega el Client ID y Secret en Ajustes y claves, y pulsa "Conectar YouTube" en Mis canales.</li></ol>
     <p class="muted small">Nota: los proyectos de Google no verificados suben los vídeos como privados hasta que pases la auditoría de la API.</p></div>
+  <div class="card stack"><h2>Publicar en Instagram y Facebook</h2><ol>
+    <li>Tu Instagram tiene que ser una <b>cuenta profesional</b> (empresa o creador) <b>vinculada a una página de Facebook</b> (Instagram → Configuración → Cuenta → Cambiar a cuenta profesional; y en la página de Facebook → Configuración → Cuentas vinculadas).</li>
+    <li>Entra en <a href="https://developers.facebook.com/apps" target="_blank">developers.facebook.com/apps</a> → <b>Crear app</b> → tipo <b>Empresa</b> (o "Otro" → "Empresa").</li>
+    <li>Añade los productos <b>Inicio de sesión con Facebook</b> e <b>Instagram</b> (API de Instagram con inicio de sesión de Facebook).</li>
+    <li>En Inicio de sesión con Facebook → Configuración, en <b>URI de redireccionamiento de OAuth válidos</b> pega:<br><code>${location.origin}/api/social/meta/callback</code></li>
+    <li>En Configuración → Básica copia el <b>Identificador de la app</b> y la <b>Clave secreta</b> y pégalos en Ajustes y claves (Meta App ID / Secret).</li>
+    <li>Mientras la app está en modo desarrollo solo funciona con tu cuenta (y las que añadas en Roles como administradores o probadores): para publicar en <b>tus propias</b> páginas y cuentas no necesitas la revisión de Meta.</li>
+    <li>En Mis canales → Redes sociales pulsa <b>Conectar Facebook / Instagram</b> y acepta todas las páginas y permisos.</li></ol>
+    <p class="muted small">Si tu app usa "Facebook Login for Business", crea una configuración con los permisos de páginas e Instagram y pega su Configuration ID en Ajustes.</p></div>
+  <div class="card stack"><h2>Publicar en TikTok</h2><ol>
+    <li>Entra en <a href="https://developers.tiktok.com/apps" target="_blank">developers.tiktok.com</a> → <b>Manage apps → Connect an app</b>.</li>
+    <li>Añade los productos <b>Login Kit</b> y <b>Content Posting API</b>, con los permisos <code>user.info.basic</code>, <code>video.upload</code> y <code>video.publish</code>.</li>
+    <li>En Login Kit añade la URI de redirección:<br><code>${location.origin}/api/social/tiktok/callback</code></li>
+    <li>Copia el <b>Client key</b> y el <b>Client secret</b> en Ajustes y claves.</li>
+    <li>En Mis canales → Redes sociales pulsa <b>Conectar TikTok</b>.</li></ol>
+    <p class="muted small">Hasta que TikTok audite tu app, los vídeos se envían a tus <b>borradores de TikTok</b> (te llega un aviso en la app de TikTok para publicarlo con un toque) o se publican en privado. Para publicar directamente en público, solicita la auditoría en el portal de desarrolladores.</p></div>
   <div class="card stack"><h2>Consejos</h2><ul>
     <li>Usa vídeos que sean tuyos o con permiso: subir contenido ajeno puede generar reclamaciones de derechos de autor.</li>
     <li>Los ganchos cortos (3–6 palabras) funcionan mejor.</li>

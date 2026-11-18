@@ -18,6 +18,7 @@ import { suggestRanking } from './video/ranking.js';
 import { mountLicense, adminFromReq, hasAdmin } from './license.js';
 import { mountThumbs } from './thumbs.js';
 import { mountReport } from './report.js';
+import { mountSocial, dueSocial } from './social.js';
 import { generateScript, generateAdScript, generateMontageScript } from './video/composer.js';
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
@@ -84,7 +85,7 @@ app.post('/api/worker', h(async (req, res) => {
   await workerEntry(req, res);
 }));
 app.get('/api/worker/cron', h(async (req, res) => { // cron diario de Vercel: limpieza de originales + red de seguridad de la cola
-  const work = runCleanup().catch(e => console.error('limpieza', e.message));
+  const work = Promise.all([runCleanup().catch(e => console.error('limpieza', e.message)), dueSocial().catch(e => console.error('redes', e.message))]);
   if (IS_VERCEL) (await import('@vercel/functions')).waitUntil(work);
   await workerEntry(req, res);
 }));
@@ -92,7 +93,7 @@ app.get('/api/worker/cron', h(async (req, res) => { // cron diario de Vercel: li
 app.use(['/api', '/files'], (req, res, next) => {
   // App de escritorio: sin licencia vigente no responde (ni desde el navegador)
   if (globalThis.__desktop && !globalThis.__desktop.licensed()) return res.status(403).json({ error: 'Licencia no válida. Inicia sesión en Clippers Pro.' });
-  if (req.path === '/youtube/callback' || req.path === '/blob/upload') return next();
+  if (req.path === '/youtube/callback' || req.path === '/blob/upload' || ['/social/meta/callback', '/social/tiktok/callback'].includes(req.path)) return next();
   authed(req).then(ok => ok ? next() : res.status(401).json({ error: 'No autorizado' }), next);
 });
 
@@ -543,6 +544,7 @@ app.post('/api/whisper/download', h(async (req, res) => {
 mountThumbs(app, h);
 // Informe del vídeo (títulos, SEO, capítulos, mejoras, fotogramas, transcripción, preguntas)
 mountReport(app, h);
+mountSocial(app, h);
 
 // Rankings ("Top 5 momentos…"): clips en cuenta atrás con números y etiquetas
 app.get('/api/ranking/search', h(async (req, res) => {

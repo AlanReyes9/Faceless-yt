@@ -10,6 +10,7 @@ app.listen(PORT, () => {
   console.log(`Clippers Pro en http://localhost:${PORT}  ·  base de datos: ${DB_MODE}  ·  archivos: ${STORAGE_MODE}${process.env.APP_PASSWORD ? '' : '  ·  ⚠ sin contraseña (define APP_PASSWORD)'}`);
   if (process.env.WORKER !== '0') {
     startLocalWorker();
+    import('./social.js').then(m => m.startSocialScheduler());
     // Limpieza de originales: al arrancar y cada 6 horas
     const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
     setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);

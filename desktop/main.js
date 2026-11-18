@@ -109,6 +109,7 @@ async function startServer() {
   });
   if (!port) process.env.PUBLIC_URL = `http://localhost:${real}`;
   startLocalWorker();
+  (await import(pathToFileURL(path.join(ROOT, 'server', 'social.js')).href)).startSocialScheduler(); // publicaciones programadas en redes
   const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
   setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);
   // Precarga de la IA local de texto: la primera respuesta llega sin esperar a que se cargue el modelo
