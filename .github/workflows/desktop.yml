@@ -60,6 +60,10 @@ jobs:
         shell: bash
         run: node --no-warnings desktop/smoke.mjs 2>&1 | grep -v onnxruntime
 
+      - name: Prueba de la app (subidas desde el equipo, miniaturas y directos)
+        shell: bash
+        run: node --no-warnings desktop/smoke-app.mjs 2>&1 | grep -vE "onnxruntime|^\[job"
+
       - name: yt-dlp incluido (YouTube, Twitch, Kick)
         shell: bash
         run: |

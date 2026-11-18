@@ -29,13 +29,33 @@ async function token(params) {
   return j;
 }
 
+/** Errores de la API de YouTube explicados en español, con lo que hay que hacer. */
+export function ytError(status, body) {
+  let j = body;
+  if (typeof body === 'string') { try { j = JSON.parse(body); } catch { j = { error: { message: body } }; } }
+  const e = j?.error || {}, msg = String(e.message || ''), reason = e.errors?.[0]?.reason || e.status || '';
+  if (/has not been used in project|is disabled|accessNotConfigured|SERVICE_DISABLED/i.test(msg + reason)) {
+    const url = msg.match(/https:\/\/console\.developers\.google\.com\/apis\/api\/youtube\.googleapis\.com\/overview\?project=\d+/)?.[0] || 'https://console.cloud.google.com/apis/library/youtube.googleapis.com';
+    return new Error(`Falta activar la "YouTube Data API v3" en tu proyecto de Google Cloud. Entra en ${url} , pulsa "Habilitar", espera 2–5 minutos y vuelve a intentarlo. (400)`);
+  }
+  if (/quota/i.test(reason + msg)) return new Error('Se agotó la cuota diaria de la API de YouTube (unas 6 subidas al día con la cuota gratuita). Inténtalo mañana o pide más cuota en Google Cloud. (400)');
+  if (/uploadLimitExceeded/i.test(reason)) return new Error('YouTube no deja subir más vídeos hoy desde este canal (límite diario). Inténtalo mañana. (400)');
+  if (/youtubeSignupRequired|channelNotFound/i.test(reason + msg)) return new Error('Esa cuenta de Google no tiene canal de YouTube. Crea el canal en youtube.com y vuelve a conectarlo. (400)');
+  if (/insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(reason + msg)) return new Error('Falta dar permiso para subir vídeos. Desconecta el canal en "Mis canales", vuelve a conectarlo y marca todas las casillas de permisos. (400)');
+  if (status === 401 || /invalid_grant|Invalid Credentials/i.test(msg)) return new Error('La conexión con YouTube caducó. Desconecta y vuelve a conectar el canal en "Mis canales". (400)');
+  return new Error(`YouTube (${status}): ${msg || JSON.stringify(j).slice(0, 300)}`);
+}
+
 export async function handleCallback(req) {
   const { code, state = '' } = req.query;
   const id = String(state).split('.')[0];
   if (signState(id) !== state) throw new Error('Estado OAuth no válido.');
   const t = await token({ code, grant_type: 'authorization_code', redirect_uri: redirectUri(req) });
   const r = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', { headers: { authorization: 'Bearer ' + t.access_token } });
-  const ch = (await r.json()).items?.[0];
+  const cj = await r.json().catch(() => ({}));
+  if (!r.ok) throw ytError(r.status, cj); // p. ej. la API de YouTube no está activada: se avisa ya al conectar
+  const ch = cj.items?.[0];
+  if (!ch) throw new Error('Esa cuenta de Google no tiene canal de YouTube. Crea el canal en youtube.com y vuelve a conectarlo.');
   await q('UPDATE channels SET yt_refresh_token = $1, yt_channel_id = $2, yt_title = $3 WHERE id = $4',
     [t.refresh_token || null, ch?.id || null, ch?.snippet?.title || null, Number(id)]);
 }
@@ -59,13 +79,13 @@ export async function uploadVideo(channelId, ref, { title, description = '', tag
     headers: { authorization: 'Bearer ' + at, 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'video/mp4', ...(size ? { 'x-upload-content-length': String(size) } : {}) },
     body: JSON.stringify(meta),
   });
-  if (!init.ok) throw new Error(`YouTube (${init.status}): ${(await init.text()).slice(0, 300)}`);
+  if (!init.ok) throw ytError(init.status, await init.text());
   const up = await fetch(init.headers.get('location'), {
     method: 'PUT', headers: { 'content-type': 'video/mp4', ...(size ? { 'content-length': String(size) } : {}) },
     body: await readStream(ref), duplex: 'half',
   });
-  const j = await up.json();
-  if (!up.ok) throw new Error(`YouTube (${up.status}): ${j.error?.message || JSON.stringify(j).slice(0, 300)}`);
+  const j = await up.json().catch(() => ({}));
+  if (!up.ok) throw ytError(up.status, j);
   return j.id;
 }
 
@@ -84,6 +104,6 @@ export async function ytGet(pathname, params) {
   }
   const r = await fetch(`https://www.googleapis.com/youtube/v3/${pathname}?${qs}`, { headers });
   const j = await r.json();
-  if (!r.ok) throw new Error(`YouTube API (${r.status}): ${j.error?.message || 'error'}`);
+  if (!r.ok) throw ytError(r.status, j);
   return j;
 }
