@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { q, one, insert, update, getProject, updateProject, getClip, updateClip, FILES_DIR, WORK_DIR, DB_MODE, IS_VERCEL } from './db.js';
-import { publicSettings, setSettings, internalSecret, getSetting } from './settings.js';
+import { publicSettings, setSettings, internalSecret, getSetting, aiMode } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
 import { run, FFMPEG, probe } from './video/ffmpeg.js';
@@ -223,7 +223,27 @@ app.post('/api/admin/kick', h(async (req, res) => { kick(true); res.json({ ok: t
 
 // ---------- Ajustes y claves ----------
 app.get('/api/settings', h(async (req, res) => res.json(await publicSettings())));
-app.put('/api/settings', h(async (req, res) => { await setSettings(req.body || {}); res.json(await publicSettings()); }));
+app.put('/api/settings', h(async (req, res) => {
+  const b = req.body || {};
+  await setSettings(b);
+  // Cambió la IA local (modelo, tarjeta gráfica o local/nube): se reinicia y se vuelve a precargar
+  if (['local_llm', 'local_gpu', 'use_cloud'].some(k => k in b)) {
+    const lm = await import('./ai/localmodels.js');
+    lm.restartLocalLLM();
+    if ((await getSetting('llm_provider')) === 'local') setTimeout(() => lm.warmUp(), 500);
+  }
+  res.json(await publicSettings());
+}));
+// Modo de la IA (local / nube): visible en toda la app y se cambia con un clic
+app.get('/api/ai-mode', h(async (req, res) => res.json(await aiMode())));
+app.post('/api/ai-mode', h(async (req, res) => {
+  const cloud = req.body?.mode === 'cloud';
+  await setSettings({ use_cloud: cloud ? '1' : '0' });
+  const lm = await import('./ai/localmodels.js');
+  lm.restartLocalLLM();
+  if (!cloud) setTimeout(() => lm.warmUp(), 500);
+  res.json(await aiMode());
+}));
 app.post('/api/settings/test', h(async (req, res) => {
   const out = await chat('Responde solo con la palabra OK.', 'Prueba de conexión', { provider: req.body.provider, maxTokens: 20 });
   res.json({ ok: true, reply: out.trim().slice(0, 50) });
@@ -428,6 +448,23 @@ app.get('/api/projects/:id/hls', h(async (req, res) => {
     res.send(Buffer.from(await r.arrayBuffer()));
   }
 }));
+// Directo: "✂ Clip ahora" (los últimos N segundos) y ajustes mientras graba
+app.post('/api/projects/:id/mark', h(async (req, res) => {
+  const p = await getProject(req.params.id);
+  const l = p.data.live;
+  if (!l || l.ended || l.stopRequested) throw new Error('El directo no está grabando.');
+  const t = l.recWall ? (l.recPos || 0) + (Date.now() - l.recWall) / 1000 : (p.duration || 0);
+  const len = Math.min(120, Math.max(10, Number(req.body?.len) || 45));
+  await setLive(p.id, { marks: [...(l.marks || []), { t, len, at: Date.now(), done: false }] });
+  res.json({ t, len });
+}));
+app.patch('/api/projects/:id/live-options', h(async (req, res) => {
+  const b = req.body || {}, patch = {};
+  if (b.minScore != null) patch.minScore = Math.min(10, Math.max(1, Number(b.minScore) || 7));
+  if (b.perSegment != null) patch.perSegment = Math.min(5, Math.max(1, Number(b.perSegment) || 3));
+  await q(`UPDATE projects SET data = jsonb_set(data, '{options}', COALESCE(data->'options', '{}'::jsonb) || $2::jsonb, true) WHERE id = $1`, [req.params.id, JSON.stringify(patch)]);
+  res.json({ ok: true, ...patch });
+}));
 app.post('/api/projects/:id/stop', h(async (req, res) => {
   const p = await getProject(req.params.id);
   if (p?.type !== 'live') throw new Error('Solo se pueden detener directos.');
@@ -445,7 +482,13 @@ app.get('/api/local-models', h(async (req, res) => {
   if (lw.localAvailable()) models.push({ kind: 'whisper', id: wm, label: `Whisper ${wm}`, use: 'Transcripción (voz → texto con tiempos por palabra)', mb: lw.WHISPER_MODELS[wm]?.mb || 466, ready: lw.modelReady(wm), download: lw.downloadStatus(wm) });
   if (lm.localLLMAvailable()) { const id = await lm.currentLLMModel(), m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
   if (lm.localImageAvailable()) { const id = lm.DEFAULT_IMAGE_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes de fondo para miniaturas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
-  res.json({ available, models });
+  res.json({ available, models, gpu: await lm.gpuInfo().catch(() => null) });
+}));
+app.post('/api/local-models/gpu-retry', h(async (req, res) => {
+  const lm = await import('./ai/localmodels.js');
+  lm.resetGpuState(); lm.restartLocalLLM();
+  setTimeout(() => lm.warmUp(), 300);
+  res.json({ ok: true });
 }));
 app.post('/api/local-models/download', h(async (req, res) => {
   const { kind, id } = req.body || {};
@@ -480,6 +523,12 @@ app.get('/api/ranking/search', h(async (req, res) => {
   res.json(await searchShorts(req.query.q, { n: Math.min(40, Number(req.query.n) || 24) }));
 }));
 app.post('/api/ranking/suggest', h(async (req, res) => res.json(await suggestRanking(req.body || {}))));
+// Biblioteca de clips ya creados (para usarlos en un ranking)
+app.get('/api/clips/library', h(async (req, res) => {
+  const rows = await q(`SELECT c.id, c.title, c.hook, c.file, c.start, c."end", c.score, p.title AS project FROM clips c JOIN projects p ON p.id = c.project_id
+    WHERE c.status = 'ready' AND c.file IS NOT NULL AND p.deleted_at IS NULL ORDER BY c.id DESC LIMIT 80`);
+  res.json(rows.map(c => ({ ...c, url: publicUrl(c.file), dur: +(c.end - c.start).toFixed(1) })));
+}));
 app.post('/api/ranking', h(async (req, res) => {
   const b = req.body || {};
   const items = (b.items || []).map(it => ({ source: it.source || null, url: String(it.url || '').trim() || null, label: String(it.label || '').slice(0, 60),
@@ -492,6 +541,7 @@ app.post('/api/ranking', h(async (req, res) => {
     order: b.order === 'asc' ? 'asc' : 'countdown', fit: ['fill', 'blur', 'auto'].includes(b.fit) ? b.fit : 'auto',
     highlight: /^#[0-9a-f]{6}$/i.test(b.highlight || '') ? b.highlight : '#FFD400', background: /^#[0-9a-f]{6}$/i.test(b.background || '') ? b.background : '#000000',
     maxClipSec: Math.min(60, Math.max(2, Number(b.maxClipSec) || 15)), keepAudio: b.keepAudio !== false,
+    cta: String(b.cta || '').slice(0, 60), flash: b.flash !== false,
   };
   const script = b.yt_title ? { title: b.yt_title, description: b.description || '', tags: b.tags || [] } : null;
   const p = await insert('projects', { type: 'ranking', title: b.projectTitle || options.title.replace(/\*/g, ''), channel_id: Number(b.channel_id) || null,

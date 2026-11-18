@@ -77,6 +77,12 @@ jobs:
           cmake --build wcpp/build --config Release -j 4 --target whisper-cli
           BIN=$(find wcpp/build/bin -name 'whisper-cli*' -type f | head -1)
           cp "$BIN" desktop/bin/
+          if [ "${{ matrix.os }}" = "macos-15-intel" ]; then # versión con la tarjeta gráfica (Metal, experimental)
+            cmake -S wcpp -B wcpp/build-gpu -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF \
+              -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+            cmake --build wcpp/build-gpu --config Release -j 4 --target whisper-cli
+            cp wcpp/build-gpu/bin/whisper-cli desktop/bin/whisper-cli-gpu
+          fi
           ls -la desktop/bin
 
       - name: Prueba de transcripción local
@@ -102,6 +108,18 @@ jobs:
           cmake --build sdcpp/build --config Release -j 4
           SDB=$(find sdcpp/build/bin -type f \( -name 'sd' -o -name 'sd.exe' -o -name 'sd-cli' -o -name 'sd-cli.exe' \) | head -1)
           cp "$SDB" desktop/bin/
+          # Mac Intel: segunda versión con la tarjeta gráfica (Metal, experimental en AMD). La app la prueba y,
+          # si falla, usa la del procesador.
+          if [ "${{ matrix.os }}" = "macos-15-intel" ]; then
+            GF="-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0"
+            cmake -S lcpp -B lcpp/build-gpu -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF $GF
+            cmake --build lcpp/build-gpu --config Release -j 4 --target llama-server
+            cp lcpp/build-gpu/bin/llama-server desktop/bin/llama-server-gpu
+            cmake -S sdcpp -B sdcpp/build-gpu -DCMAKE_BUILD_TYPE=Release -DSD_BUILD_SHARED_LIBS=OFF -DSD_METAL=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF $GF
+            cmake --build sdcpp/build-gpu --config Release -j 4
+            cp "$(find sdcpp/build-gpu/bin -type f \( -name 'sd' -o -name 'sd-cli' \) | head -1)" desktop/bin/sd-gpu
+            desktop/bin/llama-server-gpu --version 2>&1 | head -3 || true
+          fi
           ls -la desktop/bin
 
       - name: Prueba de la IA local

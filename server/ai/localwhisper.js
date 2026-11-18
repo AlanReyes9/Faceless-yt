@@ -78,20 +78,44 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
     const n = os.cpus().length, threads = String(Math.max(2, Math.min(8, process.arch === 'x64' ? Math.ceil(n / 2) : n - 1))); // núcleos físicos en Intel/AMD
     // -ml 1 + -sow: un segmento por palabra (tiempos por palabra); -oj: salida JSON
     const args = ['-m', mp, '-f', wav, '-l', lang, '-t', threads, '-ml', '1', '-sow', '-oj', '-of', outBase, '-pp', '-np'];
-    await new Promise((resolve, reject) => {
+    // Mac Intel: whisper con la tarjeta gráfica (Metal) si ya se comprobó que calcula bien; si falla, procesador
+    const lm = await import('./localmodels.js');
+    const gpuBin = await lm.whisperGpuBinary();
+    if (gpuBin) {
+      try {
+        await runWhisper(gpuBin, args, onProgress, timeoutMs, true);
+        const words = parseWords(outBase);
+        if (!words.length) throw new Error('sin palabras');
+        lm.markGpuPublic('whisper', true);
+        return finish(words, outBase, lang);
+      } catch (e) { lm.markGpuPublic('whisper', false, e.message.slice(0, 200)); onProgress({ stage: 'La tarjeta gráfica no funcionó; se transcribe con el procesador', pct: 0 }); }
+    }
+    await runWhisper(bin, args, onProgress, timeoutMs, false);
+    return finish(parseWords(outBase), outBase, lang);
+  } finally {
+    for (const f of [wav, outBase + '.json']) fs.rmSync(f, { force: true });
+  }
+}
+
+function runWhisper(bin, args, onProgress, timeoutMs, gpu) {
+    return new Promise((resolve, reject) => {
       const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let err = '';
       const timer = timeoutMs ? setTimeout(() => { p.kill('SIGKILL'); reject(new Error('La transcripción local tardó demasiado.')); }, timeoutMs) : null;
       const onData = d => {
         const s = String(d); err = (err + s).slice(-4000);
         const m = s.match(/progress\s*=\s*(\d+)%/g);
-        if (m) onProgress({ stage: 'Transcribiendo en tu equipo', pct: Number(m[m.length - 1].match(/\d+/)[0]) });
+        if (m) onProgress({ stage: gpu ? 'Transcribiendo con la tarjeta gráfica' : 'Transcribiendo en tu equipo', pct: Number(m[m.length - 1].match(/\d+/)[0]) });
       };
       p.stdout.on('data', onData); p.stderr.on('data', onData);
       p.on('error', e => { clearTimeout(timer); reject(new Error('No se pudo ejecutar whisper-cli: ' + e.message)); });
       p.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`whisper-cli falló (código ${code}): ${err.split('\n').filter(Boolean).slice(-3).join(' ')}`)); });
     });
-    const j = JSON.parse(fs.readFileSync(outBase + '.json', 'utf8'));
+}
+
+let lastJson = null;
+function parseWords(outBase) {
+    const j = lastJson = JSON.parse(fs.readFileSync(outBase + '.json', 'utf8'));
     const words = [];
     for (const s of j.transcription || []) {
       const text = String(s.text || '').trim();
@@ -101,6 +125,11 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
       if (/^[.,!?;:…)"»]+$/.test(text) && words.length) { words[words.length - 1].word += text; words[words.length - 1].end = end; continue; }
       words.push({ word: text, start, end: Math.max(end, start + 0.05) });
     }
+    return words;
+}
+
+function finish(words, outBase, lang) {
+    const j = lastJson || {};
     // Frases: se cortan en puntuación, en pausas largas o cada ~14 palabras
     const segments = [];
     let cur = [];
@@ -113,7 +142,4 @@ export async function transcribeLocal(audioFile, { language, model, onProgress =
       }
     });
     return { language: j.result?.language || lang, segments, words };
-  } finally {
-    for (const f of [wav, outBase + '.json']) fs.rmSync(f, { force: true });
-  }
 }

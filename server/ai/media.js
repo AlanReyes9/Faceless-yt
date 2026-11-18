@@ -198,7 +198,7 @@ async function pollinationsImage(prompt, { size }) {
   }
 }
 
-const localImage = async (prompt, { size }) => (await import('./localmodels.js')).imageLocal(prompt, { size });
+const localImage = async (prompt, { size, steps, onProgress }) => (await import('./localmodels.js')).imageLocal(prompt, { size, ...(steps ? { steps } : {}), onProgress });
 const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null } };
 
 /**
@@ -206,7 +206,7 @@ const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, ope
  * size: '1024x1536' (vertical) | '1536x1024' (horizontal) | '1024x1024'.
  * references: Buffers de imágenes del personaje para mantener su aspecto (OpenAI y Gemini).
  */
-export async function generateImage(prompt, { size = '1024x1536', references = [], provider } = {}) {
+export async function generateImage(prompt, { size = '1024x1536', references = [], provider, steps, onProgress } = {}) {
   const preferred = provider || await getSetting('image_provider');
   const order = [preferred];
   // Con la IA local no se recurre a servicios externos
@@ -216,7 +216,7 @@ export async function generateImage(prompt, { size = '1024x1536', references = [
     const prov = IMAGE_PROVIDERS[p];
     if (!prov) continue;
     try {
-      const out = await prov.fn(prompt, { size, references });
+      const out = await prov.fn(prompt, { size, references, steps, onProgress });
       if (p !== preferred) console.log(`[imagen] generada con ${p} (respaldo de ${preferred})`);
       return out;
     } catch (e) {

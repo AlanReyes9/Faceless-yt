@@ -63,6 +63,8 @@ function setupEnv() {
     const f = names.map(n => path.join(bin, process.platform === 'win32' ? n + '.exe' : n)).find(x => fs.existsSync(x));
     if (f) process.env[env] = f;
   }
+  // Mac Intel: versiones con la tarjeta gráfica (Metal, experimental); la app las prueba y si fallan usa el procesador
+  for (const [env, n] of [['LLAMA_SERVER_GPU', 'llama-server-gpu'], ['SD_CLI_GPU', 'sd-gpu'], ['WHISPER_CLI_GPU', 'whisper-cli-gpu']]) { const f = path.join(bin, n); if (fs.existsSync(f)) process.env[env] = f; }
   if (process.env.LLAMA_SERVER) process.env.DEFAULT_LLM ||= 'local';
   if (process.env.SD_CLI) process.env.DEFAULT_IMAGE ||= 'local';
   const ytdlpBin = path.join(bin, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
@@ -110,6 +112,8 @@ async function startServer() {
   startLocalWorker();
   const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
   setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);
+  // Precarga de la IA local de texto: la primera respuesta llega sin esperar a que se cargue el modelo
+  setTimeout(() => import(pathToFileURL(path.join(ROOT, 'server', 'ai', 'localmodels.js')).href).then(m => m.warmUp()).catch(() => {}), 8000);
   console.log('Clippers Pro (escritorio) en', process.env.PUBLIC_URL, '· datos:', process.env.DATA_DIR);
   return `http://localhost:${real}`;
 }

@@ -56,6 +56,7 @@ export const FIELDS = {
   openrouter_model: { secret: false, default: 'openai/gpt-4.1-mini', label: 'Modelo OpenRouter', group: 'Preferencias' },
   transcribe_provider: { secret: false, default: process.env.DEFAULT_TRANSCRIBE || 'openai', label: 'Transcripción (local = gratis en tu equipo, solo app de escritorio)', options: ['local', 'openai', 'groq'], group: 'Preferencias' },
   local_llm: { secret: false, default: 'auto', label: 'IA de texto local (auto = rápida en equipos sin gráfica, completa en Mac M)', options: ['auto', 'qwen3-4b', 'qwen2.5-7b'], group: 'Preferencias' },
+  local_gpu: { secret: false, default: 'auto', label: 'Usar la tarjeta gráfica para la IA local (auto = si funciona; si no, el procesador)', options: ['auto', 'off'], group: 'Preferencias' },
   whisper_model: { secret: false, default: 'small', label: 'Modelo de transcripción local', options: ['base', 'small', 'large-v3-turbo', 'medium'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
@@ -89,7 +90,27 @@ export async function getSetting(key) {
   let v = null;
   if (raw) { try { v = FIELDS[key]?.secret ? decrypt(raw) : raw; } catch { v = null; } }
   v = v || process.env[key.toUpperCase()] || FIELDS[key]?.default || '';
+  // Modo nube con el proveedor aún en "local": se usa el primero del que haya clave
+  if (v === 'local' && LOCAL_FOR[key]) v = await firstCloud(key);
   return RETIRED[v] || v;
+}
+const CLOUD_ORDER = {
+  llm_provider: [['gemini', 'gemini_key'], ['openai', 'openai_key'], ['groq', 'groq_key'], ['anthropic', 'anthropic_key'], ['openrouter', 'openrouter_key']],
+  image_provider: [['gemini', 'gemini_key'], ['openai', 'openai_key'], ['pollinations', null]],
+  transcribe_provider: [['groq', 'groq_key'], ['openai', 'openai_key']],
+};
+async function firstCloud(key) {
+  for (const [p, k] of CLOUD_ORDER[key]) if (!k || await getSetting(k)) return p;
+  return CLOUD_ORDER[key][0][0];
+}
+/** Modo de la IA: 'local' (en el equipo) o 'cloud' (servicios en la nube con tus claves). */
+export async function aiMode() {
+  const localAvailable = !!(process.env.LLAMA_SERVER || process.env.WHISPER_CLI || process.env.SD_CLI);
+  const mode = localAvailable && (await all()).use_cloud !== '1' ? 'local' : 'cloud';
+  const has = async k => !!(await getSetting(k));
+  const keys = { gemini: await has('gemini_key'), openai: await has('openai_key'), groq: await has('groq_key'), anthropic: await has('anthropic_key'), openrouter: await has('openrouter_key') };
+  return { mode, localAvailable, keys, cloudReady: Object.values(keys).some(Boolean),
+    text: await getSetting('llm_provider'), image: await getSetting('image_provider'), transcribe: await getSetting('transcribe_provider') };
 }
 
 export async function setSettings(obj) {

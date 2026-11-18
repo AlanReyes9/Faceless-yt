@@ -47,7 +47,7 @@ for (const c of await q('SELECT idx, layout, style, status, error, file FROM cli
 }
 // Ranking de 3 puestos con el mismo vídeo de prueba
 const rk = await insert('projects', { type: 'ranking', title: 'smoke ranking', status: 'pending', data: { parts: [], options: {
-  title: 'Ranking de *prueba*', bottom: '@canal', order: 'countdown', fit: 'auto', highlight: '#FFD400', maxClipSec: 3, keepAudio: true,
+  title: 'Ranking de *prueba*', bottom: '@canal', order: 'countdown', fit: 'auto', highlight: '#FFD400', maxClipSec: 3, keepAudio: true, cta: '¿Cuál es tu favorito?', flash: true,
   items: [{ source, label: 'Primero', start: 1 }, { source, label: 'Segundo', start: 5 }, { source, label: 'Tercero', start: 9 }] } } });
 await enqueue('ranking.prep', { id: rk.id, i: 0 });
 await drain();

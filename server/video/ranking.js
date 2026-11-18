@@ -28,7 +28,7 @@ function titleASS(title, color) {
 }
 
 /** Subtítulos ASS del ranking. order: lista de puestos en el orden en que se reproducen; starts[k]: inicio del clip k. */
-export function rankingASS({ title, bottom, highlight = '#FFD400', items, order, starts, total }) {
+export function rankingASS({ title, bottom, highlight = '#FFD400', items, order, starts, total, cta = '', flash = false }) {
   const n = items.length;
   const { top, video } = RANK_LAYOUT;
   const step = Math.min(170, Math.floor((video - 160) / n));
@@ -52,6 +52,14 @@ export function rankingASS({ title, bottom, highlight = '#FFD400', items, order,
       lines.push(`Dialogue: 1,${t(starts[k])},${t(total)},Label,,0,0,0,,{\\an4\\pos(${x},${y})\\fs${labelSize}\\fscx70\\fscy70\\t(0,140,\\fscx112\\fscy112)\\t(140,260,\\fscx100\\fscy100)}${label}`);
     }
   }
+  // Número grande al empezar cada puesto (entra con un "pop" y se desvanece)
+  if (flash) order.forEach((r, k) => {
+    const col = assColor(RANK_COLORS[(r - 1) % RANK_COLORS.length]);
+    lines.push(`Dialogue: 3,${t(starts[k])},${t(starts[k] + 1.1)},Flash,,0,0,0,,{\\an5\\pos(${W / 2},${top + video / 2})\\c${col}\\fscx40\\fscy40\\t(0,180,\\fscx115\\fscy115)\\t(180,320,\\fscx100\\fscy100)\\fad(0,350)}#${r}`);
+  });
+  // Llamada a la acción al final (p. ej. "¿CUÁL ES TU FAVORITO?")
+  const ctaText = assText(cta).toUpperCase();
+  if (ctaText) lines.push(`Dialogue: 3,${t(Math.max(0, total - 3.5))},${t(total)},CTA,,0,0,0,,{\\an5\\pos(${W / 2},${top + video * 0.78})\\fscx60\\fscy60\\t(0,220,\\fscx108\\fscy108)\\t(220,360,\\fscx100\\fscy100)\\fad(150,0)}${ctaText}`);
   return `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${W}
@@ -64,6 +72,8 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Title,Anton,${tSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,6,3,5,40,40,10,1
 Style: Num,Anton,110,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,4,4,10,10,10,1
 Style: Label,Anton,90,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,1,0,1,6,3,4,10,40,10,1
+Style: Flash,Anton,330,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,12,8,5,10,10,10,1
+Style: CTA,Anton,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&HB4000000,0,0,0,0,100,100,1,0,3,18,0,5,60,60,10,1
 Style: Bottom,DejaVu Sans,46,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,3,0,5,40,40,10,1
 
 [Events]
@@ -155,7 +165,7 @@ register('ranking.render', async ({ id }, ctx) => {
     const joined = path.join(dir, 'joined.mp4');
     await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', joined]);
     const ass = path.join(dir, 'r.ass');
-    fs.writeFileSync(ass, rankingASS({ title: o.title, bottom: o.bottom, highlight: o.highlight, items: o.items, order, starts, total }));
+    fs.writeFileSync(ass, rankingASS({ title: o.title, bottom: o.bottom, highlight: o.highlight, items: o.items, order, starts, total, cta: o.cta, flash: o.flash }));
     const out = path.join(dir, 'final.mp4');
     const bg = o.background || '#000000';
     await ffmpeg(['-i', joined, '-f', 'lavfi', '-i', `color=c=${bg.replace('#', '0x')}:s=${W}x${H}:r=30`,

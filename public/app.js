@@ -41,7 +41,34 @@ const NAV = [
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
 ];
 let ME = {};
+// ---------- Modo de la IA: local (en tu equipo) o nube (con tus claves), siempre visible ----------
+let AIMODE = null;
+const PROV = { local: 'tu equipo', gemini: 'Gemini', openai: 'OpenAI', groq: 'Groq', anthropic: 'Claude', openrouter: 'OpenRouter', pollinations: 'Pollinations' };
+async function drawAiMode(force) {
+  const box = $('#aimode'); if (!box) return;
+  if (!AIMODE || force) AIMODE = await api('/api/ai-mode').catch(() => null);
+  const m = AIMODE; if (!m) { box.innerHTML = ''; return; }
+  const local = m.mode === 'local';
+  box.innerHTML = `<div class="aimode ${local ? 'is-local' : 'is-cloud'}">
+    ${m.localAvailable ? `<div class="seg"><button data-m="local" class="${local ? 'on' : ''}">💻 IA local</button><button data-m="cloud" class="${local ? '' : 'on'}">☁ Nube</button></div>` : '<div class="seg one"><button class="on">☁ IA en la nube</button></div>'}
+    <div class="aimode-sub">${local ? 'Gratis y privada · funciona en tu equipo' : `Texto: ${PROV[m.text] || m.text} · Imágenes: ${PROV[m.image] || m.image}`}</div></div>`;
+  box.querySelectorAll('[data-m]').forEach(b => b.onclick = async () => {
+    const want = b.dataset.m;
+    if (want === m.mode) return;
+    if (want === 'cloud' && !m.cloudReady) {
+      if (confirm('Para usar la IA en la nube necesitas al menos una clave (Gemini, OpenAI, Groq…). ¿Abrir Ajustes para añadirla?')) location.hash = '#/ajustes?cloud=1';
+      return;
+    }
+    AIMODE = await api('/api/ai-mode', { method: 'POST', body: { mode: want } });
+    toast(want === 'local' ? '💻 Ahora la IA funciona en tu equipo' : `☁ Ahora la IA usa la nube (${PROV[AIMODE.text] || AIMODE.text})`, 'good');
+    drawAiMode();
+    if (location.hash.startsWith('#/ajustes')) router();
+  });
+}
+/** Etiqueta pequeña con dónde se ejecuta la IA (para poner junto a los botones que la usan). */
+const aiTag = () => AIMODE ? `<span class="aitag ${AIMODE.mode}">${AIMODE.mode === 'local' ? '💻 IA local' : '☁ IA en la nube'}</span>` : '';
 function renderNav(route) {
+  drawAiMode();
   const nav = NAV.map(([h, items]) => [h, h === 'ADMINISTRACIÓN' && ME.license ? [...items, ['licencias', '🔑', 'Licencias y usuarios']] : items]);
   $('#nav').innerHTML = nav.map(([h, items]) => `<div class="nav-h">${h}</div>` + items.map(([r, ic, label]) =>
     `<a class="nav-a ${route === r ? 'active' : ''}" href="#/${r}"><span class="ic">${ic}</span>${label}</a>`).join('')).join('') +
@@ -69,6 +96,7 @@ async function router() {
   if (me.needsAdmin) return renderAdminSetup();
   if (route !== 'login' && !me.authed) { location.hash = '#/login'; return; }
   main.innerHTML = '<div class="muted"><span class="spinner"></span> Cargando…</div>';
+  if (!AIMODE) await drawAiMode().catch(() => {});
   try { await (routes[route] || routes[''])(arg, params); }
   catch (e) { main.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
@@ -322,6 +350,7 @@ routes.shorts = async () => {
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
       <div id="up" class="small muted"></div>
+      <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">✂ Crear Shorts</button>
     </div>
   </form>
@@ -394,6 +423,7 @@ routes.directo = async () => {
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">🔴 Empezar a grabar y clipear</button>
     </div>
   </form>
@@ -642,6 +672,7 @@ routes.proyecto = async id => {
     toast(b.dataset.keep === '1' ? 'El original se conservará' : 'Se borrará automáticamente', 'good'); router();
   }));
   if (isClips) bindClips(p); else bindLong(p);
+  if (p.live) bindLive(p);
   if (p.cleanup?.deletedAt) main.querySelectorAll('[data-apply],[data-tr],[data-retry],#retry').forEach(b => { b.disabled = true; b.title = 'El original se borró: no se puede volver a renderizar'; });
   if (working) livePoll(p);
 };
@@ -660,7 +691,7 @@ function livePoll(prev) {
       const gw = main.querySelector('#gridwrap');
       if (gw) {
         gw.innerHTML = shortsGrid(p, await channelsCache.get()); bindClips(p);
-        const lb = main.querySelector('.livebox'); if (lb) lb.outerHTML = liveBanner(p);
+        const lb = main.querySelector('.livebox'); if (lb && !lb.contains(document.activeElement)) { lb.outerHTML = liveBanner(p); bindLive(p); }
         return livePoll(p);
       }
     }
@@ -710,7 +741,32 @@ function liveBanner(p) {
     <div class="row" style="gap:22px;margin-top:10px"><div><div class="muted small">Grabado</div><b>${mmss(l.secs || 0)}</b></div>
       <div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>
       <div><div class="muted small">Clips listos</div><b>${ok}</b> <span class="muted small">de ${(p.clips || []).length}</span></div></div>
+    ${l.ended || l.stopRequested ? '' : liveControls(p)}
     ${l.ended ? '' : '<div class="muted small" style="margin-top:8px">Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.</div>'}</div>`;
+}
+/** Controles del directo en curso: clip manual y ajustes que se aplican al siguiente análisis. */
+function liveControls(p) {
+  const o = p.data?.options || {}, l = p.live || {};
+  const waiting = (l.marks || []).filter(m => !m.done).length;
+  return `<div class="live-ctl">
+    <div class="stack" style="gap:6px"><div class="small muted">¿Ha pasado algo bueno?</div>
+      <div class="row"><button class="btn gold" data-mark="30">✂ Clip ahora · 30 s</button><button class="btn" data-mark="60">✂ 60 s</button>
+      ${waiting ? `<span class="pill">${waiting} marcado${waiting > 1 ? 's' : ''}: sale en el próximo análisis</span>` : ''}</div></div>
+    <div class="row" style="gap:12px;align-items:flex-end"><div><label>Nota mínima</label><select data-lo="minScore">${[9, 8, 7, 6, 5].map(n => `<option value="${n}" ${Number(o.minScore || 7) === n ? 'selected' : ''}>${n}/10</option>`).join('')}</select></div>
+      <div><label>Clips por segmento</label><select data-lo="perSegment">${[1, 2, 3, 4, 5].map(n => `<option ${Number(o.perSegment || 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div></div>`;
+}
+function bindLive(p) {
+  main.querySelectorAll('[data-mark]').forEach(b => b.onclick = () => busy(b, async () => {
+    await api(`/api/projects/${p.id}/mark`, { method: 'POST', body: { len: Number(b.dataset.mark) } });
+    toast(`✂ Marcado: los últimos ${b.dataset.mark} s serán un clip`, 'good');
+    p.live.marks = [...(p.live.marks || []), { done: false }];
+    const lb = main.querySelector('.livebox'); if (lb) { lb.outerHTML = liveBanner(p); bindLive(p); }
+  }));
+  main.querySelectorAll('[data-lo]').forEach(s => s.onchange = async () => {
+    await api(`/api/projects/${p.id}/live-options`, { method: 'PATCH', body: { [s.dataset.lo]: Number(s.value) } });
+    (p.data.options ||= {})[s.dataset.lo] = Number(s.value);
+    toast('Se aplicará en el próximo análisis', 'good');
+  });
 }
 
 function shortsGrid(p, chs) {
@@ -965,6 +1021,20 @@ routes.calendario = async (_, params) => {
 
 // ---------- Rankings Top ("Top 5 momentos…") ----------
 const RANK_COLORS = ['#FFE600', '#FFFFFF', '#FF2D2D', '#2EE62E', '#FF7AD9', '#3FB6FF', '#FF9F1A', '#B57BFF', '#00F0D0', '#FFC2E0'];
+/** Elegir uno de tus clips ya creados (Convertir a Shorts / Directos). */
+async function clipLibrary(onPick) {
+  const list = await api('/api/clips/library');
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal stack" style="width:min(920px,96vw)"><div class="row between"><b>📂 Mis clips</b><button class="btn sm" data-close>✕</button></div>
+    ${list.length ? `<div class="lib-grid">${list.map((c, k) => `<div class="lib-card"><video src="${esc(c.url)}" preload="metadata" muted playsinline onmouseenter="this.play()" onmouseleave="this.pause()"></video>
+      <div class="small" style="height:34px;overflow:hidden">${esc(c.title || 'Clip')}</div><div class="row between small muted"><span>${esc((c.project || '').slice(0, 22))} · ${c.dur}s</span><button class="btn sm gold" data-k="${k}">Usar</button></div></div>`).join('')}</div>`
+      : '<div class="muted">Aún no tienes clips listos. Créalos en Convertir a Shorts o Clips de directos.</div>'}</div>`;
+  document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  bg.onclick = e => { if (e.target === bg) close(); };
+  bg.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { onPick(list[+b.dataset.k]); close(); });
+}
 routes.ranking = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
   const links = !sys.vercel;
@@ -992,6 +1062,8 @@ routes.ranking = async () => {
           <div style="flex:1"><label>Color del resaltado</label><input type="color" name="highlight" value="#FFD400" style="height:40px"></div>
           <div style="flex:1"><label>Fondo</label><input type="color" name="background" value="#000000" style="height:40px"></div></div>
         <label class="check"><input type="checkbox" name="keepAudio" checked> Conservar el audio de los clips</label>
+        <label class="check"><input type="checkbox" name="flash" checked> Número grande al empezar cada puesto</label>
+        <div><label>Texto final <span class="muted">(últimos 3 s; vacío = sin texto)</span></label><input name="cta" value="¿Cuál es tu favorito?"></div>
         <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
         <div class="small muted" id="up"></div>
         <button class="btn gold block" id="go">🏆 Crear ranking</button>
@@ -1014,7 +1086,7 @@ routes.ranking = async () => {
       <div class="row" style="flex-wrap:nowrap"><b style="color:${RANK_COLORS[i % 10]};font-size:20px;min-width:30px">${i + 1}.</b>
         <input data-k="label" placeholder="Etiqueta (p. ej. White Cat)" value="${esc(it.label)}" style="flex:1">
         <button type="button" class="btn sm" data-up title="Subir">↑</button><button type="button" class="btn sm" data-down title="Bajar">↓</button><button type="button" class="btn sm" data-rm title="Quitar">✕</button></div>
-      <div class="row" style="flex-wrap:nowrap"><button type="button" class="btn sm" data-pick>${it.file ? '🎬 ' + esc(it.file.name.slice(0, 26)) : '⬆ Elegir vídeo'}</button>
+      <div class="row" style="flex-wrap:nowrap"><button type="button" class="btn sm" data-pick>${it.file ? '🎬 ' + esc(it.file.name.slice(0, 26)) : it.source ? '✂ ' + esc((it.srcName || 'Clip').slice(0, 26)) : '⬆ Elegir vídeo'}</button><button type="button" class="btn sm" data-lib title="Usar un clip que ya creaste">📂 Mis clips</button>
         ${links ? `<input data-k="url" placeholder="…o enlace (YouTube, TikTok, Instagram)" value="${esc(it.url)}" style="flex:1">` : '<span style="flex:1"></span>'}
         <input data-k="start" type="number" step="0.1" min="0" placeholder="Inicio s" value="${esc(it.start)}" style="width:86px">
         <input data-k="end" type="number" step="0.1" min="0" placeholder="Fin s" value="${esc(it.end)}" style="width:76px"></div></div>`).join('');
@@ -1022,12 +1094,13 @@ routes.ranking = async () => {
       const i = +el.dataset.i;
       el.querySelectorAll('[data-k]').forEach(inp => inp.oninput = () => { items[i][inp.dataset.k] = inp.value; preview(); });
       el.querySelector('[data-pick]').onclick = () => { pickFor = i; $('#pick').click(); };
+      el.querySelector('[data-lib]').onclick = () => clipLibrary(c => { Object.assign(items[i], { file: null, url: '', source: c.file, srcName: c.title, start: '', end: '' }); if (!items[i].label) items[i].label = (c.hook || c.title || '').split(' ').slice(0, 3).join(' '); draw(); });
       el.querySelector('[data-rm]').onclick = () => { if (items.length > 2) { items.splice(i, 1); draw(); } };
       el.querySelector('[data-up]').onclick = () => { if (i) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; draw(); } };
       el.querySelector('[data-down]').onclick = () => { if (i < items.length - 1) { [items[i + 1], items[i]] = [items[i], items[i + 1]]; draw(); } };
       el.ondragover = e => { e.preventDefault(); el.classList.add('over'); };
       el.ondragleave = () => el.classList.remove('over');
-      el.ondrop = e => { e.preventDefault(); el.classList.remove('over'); const file = e.dataTransfer.files[0]; if (file) { items[i].file = file; draw(); } };
+      el.ondrop = e => { e.preventDefault(); el.classList.remove('over'); const file = e.dataTransfer.files[0]; if (file) { items[i].file = file; items[i].source = null; draw(); } };
     });
     preview();
   };
@@ -1046,7 +1119,7 @@ routes.ranking = async () => {
             <button type="button" class="btn sm gold" data-addv="${k}">＋ Añadir</button></div></div>`).join('') : '<div class="muted">Sin resultados.</div>';
         $('#sres').querySelectorAll('[data-addv]').forEach(b => b.onclick = () => {
           const v = r[+b.dataset.addv];
-          let i = items.findIndex(x => !x.file && !x.url.trim());
+          let i = items.findIndex(x => !x.file && !x.source && !x.url.trim());
           if (i < 0) { if (items.length >= 10) return toast('Máximo 10 puestos', 'bad'); items.push({ file: null, url: '', label: '', start: '', end: '' }); i = items.length - 1; }
           items[i].url = v.url; draw();
           b.textContent = `✓ Puesto ${i + 1}`; b.disabled = true;
@@ -1054,7 +1127,7 @@ routes.ranking = async () => {
       } catch (err) { $('#sres').innerHTML = `<div class="err small">${esc(err.message)}</div>`; }
     });
   };
-  $('#pick').onchange = e => { if (e.target.files[0]) { items[pickFor].file = e.target.files[0]; e.target.value = ''; draw(); } };
+  $('#pick').onchange = e => { if (e.target.files[0]) { items[pickFor].file = e.target.files[0]; items[pickFor].source = null; e.target.value = ''; draw(); } };
   $('#add').onclick = () => { if (items.length < 10) { items.push({ file: null, url: '', label: '', start: '', end: '' }); draw(); } };
   for (const k of ['title', 'bottom', 'highlight', 'background']) f[k].oninput = preview;
   let meta = null;
@@ -1067,17 +1140,17 @@ routes.ranking = async () => {
   });
   f.onsubmit = e => {
     e.preventDefault();
-    const used = items.filter(x => x.file || x.url.trim());
+    const used = items.filter(x => x.file || x.source || x.url.trim());
     if (used.length < 2) return toast('Añade un vídeo en al menos 2 puestos', 'bad');
     if (used.length !== items.length) return toast(`Falta el vídeo de algún puesto (o quita los puestos vacíos)`, 'bad');
     busy($('#go'), async () => {
       const d = Object.fromEntries(new FormData(f));
-      d.keepAudio = f.keepAudio.checked;
+      d.keepAudio = f.keepAudio.checked; d.flash = f.flash.checked;
       const out = [];
       for (const [i, it] of items.entries()) {
-        let source = null;
+        let source = it.source || null;
         if (it.file) source = await uploadFile(it.file, pct => { $('#up').textContent = `Subiendo vídeo del puesto ${i + 1}… ${pct}%`; });
-        out.push({ source, url: it.file ? '' : it.url, label: it.label, start: it.start, end: it.end });
+        out.push({ source, url: it.file || it.source ? '' : it.url, label: it.label, start: it.start, end: it.end });
       }
       const r = await api('/api/ranking', { method: 'POST', body: { ...d, ...(meta || {}), items: out } });
       location.hash = '#/proyecto/' + r.id;
@@ -1165,6 +1238,7 @@ routes.licencias = async () => {
 const THUMB_STYLES = { impacto: 'Impactante (colores intensos)', misterio: 'Misterio / oscuro', gaming: 'Gaming / neón', documental: 'Documental / realista', minimal: 'Minimalista', cartoon: 'Dibujo / cartoon' };
 const THUMB_FORMATS = { youtube: 'YouTube 16:9 (1280×720)', short: 'Portada Shorts / Reels 9:16', square: 'Cuadrada 1:1' };
 const POSITIONS = { left: 'Texto a la izquierda', right: 'Texto a la derecha', top: 'Texto arriba', bottom: 'Texto abajo', center: 'Texto en el centro' };
+const TEXT_FX = { clasico: 'Clásico (borde negro)', neon: 'Neón (brillo de color)', caja: 'Caja de color', '3d': '3D (sombra larga)' };
 routes.miniaturas = async (id) => {
   const [chs, list, caps] = await Promise.all([channelsCache.get(), api('/api/thumbs'), api('/api/thumbs/caps').catch(() => ({ aiText: true }))]);
   let t = id ? await api('/api/thumbs/' + id) : null;
@@ -1178,7 +1252,11 @@ routes.miniaturas = async (id) => {
         : `<input type="hidden" name="mode" value="overlay"><div class="small muted">🧠 La imagen se genera en tu equipo (IA local) y el texto se pone encima, editable al instante. ${caps.local ? 'Cada imagen tarda de 20 s a unos minutos según tu ordenador.' : ''}</div>`}
       <div><label>Nicho o canal <span class="muted">(opcional)</span></label><input name="niche" list="chn" value="${esc(t?.niche || '')}"><datalist id="chn">${chs.map(c => `<option value="${esc(c.niche || c.name)}">`).join('')}</datalist></div>
       <div ${caps.aiText ? '' : 'hidden'}><label>Tu foto o personaje <span class="muted">(opcional: aparecerá en la miniatura; funciona con OpenAI y Gemini)</span></label><input type="file" name="ref" accept="image/*" multiple></div>
-      <div class="row"><button class="btn gold" id="ideasBtn">✨ Ideas con IA</button><button type="button" class="btn" id="ownBtn">🖼 Usar mi imagen de fondo</button></div>
+      <div class="row"><div style="flex:1"><label>Efecto del texto</label><select name="effect">${opts(TEXT_FX, 'clasico')}</select></div>
+        <div style="flex:1"><label>Emoji grande <span class="muted">(opcional)</span></label><input name="emoji" list="emojis" placeholder="😱 🔥 💰" maxlength="4"></div>
+        ${caps.local && !caps.aiText ? `<div style="flex:1"><label>Calidad de imagen</label><select name="quality"><option value="rapida">Rápida (~40% menos tiempo)</option><option value="normal" selected>Normal</option><option value="alta">Alta (más detalle)</option></select></div>` : ''}</div>
+      <datalist id="emojis">${['😱', '🔥', '💰', '😂', '🤯', '❌', '✅', '⚠️', '👀', '💀', '🚀', '❤️'].map(e => `<option value="${e}">`).join('')}</datalist>
+      <div class="row"><button class="btn gold" id="ideasBtn">✨ Ideas con IA</button><button type="button" class="btn" id="ownBtn">🖼 Usar mi imagen de fondo</button>${aiTag()}</div>
       <input type="file" id="ownFile" accept="image/*" hidden>
       <div class="small muted" id="st"></div>
     </form>
@@ -1201,7 +1279,7 @@ routes.miniaturas = async (id) => {
   const drawIdeas = () => {
     $('#ideas').innerHTML = (t?.ideas || []).map((i, k) => `<div class="scene stack" style="gap:4px"><div class="row between"><b style="font-family:Anton,Impact,sans-serif;font-size:20px;letter-spacing:.5px">${esc(i.text).replace(esc(i.highlight || '¤'), `<span style="color:${esc(i.color || '#FFD400')}">${esc(i.highlight || '')}</span>`)}</b>
       <button class="btn sm gold" data-gen="${k}">🎨 Generar</button></div><div class="small muted">${esc(i.why || '')}${i.typography ? ` · 🔤 ${esc(i.typography)}` : ''}</div></div>`).join('') +
-      (t?.ideas?.length ? '<button class="btn" id="genAll">🎨 Generar todas</button>' : '');
+      (t?.ideas?.length ? '<button class="btn" id="genAll">🎨 Generar todas</button>' : '<div class="muted small">Pulsa "✨ Ideas con IA" y elige una (o genera todas).</div>');
     $('#ideas').querySelectorAll('[data-gen]').forEach(b => b.onclick = () => busy(b, () => generate(t.ideas[+b.dataset.gen])));
     const ga = $('#genAll'); if (ga) ga.onclick = () => busy(ga, async () => { for (const i of t.ideas) await generate(i); });
   };
@@ -1223,13 +1301,15 @@ routes.miniaturas = async (id) => {
         <input type="color" data-k="textColor" value="${esc(it.design.textColor || '#FFFFFF')}" title="Color del texto" style="width:44px;height:38px;padding:2px"></div>
       <div class="row small muted" style="flex-wrap:nowrap;gap:8px">Tamaño<input type="range" data-k="scale" min="0.5" max="1.5" step="0.05" value="${it.design.scale || 1}" style="flex:1">Giro<input type="range" data-k="tilt" min="-10" max="10" step="1" value="${it.design.tilt || 0}" style="flex:1">
         <label class="check" style="margin:0"><input type="checkbox" data-k="shade" ${it.design.shade !== false ? 'checked' : ''}> Sombra</label></div>
+      <div class="row" style="flex-wrap:nowrap;gap:6px"><select data-k="effect" style="flex:2">${opts(TEXT_FX, it.design.effect || 'clasico')}</select>
+        <input data-k="emoji" list="emojis" value="${esc(it.design.emoji || '')}" placeholder="Emoji" maxlength="4" style="flex:1"></div>
       <div class="row" style="gap:6px"><button class="btn sm gold" data-apply>✓ Aplicar</button><a class="btn sm" href="${it.url}" download="miniatura.png" target="_blank">⬇ Descargar</a>
         <button class="btn sm" data-again title="Otra imagen con la misma idea">↻ Otra imagen</button><button class="btn sm red" data-del>✕</button></div></div></div>`;
   const drawItems = () => {
     $('#items').innerHTML = t?.items?.length ? t.items.map(card).join('') : '<div class="empty">Aún no hay miniaturas.</div>';
     $('#items').querySelectorAll('[data-it]').forEach(el => {
       const it = t.items.find(x => x.id === el.dataset.it);
-      const val = () => Object.fromEntries([...el.querySelectorAll('[data-k]')].map(i => [i.dataset.k, i.type === 'checkbox' ? i.checked : i.type === 'range' ? Number(i.value) : i.value]).filter(([, v]) => v !== ''));
+      const val = () => Object.fromEntries([...el.querySelectorAll('[data-k]')].map(i => [i.dataset.k, i.type === 'checkbox' ? i.checked : i.type === 'range' ? Number(i.value) : i.value]).filter(([k, v]) => v !== '' || k === 'emoji'));
       el.querySelector('[data-apply]').onclick = e => busy(e.target, async () => {
         if (it.design.mode === 'ai') $('#st').innerHTML = '<span class="spinner"></span> La IA está cambiando el texto de la miniatura… (20–60 s)';
         try { Object.assign(it, await api(`/api/thumbs/${t.id}/items/${it.id}`, { method: 'PATCH', body: val() })); drawItems(); } finally { $('#st').textContent = ''; }
@@ -1242,7 +1322,7 @@ routes.miniaturas = async (id) => {
     await ensure();
     $('#st').innerHTML = `<span class="spinner"></span> ${f.mode.value === 'ai' && !base ? 'Gemini está diseñando la miniatura con el texto…' : 'Generando la imagen con IA…'} (20–60 s)`;
     try {
-      const it = await api(`/api/thumbs/${t.id}/generate`, { method: 'POST', body: { ...idea, base, mode: base ? 'overlay' : (idea.mode || f.mode.value) } });
+      const it = await api(`/api/thumbs/${t.id}/generate`, { method: 'POST', body: { effect: f.effect.value, emoji: f.emoji.value, quality: f.quality?.value, ...idea, base, mode: base ? 'overlay' : (idea.mode || f.mode.value) } });
       t.items = [it, ...(t.items || [])]; drawItems();
     } finally { $('#st').textContent = ''; }
   };
@@ -1348,11 +1428,11 @@ routes.servidor = async () => {
 };
 
 // ---------- Ajustes y claves ----------
-routes.ajustes = async () => {
+routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['local_llm', 'whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['local_llm', 'local_gpu', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
@@ -1370,7 +1450,7 @@ routes.ajustes = async () => {
   main.innerHTML = `<h1>Ajustes</h1><p class="sub">${localMode ? 'La IA funciona en tu equipo: transcripción, elección de clips, títulos e imágenes. No necesitas claves ni pagas por uso.' : 'Tus claves API se guardan cifradas en tu servidor y nunca se envían al navegador. Solo pagas lo que uses en cada proveedor.'}</p>
     <div id="localModels"></div>
     <form id="f" class="grid g2">${Object.entries(groups).map(card).join('')}
-      ${localMode ? `<details class="card" style="grid-column:1/-1" ${values.use_cloud === '1' ? 'open' : ''}><summary style="cursor:pointer"><b>☁ Servicios en la nube (opcional)</b> <span class="small muted">— solo para Vídeo completo (voz y vídeos de stock), Analizador, Publicar en YouTube o si prefieres la IA de OpenAI/Gemini</span></summary>
+      ${localMode ? `<details class="card" id="cloudBox" style="grid-column:1/-1" ${values.use_cloud === '1' || params?.get('cloud') ? 'open' : ''}><summary style="cursor:pointer"><b>☁ Servicios en la nube (opcional)</b> <span class="small muted">— solo para Vídeo completo (voz y vídeos de stock), Analizador, Publicar en YouTube o si prefieres la IA de OpenAI/Gemini</span></summary>
         <div class="stack" style="margin-top:12px"><label class="check"><input type="checkbox" id="useCloud" ${values.use_cloud === '1' ? 'checked' : ''}> Usar los servicios en la nube con mis claves en vez de la IA local</label>
         <div class="grid g2">${Object.entries(cloud).map(card).join('')}</div></div></details>` : ''}
       <div style="grid-column:1/-1"><button class="btn gold">Guardar ajustes</button></div></form>`;
@@ -1378,7 +1458,7 @@ routes.ajustes = async () => {
   f.onsubmit = e => {
     e.preventDefault();
     busy(f.querySelector('.btn.gold'), async () => { const body = Object.fromEntries(new FormData(f)); if ($('#useCloud')) body.use_cloud = $('#useCloud').checked ? '1' : '0';
-      await api('/api/settings', { method: 'PUT', body }); toast('Ajustes guardados', 'good'); systemInfo = null; router(); });
+      await api('/api/settings', { method: 'PUT', body }); toast('Ajustes guardados', 'good'); systemInfo = null; drawAiMode(true); router(); });
   };
   f.querySelectorAll('[data-test]').forEach(b => b.onclick = () => busy(b, async () => {
     await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
@@ -1393,6 +1473,17 @@ routes.ajustes = async () => {
 
 
 /** Modelos de IA locales: estado, descarga (una vez) y progreso. */
+/** Estado de la tarjeta gráfica para la IA local. */
+function gpuRow(g) {
+  if (!g || !g.available) return g ? `<div class="gpu-row"><span class="gpu-dot off"></span><div><b>Procesador</b><div class="small muted">Esta versión usa el procesador para la IA local.</div></div></div>` : '';
+  const name = esc(g.name || 'Tarjeta gráfica');
+  if (g.appleSilicon) return `<div class="gpu-row"><span class="gpu-dot on"></span><div><b>${name || 'Chip Apple'} · aceleración activa</b><div class="small muted">La IA usa la tarjeta gráfica del chip (Metal).</div></div></div>`;
+  if (!g.enabled) return `<div class="gpu-row"><span class="gpu-dot off"></span><div><b>${name} · desactivada</b><div class="small muted">Actívala en "Usar la tarjeta gráfica" (más abajo) y guarda.</div></div></div>`;
+  const bad = g.llm === false || g.sd === false, ok = g.llm || g.sd;
+  return `<div class="gpu-row"><span class="gpu-dot ${bad ? 'bad' : ok ? 'on' : 'wait'}"></span><div style="flex:1"><b>${name} · ${bad && !ok ? 'no compatible, se usa el procesador' : ok ? 'aceleración activa (experimental)' : 'se probará en el primer uso (experimental)'}</b>
+    <div class="small muted">Texto: ${g.llm === true ? '✓ tarjeta gráfica' : g.llm === false ? 'procesador' : 'sin probar'} · Imágenes: ${g.sd === true ? '✓ tarjeta gráfica' : g.sd === false ? 'procesador' : 'sin probar'}${bad && g.why ? ' · ' + esc(g.why.slice(0, 120)) : ''}</div></div>
+    ${bad ? '<button class="btn sm" id="gpuRetry">Volver a probar</button>' : ''}</div>`;
+}
 async function localModelsCard() {
   const box = $('#localModels'); if (!box) return;
   const st0 = await api('/api/local-models').catch(() => null);
@@ -1402,7 +1493,9 @@ async function localModelsCard() {
       <div class="small muted">Cada modelo se descarga una sola vez. Puedes descargarlos ahora o se descargarán solos la primera vez que se usen.</div>
       ${st.models.map(m => `<div class="row between" style="border-bottom:1px solid var(--line);padding:8px 0"><div><b>${esc(m.label)}</b><div class="small muted">${esc(m.use)} · ~${m.mb >= 1000 ? (m.mb / 1000).toFixed(1) + ' GB' : m.mb + ' MB'}</div></div>
         <div style="min-width:180px;text-align:right">${m.ready ? '<span class="pill ready">✓ Listo</span>' : m.download?.active ? pbar(m.download.pct, 'Descargando') : `${m.download?.error ? `<div class="err small">${esc(m.download.error)}</div>` : ''}<button class="btn sm gold" data-dl="${m.kind}:${m.id}">⬇ Descargar</button>`}</div></div>`).join('')}
-      <div class="row"><button class="btn sm" id="dlAll">⬇ Descargar todo</button><span class="small muted">Total ~7,5 GB. La IA de texto necesita unos 6 GB de memoria RAM libre.</span></div></div>`;
+      ${gpuRow(st.gpu)}
+      <div class="row"><button class="btn sm" id="dlAll">⬇ Descargar todo</button><span class="small muted">La IA de texto necesita unos 4–6 GB de memoria RAM libre.</span></div></div>`;
+    const gr = $('#gpuRetry'); if (gr) gr.onclick = () => busy(gr, async () => { await api('/api/local-models/gpu-retry', { method: 'POST' }); toast('Se volverá a probar la tarjeta gráfica en el próximo uso de la IA', 'good'); setTimeout(poll, 4000); });
     box.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => busy(b, async () => { const [kind, id] = b.dataset.dl.split(':'); await api('/api/local-models/download', { method: 'POST', body: { kind, id } }); poll(); }));
     $('#dlAll').onclick = e => busy(e.target, async () => { for (const m of st.models.filter(m => !m.ready)) await api('/api/local-models/download', { method: 'POST', body: { kind: m.kind, id: m.id } }); poll(); });
   };

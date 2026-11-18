@@ -9,6 +9,7 @@ import { generateImage } from './ai/media.js';
 import { getSetting } from './settings.js';
 import { ffmpeg, assFilter } from './video/ffmpeg.js';
 import { saveFile, saveBuffer, toLocal, publicUrl, removeFile } from './storage.js';
+import { emojiImage } from './video/emoji.js';
 
 export const FORMATS = {
   youtube: { w: 1280, h: 720, size: '1536x1024', label: 'YouTube 16:9' },
@@ -70,9 +71,33 @@ export async function renderThumb(baseRef, design, format = 'youtube') {
     const an = { left: 4, right: 6, top: 8, bottom: 2, center: 5 }[pos];
     const x = pos === 'left' ? m : pos === 'right' ? W - m : W / 2, y = pos === 'top' ? m : pos === 'bottom' ? H - m : H / 2;
     const rot = Number(design.tilt) ? `\\frz${Number(design.tilt)}` : '';
+    // Efectos del texto: clásico (borde negro), neón (brillo del color), caja (texto sobre banda de color) y 3D (sombra larga)
+    const fx = ['clasico', 'neon', 'caja', '3d'].includes(design.effect) ? design.effect : 'clasico';
+    const bord = Math.max(4, Math.round(size * 0.085)), shad = Math.max(3, Math.round(size * 0.06));
+    const hlc = assColor(design.color || '#FFD400');
+    const ev = (layer, tags, txt = textAss) => `Dialogue: ${layer},0:00:00.00,0:00:05.00,T,,0,0,0,,{\\an${an}\\pos(${x},${y})${rot}\\q2${tags}}${txt}`;
+    const events = [];
+    let styleBorder = 1, outlineCol = assColor(design.outline || '#000000');
+    if (fx === 'neon') {
+      events.push(ev(0, `\\bord${Math.round(size * 0.16)}\\blur${Math.round(size * 0.12)}\\3c${hlc}\\1a&HFF&\\shad0`, textAss.replace(/\{\\c[^}]*\}/g, ''))); // solo el brillo (sin los cambios de color, que quitarían la transparencia)
+      // la palabra resaltada lleva borde oscuro para que no se funda con el brillo
+      const tc = assColor(design.textColor || '#FFFFFF');
+      const neonTxt = textAss.split(`{\\c${hlc}}`).join(`{\\c${hlc}\\3c&H00101010&}`).split(`{\\c${tc}}`).join(`{\\c${tc}\\3c${hlc}}`);
+      events.push(ev(1, `\\bord${Math.round(size * 0.05)}\\blur2\\3c${hlc}\\shad0`, neonTxt));
+    } else if (fx === '3d') {
+      const depth = Math.max(6, Math.round(size * 0.07));
+      for (let k = depth; k >= 1; k--) events.push(`Dialogue: 0,0:00:00.00,0:00:05.00,T,,0,0,0,,{\\an${an}\\pos(${x + k},${y + k})${rot}\\q2\\1c&H00202020&\\3c&H00101010&\\shad0}${textAss.replace(/\{\\c[^}]*\}/g, '')}`);
+      events.push(ev(1, '\\shad0'));
+    } else if (fx === 'caja') {
+      styleBorder = 3; outlineCol = hlc; // caja del color de resaltado detrás de cada línea; el texto en negro y la palabra clave en blanco
+      const isHl = w => hl && w.replace(/[^\p{L}\p{N}]/gu, '') === hl.replace(/[^\p{L}\p{N}]/gu, '');
+      const boxBody = words.map(w => isHl(w) ? `{\\c&H00FFFFFF&}${w}{\\c&H00111111&}` : w);
+      const boxTxt = [...Array(lines)].map((_, k) => boxBody.slice(k * per, (k + 1) * per).join(' ')).filter(Boolean).join('\\N');
+      events.push(ev(0, `\\1c&H00111111&\\shad0\\bord${Math.round(size * 0.12)}`, boxTxt));
+    } else events.push(ev(0, ''));
     const ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${W}\nPlayResY: ${H}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
-      `Style: T,Anton,${size},${assColor(design.textColor || '#FFFFFF')},&H00FFFFFF,${assColor(design.outline || '#000000')},&H96000000,0,0,0,0,100,100,1,0,1,${Math.max(4, Math.round(size * 0.085))},${Math.max(3, Math.round(size * 0.06))},5,0,0,0,1\n\n` +
-      `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:05.00,T,,0,0,0,,{\\an${an}\\pos(${x},${y})${rot}\\q2}${textAss}\n`;
+      `Style: T,Anton,${size},${assColor(design.textColor || '#FFFFFF')},&H00FFFFFF,${outlineCol},&H96000000,0,0,0,0,100,100,1,0,${styleBorder},${bord},${shad},5,0,0,0,1\n\n` +
+      `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${events.join('\n')}\n`;
     const assFile = path.join(dir, 't.ass');
     fs.writeFileSync(assFile, ass);
     // Degradado oscuro detrás del texto para que se lea sobre cualquier imagen
@@ -82,8 +107,16 @@ export async function renderThumb(baseRef, design, format = 'youtube') {
       : pos === 'bottom' ? `,drawbox=x=0:y=${Math.round(H * 0.6)}:w=${W}:h=${Math.round(H * 0.4)}:color=black@0.28:t=fill` : '';
     const sat = Number(design.saturation) || 1.15;
     const out = path.join(dir, 'out.png');
-    await ffmpeg(['-i', src, '-vf', `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},eq=saturation=${sat}:contrast=1.05${shade}${text ? ',' + assFilter(assFile) : ''}`,
-      '-frames:v', '1', out], { timeoutMs: 60000 });
+    const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},eq=saturation=${sat}:contrast=1.05${shade}${text ? ',' + assFilter(assFile) : ''}`;
+    // Emoji grande (😱 🔥 💰…) en la esquina contraria al texto
+    const emo = design.emoji ? await emojiImage(design.emoji).catch(() => null) : null;
+    if (emo) {
+      const es = Math.round(Math.min(W, H) * 0.3 * (Number(design.emojiScale) || 1));
+      const ex = pos === 'right' ? Math.round(W * 0.05) : W - es - Math.round(W * 0.05);
+      const ey = pos === 'top' ? H - es - Math.round(H * 0.06) : Math.round(H * 0.06);
+      await ffmpeg(['-i', src, '-i', emo, '-filter_complex', `[0:v]${base}[b];[1:v]scale=${es}:${es},rotate=${pos === 'right' ? -0.15 : 0.15}:c=none:ow=rotw(0.15):oh=roth(0.15)[e];[b][e]overlay=${ex}:${ey}`,
+        '-frames:v', '1', out], { timeoutMs: 60000 });
+    } else await ffmpeg(['-i', src, '-vf', base, '-frames:v', '1', out], { timeoutMs: 60000 });
     return await saveFile(out, `miniatura_${format}.png`, 'image/png');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
@@ -172,10 +205,12 @@ export function mountThumbs(app, h) {
       const refs = [];
       for (const r of (t.refs || []).slice(0, 2)) { try { refs.push(fs.readFileSync(await toLocal(r, path.join(WORK_DIR, `tref_${crypto.randomBytes(4).toString('hex')}`)))); } catch {} }
       const prompt = `YouTube thumbnail image for a video titled "${t.title}". ${b.prompt || ''}. ${STYLES[t.style] || ''}. ${sideText}. ${refs.length ? 'Use the person from the reference photo as the main subject, keep their face recognizable, exaggerated expressive emotion.' : ''} Eye-catching, high click-through rate composition, subject large and close to camera. Absolutely no text, letters, words, logos or watermarks.`;
-      const buf = await generateImage(prompt, { size: F.size, references: refs });
+      const steps = { rapida: 12, normal: 22, alta: 32 }[b.quality] || undefined;
+      const buf = await generateImage(prompt, { size: F.size, references: refs, steps });
       base = await saveBuffer(buf, 'miniatura_base.png', 'image/png');
     }
-    const design = { text: b.text || '', highlight: b.highlight || '', color: b.color || '#FFD400', position: b.position || 'left', textColor: b.textColor || '#FFFFFF', outline: '#000000', scale: 1, tilt: 0, shade: true };
+    const design = { text: b.text || '', highlight: b.highlight || '', color: b.color || '#FFD400', position: b.position || 'left', textColor: b.textColor || '#FFFFFF', outline: '#000000', scale: 1, tilt: 0, shade: true,
+      effect: b.effect || 'clasico', emoji: b.emoji || '' };
     const ref = await renderThumb(base, design, t.format);
     const item = { id: crypto.randomBytes(4).toString('hex'), base, out: ref, design, prompt: b.prompt || '' };
     await q(`UPDATE thumbnails SET items = items || $2::jsonb WHERE id = $1`, [t.id, JSON.stringify([item])]);
