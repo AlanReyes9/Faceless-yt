@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { q, one, getProject, updateProject, WORK_DIR, IS_VERCEL } from '../db.js';
-import { ffmpeg, probe, run } from './ffmpeg.js';
+import { ffmpeg, probe, run, FFMPEG } from './ffmpeg.js';
 import { sliceWords, normWord } from './ass.js';
 import { buildSignals } from './signals.js';
 import { transcribeChunk } from '../ai/transcribe.js';
@@ -111,7 +111,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
       rec = v;
       liveCuts.delete(id);
       await setLive(id, { vSeq: v.lastSeq, ...(a ? { aSeq: a.lastSeq } : {}), ...(v.gap ? { gaps: (live.gaps || 0) + 1 } : {}) });
-      if (v.seconds > 0) await ffmpeg(['-i', vfile, ...(a ? ['-i', afile, '-map', '0:v:0', '-map', '1:a:0'] : ['-map', '0:v:0', '-map', '0:a:0?']),
+      if (v.seconds > 0) await ffmpeg([...(a ? await syncInputs(vfile, afile) : ['-i', vfile, '-map', '0:v:0', '-map', '0:a:0?']),
         '-c', 'copy', '-movflags', '+faststart', out], { timeoutMs: 120000 });
     } else {
       // RTMP / SRT / RTSP / enlaces de vídeo: ffmpeg lee el directo (copia sin recodificar)
@@ -143,6 +143,25 @@ register('live.capture', async ({ id, seg }, ctx) => {
   await setLive(id, { ended: true });
   await updateProject(id, { status: 'error', error: 'Grabación del directo: ' + msg, progress: null });
 });
+
+// Instante en que empieza un archivo grabado (tiempo del directo, igual en las listas de vídeo y de audio)
+async function startTime(file) {
+  const { err } = await run(FFMPEG, ['-hide_banner', '-i', file], { allowFail: true, timeoutMs: 30000 });
+  const m = /start: (-?[\d.]+)/.exec(err);
+  return m ? Number(m[1]) : null;
+}
+/**
+ * Vídeo y audio de un directo se graban por separado y cada uno empieza donde iba su lista (pueden diferir varios
+ * segundos). Se alinean por su tiempo real: si el audio empezó antes se recorta su principio; si empezó después se
+ * retrasa. Así la voz coincide con la imagen y con los subtítulos.
+ */
+export async function syncInputs(vfile, afile) {
+  const [vs, as] = await Promise.all([startTime(vfile), startTime(afile)]);
+  const d = vs != null && as != null ? as - vs : 0;
+  const ok = Math.abs(d) > 0.02 && Math.abs(d) < 600;
+  if (ok) console.log(`[directo] audio ${d > 0 ? 'retrasado' : 'adelantado'} ${Math.abs(d).toFixed(2)} s respecto al vídeo: se alinea`);
+  return ['-i', vfile, ...(ok && d < 0 ? ['-ss', (-d).toFixed(3)] : []), ...(ok && d > 0 ? ['-itsoffset', d.toFixed(3)] : []), '-i', afile, '-map', '0:v:0', '-map', '1:a:0'];
+}
 
 // "✂ Clip ahora": momentos marcados a mano durante el directo (los últimos N segundos), sin pasar el filtro de nota
 async function manualClips(id, row, prev, winStart, transcript, o, last) {

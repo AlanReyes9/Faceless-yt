@@ -84,5 +84,23 @@ await step('Directo', async () => {
   } finally { gen.kill(); st.close(); }
 });
 
+await step('Directo: audio y vídeo sincronizados', async () => {
+  // destello y pitido a la vez (cada 10 s); el audio se "graba" desde 4 s antes que el vídeo, como pasa en YouTube
+  const d = path.join(process.env.DATA_DIR, 'sync'); fs.mkdirSync(d);
+  const src = path.join(d, 'src.mp4');
+  await ffmpeg(['-f', 'lavfi', '-i', "color=black:s=320x240:r=30:d=40,geq=lum='if(lt(mod(T-5,10),0.2),255,16)':cb=128:cr=128",
+    '-f', 'lavfi', '-i', "sine=f=1000:d=40,volume='if(lt(mod(t-5,10),0.2),1,0)':eval=frame", '-c:v', 'libx264', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', src]);
+  await ffmpeg(['-ss', '10', '-copyts', '-i', src, '-map', '0:v', '-c', 'copy', '-t', '20', '-f', 'mpegts', path.join(d, 'v.ts')]);
+  await ffmpeg(['-ss', '6', '-copyts', '-i', src, '-map', '0:a', '-c', 'copy', '-t', '24', '-f', 'mpegts', path.join(d, 'a.ts')]);
+  const { syncInputs } = await import('../server/video/live.js');
+  const out = path.join(d, 'out.mp4');
+  await ffmpeg([...await syncInputs(path.join(d, 'v.ts'), path.join(d, 'a.ts')), '-c', 'copy', out]);
+  const { run } = await import('../server/video/ffmpeg.js');
+  const fl = (await run(FFMPEG, ['-hide_banner', '-i', out, '-vf', "select='gt(scene,0.3)',showinfo", '-an', '-f', 'null', '-'], { allowFail: true })).err.match(/pts_time:([\d.]+)/g)?.map(x => +x.split(':')[1]) || [];
+  const bp = (await run(FFMPEG, ['-hide_banner', '-i', out, '-vn', '-af', 'silencedetect=n=-30dB:d=0.05', '-f', 'null', '-'], { allowFail: true })).err.match(/silence_end: ([\d.]+)/g)?.map(x => +x.split(' ')[1]) || [];
+  const f0 = fl.find(t => t > 1), b0 = bp.find(t => Math.abs(t - f0) < 6);
+  ok('Directo: audio y vídeo sincronizados', f0 != null && b0 != null && Math.abs(f0 - b0) < 0.3, `imagen ${f0?.toFixed(2)} s · sonido ${b0?.toFixed(2)} s`);
+});
+
 console.log(bad ? `\n${bad} prueba(s) fallaron` : '\nTodo correcto');
 process.exit(bad ? 1 : 0);
