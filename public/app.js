@@ -668,7 +668,7 @@ async function reportTab(p, tab) {
   } else if (tab === 'capitulos') {
     const chap = (R.chapters || []).map(c => `${fmtT(c.t)} ${c.title}`).join('\n');
     pane.innerHTML = `<div class="grid g2"><div class="card stack"><b>Capítulos de YouTube</b>${(R.chapters || []).map(c => `<div class="row"><code>${fmtT(c.t)}</code> ${esc(c.title)}</div>`).join('')}${copyBtn(chap, '📋 Copiar capítulos')}</div>
-      <div class="card stack"><b>Clips</b>${(p.clips || []).map(c => `<div class="row between"><span><code>${fmtT(c.start)}–${fmtT(c.end)}</code> ${esc(c.title || '')} <span class="pill">${c.score}/10</span></span>${!c.src ? `<a class="btn sm" href="#/editor/${c.id}">✏️ Editor</a>` : ''}</div>`).join('') || '<div class="muted small">Sin clips.</div>'}</div></div>`;
+      <div class="card stack"><b>Clips</b>${(p.clips || []).map(c => `<div class="row between"><span><code>${fmtT(c.start)}–${fmtT(c.end)}</code> ${esc(c.title || '')} <span class="pill">${c.score}/10</span></span><a class="btn sm" href="#/editor/${c.id}">✏️ Editor</a></div>`).join('') || '<div class="muted small">Sin clips.</div>'}</div></div>`;
   } else if (tab === 'mejoras') {
     pane.innerHTML = `<div class="card stack">${(R.improvements || []).map(m => `<div class="row" style="align-items:flex-start;gap:10px;border-bottom:1px solid var(--line);padding:8px 0"><span class="pill">${esc(m.area)}</span><span>${esc(m.tip)}</span></div>`).join('') || '<div class="muted">Sin sugerencias.</div>'}</div>`;
   } else if (tab === 'miniaturas') {
@@ -741,7 +741,7 @@ function drawReportTimeline(p) {
     const c = clips.find(c => t >= c.start && t <= c.end);
     tip.hidden = false; tip.style.left = e.offsetX + 'px'; tip.textContent = mmss(t) + (c ? ` · Clip #${c.idx}: ${c.title || ''}` : ''); cv.style.cursor = c ? 'pointer' : 'default'; };
   cv.onmouseleave = () => { tip.hidden = true; };
-  cv.onclick = e => { const t = (e.offsetX * dpr - 10 * dpr) / (W - 20 * dpr) * dur; const c = clips.find(c => t >= c.start && t <= c.end); if (c && !c.src) openEditorWindow(c.id); };
+  cv.onclick = e => { const t = (e.offsetX * dpr - 10 * dpr) / (W - 20 * dpr) * dur; const c = clips.find(c => t >= c.start && t <= c.end); if (c) openEditorWindow(c.id); };
 }
 
 // ---------- Editor de clips (public/editor.js) ----------
@@ -897,7 +897,7 @@ function shortsGrid(p, chs) {
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
         <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : 'fondo difuminado'}</span>
-          ${!c.src && !p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
+          ${!p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
         <div><label>Frase de gancho (sale 4 s arriba)</label><input data-f="hook" value="${esc(c.hook)}"></div>

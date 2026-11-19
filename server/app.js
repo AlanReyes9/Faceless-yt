@@ -12,7 +12,7 @@ import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
 import { run, FFMPEG, probe } from './video/ffmpeg.js';
 import { CAPTION_STYLES } from './video/ass.js';
-import './video/shorts.js';
+import { liveWords } from './video/shorts.js';
 import { setLive, liveCuts } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
 import { mountLicense, adminFromReq, hasAdmin } from './license.js';
@@ -705,16 +705,47 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   res.json({ ok: true });
 }));
 // ---------- Editor de clips ----------
+// Segmentos de un directo que cubren [from, to]: uno solo se usa tal cual; varios se unen (sin recodificar) y se guarda el resultado
+async function liveSegs(projectId, from, to) {
+  return q('SELECT seg, ref, start, dur FROM live_segments WHERE project_id = $1 AND start < $3 AND start + dur > $2 AND ref IS NOT NULL ORDER BY seg', [projectId, from, to]);
+}
+async function liveEditSource(p, from, to) {
+  const segs = await liveSegs(p.id, from, to);
+  if (!segs.length) return null;
+  // los segmentos deben ser consecutivos (si falta uno, se usa el tramo continuo más largo)
+  const out = { ref: segs[0].ref, from: segs[0].start, to: segs[0].start + segs[0].dur };
+  if (segs.length === 1) return out;
+  const key = segs.map(s => s.seg).join('-');
+  const cache = p.data.liveEdit?.[key];
+  if (cache) return { ref: cache, from: segs[0].start, to: segs.at(-1).start + segs.at(-1).dur };
+  const tag = `liveedit_${p.id}_${key}_${Date.now()}`, list = path.join(WORK_DIR, tag + '.txt'), file = path.join(WORK_DIR, tag + '.mp4');
+  const { localUrl } = await import('./video/netproxy.js');
+  try {
+    const inputs = [];
+    for (const s of segs) inputs.push(await localUrl(inputPath(s.ref)));
+    fs.writeFileSync(list, inputs.map(f => `file '${String(f).replace(/'/g, "'\\''")}'`).join('\n'));
+    await run(FFMPEG, ['-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', '-i', list, '-c', 'copy', '-movflags', '+faststart', file], { timeoutMs: 180000 });
+    const ref = await saveFile(file, tag + '.mp4');
+    await q(`UPDATE projects SET data = jsonb_set(data, '{liveEdit}', COALESCE(data->'liveEdit', '{}'::jsonb) || $2::jsonb) WHERE id = $1`, [p.id, JSON.stringify({ [key]: ref })]);
+    return { ref, from: segs[0].start, to: segs.at(-1).start + segs.at(-1).dur };
+  } catch (e) {
+    console.warn('[editor directo] no se pudieron unir los segmentos:', e.message);
+    // sin unir: el segmento donde está la mayor parte del clip
+    return out;
+  } finally { for (const f of [list, file]) fs.rmSync(f, { force: true }); }
+}
 app.get('/api/clips/:id/editor', h(async (req, res) => {
   const c = await getClip(req.params.id);
   if (!c) return res.status(404).json({ error: 'No existe' });
   const p = await getProject(c.project_id);
-  if (c.src) throw new Error('Los clips de directos todavía no se pueden abrir en el editor.');
   const dur = p.duration || 0;
   const pad = Math.max(20, (c.end - c.start) * 0.6);
-  const from = Math.max(0, c.start - pad), to = Math.min(dur || c.end + pad, c.end + pad);
+  let from = Math.max(0, c.start - pad), to = Math.min(dur || c.end + pad, c.end + pad);
   const E = c.edit || {};
-  let words = (p.data.transcript?.words || []).filter(w => w.end > from && w.start < to);
+  // Directos: el editor trabaja sobre los segmentos grabados alrededor del clip (unidos en un solo vídeo si son varios)
+  const live = p.type === 'live' ? await liveEditSource(p, from, to) : null;
+  if (live) { from = Math.max(from, live.from); to = Math.min(to, live.to); }
+  let words = (live ? await liveWords(p.id, from, to) : (p.data.transcript?.words || [])).filter(w => w.end > from && w.start < to);
   if (E.words) words = [...words.filter(w => w.end <= E.wordsFrom || w.start >= E.wordsTo), ...E.words].filter(w => w.end > from && w.start < to).sort((a, b) => a.start - b.start);
   // Encuadre automático ya calculado (centros normalizados, tiempos absolutos)
   const W = p.data.width || 1920, H = p.data.height || 1080;
@@ -722,7 +753,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
   const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
   res.json({
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
-    project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: publicUrl(p.source), sourceDeleted: !!p.data.sourceDeletedAt, captionStyle: p.data.options?.captionStyle },
+    project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
@@ -735,10 +766,17 @@ app.get('/api/projects/:id/waveform', h(async (req, res) => {
   const os = await import('node:os');
   const { spawn } = await import('node:child_process');
   const { localUrl } = await import('./video/netproxy.js');
-  const input = await localUrl(inputPath(p.source));
+  // Directos: el audio sale del vídeo que usa el editor para ese clip
+  let src = p.source, off = 0;
+  if (p.type === 'live') {
+    const lv = await liveEditSource(p, from, to);
+    if (!lv) return res.json({ from, to, peaks: [] });
+    src = lv.ref; off = lv.from;
+  }
+  const input = await localUrl(inputPath(src));
   const rate = 4000;
   const pcm = await new Promise((resolve, reject) => {
-    const pr = spawn(FF, ['-hide_banner', '-loglevel', 'error', '-ss', String(from), '-t', String(to - from), '-i', input, '-vn', '-ac', '1', '-ar', String(rate), '-f', 's16le', 'pipe:1'],
+    const pr = spawn(FF, ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, from - off)), '-t', String(to - from), '-i', input, '-vn', '-ac', '1', '-ar', String(rate), '-f', 's16le', 'pipe:1'],
       { env: { ...process.env, GCONV_PATH: path.join(os.tmpdir(), 'faceless-gconv-empty') } });
     const ch = []; pr.stdout.on('data', d => ch.push(d)); pr.on('error', reject); pr.on('close', () => resolve(Buffer.concat(ch)));
   });
@@ -768,6 +806,13 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
     ...(words ? { words, wordsFrom: num(b.wordsFrom, 0, 1e7, start), wordsTo: num(b.wordsTo, 0, 1e7, end) } : (c.edit?.words ? { words: c.edit.words, wordsFrom: c.edit.wordsFrom, wordsTo: c.edit.wordsTo } : {})),
   };
   const f = { start, end, edit, layout: edit.layout, style: edit.captions.style };
+  // Directos: el clip se forma con los trozos de los segmentos grabados que cubren el nuevo inicio y final
+  if (c.src && (start !== c.start || end !== c.end)) {
+    const segs = await liveSegs(c.project_id, start, end);
+    const parts = segs.map(sg => { const a = Math.max(start, sg.start), z = Math.min(end, sg.start + sg.dur); return { ref: sg.ref, ss: +(a - sg.start).toFixed(3), dur: +(z - a).toFixed(3) }; }).filter(x => x.dur > 0.05);
+    if (!parts.length) throw new Error('Esa parte del directo ya no está guardada.');
+    f.src = JSON.stringify(parts);
+  }
   if ('hook' in b) f.hook = String(b.hook || '').slice(0, 120);
   if ('title' in b) f.title = String(b.title || '').slice(0, 120);
   await updateClip(c.id, f);

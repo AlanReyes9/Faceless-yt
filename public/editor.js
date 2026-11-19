@@ -55,6 +55,12 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const notify = () => { try { window.opener?.postMessage({ type: 'clip-saved', clipId, projectId: P.id }, location.origin); } catch {} };
   $e('#back').onclick = () => { notify(); if (window.opener) window.close(); else location.hash = '#/proyecto/' + P.id; };
   const vid = $e('#vid'), out = $e('#out'), ctx = out.getContext('2d'), tl = $e('#tl'), tctx = tl.getContext('2d');
+  // Directos: el vídeo del editor es un trozo de la grabación que empieza en P.timeOffset; los tiempos se manejan absolutos
+  const OFF = Number(P.timeOffset) || 0;
+  if (OFF) {
+    const ct = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    Object.defineProperty(vid, 'currentTime', { get() { return ct.get.call(this) + OFF; }, set(v) { ct.set.call(this, Math.max(0, v - OFF)); } });
+  }
   document.body.classList.add('editing');
 
   // ---------- Encuadre ----------
@@ -382,5 +388,5 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     if (e.code === 'Space') { e.preventDefault(); $e('#play').click(); }
   });
   pane(); sizeOut(); sizeTl(); changed(false);
-  api(`/api/projects/${P.id}/waveform?from=${WIN.from}&to=${WIN.to}&n=${Math.max(200, tl.width)}`).then(r => { peaks = r.peaks; drawTimeline(); }).catch(() => {});
+  api(`/api/projects/${P.id}/waveform?clip=${d.clip.id}&from=${WIN.from}&to=${WIN.to}&n=${Math.max(200, tl.width)}`).then(r => { peaks = r.peaks; drawTimeline(); }).catch(() => {});
 }
