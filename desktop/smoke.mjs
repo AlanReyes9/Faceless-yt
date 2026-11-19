@@ -27,9 +27,10 @@ for (let t = 0; t < 30; t += 5) segments.push({ start: t, end: t + 5, text: word
 
 const p = await insert('projects', { type: 'shorts', title: 'smoke', source, status: 'processing', duration: 30,
   data: { options: { layout: 'face', captionStyle: 'impacto', emojis: true, captions: true }, width: 1280, height: 720, cuts: [],
+    facecam: { rect: { x: 0.04, y: 0.05, w: 0.26, h: 0.4 } }, // plantilla Gaming (cámara del jugador conocida)
     transcript: { language: 'es', words, segments, energy: [] } } });
 
-const cases = [['face', 'impacto'], ['crop', 'clasico'], ['blur', 'marcador'], ['face', 'minimal']];
+const cases = [['face', 'impacto'], ['crop', 'clasico'], ['blur', 'marcador'], ['face', 'minimal'], ['gaming', 'impacto']];
 let idx = 0;
 for (const [layout, style] of cases) {
   const c = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals)

@@ -17,6 +17,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       y: E.captions?.y ?? (c.layout === 'blur' ? 1 - 560 / 1920 : 1 - 420 / 1920), color: E.captions?.color || d.highlight || '#FFD400',
       upper: E.captions?.upper ?? st0.upper, wpg: E.captions?.wpg || st0.wpg },
     words: d.words.map(w => ({ ...w })),
+    // Gaming: recuadro de la cámara del jugador (normalizado); si aún no se detectó, uno provisional arriba a la izquierda
+    facecam: d.facecam ? { ...d.facecam } : { x: 0.02, y: 0.04, w: 0.25, h: 0.38 }, facecamSet: !!E.facecam,
   };
   if (S.layout === 'face' && S.crop.mode === 'fixed') S.layout = 'crop';
   let wordsDirty = false;
@@ -100,7 +102,17 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const cwid = out.width, chei = out.height, k = cwid / ow;
     ctx.clearRect(0, 0, cwid, chei);
     if (vid.readyState >= 2) {
-      if (S.layout === 'blur') {
+      if (S.layout === 'gaming') {
+        // arriba: cámara del jugador sobre su propio fondo difuminado; abajo: la partida a todo el alto, recortada al centro
+        const TH = Math.round(chei * 0.355), GH = chei - TH, F = S.facecam;
+        const sx = F.x * W, sy = F.y * H, sw = F.w * W, sh = F.h * H;
+        ctx.filter = 'blur(14px) brightness(0.85) saturate(1.2)'; ctx.drawImage(vid, sx, sy, sw, sh, -20, -20, cwid + 40, TH + 40); ctx.filter = 'none';
+        const pad = TH * 0.07, s2 = Math.min((cwid - 2 * pad) / sw, (TH - 2 * pad) / sh), fw = sw * s2, fh = sh * s2;
+        ctx.save(); ctx.beginPath(); ctx.roundRect ? ctx.roundRect((cwid - fw) / 2, (TH - fh) / 2, fw, fh, Math.min(fw, fh) * 0.06) : ctx.rect((cwid - fw) / 2, (TH - fh) / 2, fw, fh); ctx.clip();
+        ctx.drawImage(vid, sx, sy, sw, sh, (cwid - fw) / 2, (TH - fh) / 2, fw, fh); ctx.restore();
+        const gs = Math.max(cwid / W, GH / H), gw = W * gs;
+        ctx.save(); ctx.beginPath(); ctx.rect(0, TH, cwid, GH); ctx.clip(); ctx.drawImage(vid, (cwid - gw) / 2, TH, gw, H * gs); ctx.restore();
+      } else if (S.layout === 'blur') {
         const sc = Math.max(cwid / W, chei / H);
         ctx.filter = 'blur(18px) brightness(0.9)'; ctx.drawImage(vid, (cwid - W * sc) / 2, (chei - H * sc) / 2, W * sc, H * sc); ctx.filter = 'none';
         const f = Math.min(cwid / W, chei / H); ctx.drawImage(vid, (cwid - W * f) / 2, (chei - H * f) / 2, W * f, H * f);
@@ -111,7 +123,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       const size = 80 * k; ctx.font = `800 ${size}px "DejaVu Sans", Arial`;
       const words = S.hook.toUpperCase().split(' '); const half = Math.ceil(words.length / 2);
       [words.slice(0, half).join(' '), words.slice(half).join(' ')].filter(Boolean).forEach((line, i) => {
-        const w = ctx.measureText(line).width; drawText(line, (cwid - w) / 2, (190 + 40) * k + i * size * 1.15, size, i ? '#fff' : S.captions.color);
+        const w = ctx.measureText(line).width; drawText(line, (cwid - w) / 2, (S.layout === 'gaming' ? Math.round(1920 * 0.355) + 40 + 40 : 190 + 40) * k + i * size * 1.15, size, i ? '#fff' : S.captions.color);
       });
     }
     // subtítulos
@@ -134,9 +146,10 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       }
     }
     // rectángulo del original
-    const r = rectAt(t), rect = $e('#rect');
+    const r = S.layout === 'gaming' ? { x: S.facecam.x * W, y: S.facecam.y * H, cw: S.facecam.w * W, ch: S.facecam.h * H } : rectAt(t), rect = $e('#rect');
     if (rect) {
       rect.style.display = S.layout === 'blur' ? 'none' : 'block';
+      rect.title = S.layout === 'gaming' ? 'Cámara del jugador: arrástrala para moverla y usa la esquina para cambiar su tamaño' : '';
       rect.style.left = r.x / W * 100 + '%'; rect.style.top = r.y / H * 100 + '%'; rect.style.width = r.cw / W * 100 + '%'; rect.style.height = r.ch / H * 100 + '%';
     }
     $e('#tnow').textContent = fmtT(t);
@@ -204,6 +217,18 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const rect = $e('#rect');
   rect.onpointerdown = e => {
     e.preventDefault();
+    if (S.layout === 'gaming') {
+      const box = $e('#orig').getBoundingClientRect(), f0 = { ...S.facecam }, sx = e.clientX, sy = e.clientY, resize = e.target.tagName === 'SPAN';
+      const move = ev => {
+        const dx = (ev.clientX - sx) / box.width, dy = (ev.clientY - sy) / box.height;
+        if (resize) { S.facecam.w = Math.max(0.05, Math.min(1 - f0.x, f0.w + dx)); S.facecam.h = Math.max(0.05, Math.min(1 - f0.y, f0.h + dy)); }
+        else { S.facecam.x = Math.max(0, Math.min(1 - f0.w, f0.x + dx)); S.facecam.y = Math.max(0, Math.min(1 - f0.h, f0.y + dy)); }
+        S.facecamSet = true; render();
+      };
+      const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); changed(); pane(); };
+      window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+      return;
+    }
     const box = $e('#orig').getBoundingClientRect(), t = vid.currentTime, r0 = rectAt(t);
     const sx = e.clientX, sy = e.clientY, cx0 = (r0.x + r0.cw / 2) / W, cy0 = (r0.y + r0.ch / 2) / H;
     if (S.crop.mode === 'face') { S.crop.mode = 'manual'; S.crop.keys = autoKeys.map(k => ({ ...k })); pane(); }
@@ -228,13 +253,16 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const P2 = $e('#pane');
     if (tab === 0) P2.innerHTML = `
       <h4>▾ Formato</h4><select data-s="format">${opt(Object.fromEntries(Object.entries(FORMATS).map(([k, v]) => [k, v[0]])), S.format)}</select>
-      <div class="row"><span class="small" style="width:70px">Plantilla</span><select data-s="layout" style="flex:1">${opt({ crop: 'Normal (recorte que llena la pantalla)', blur: 'Vídeo completo con fondo difuminado' }, S.layout === 'blur' ? 'blur' : 'crop')}</select></div>
-      <div class="row"><span class="small" style="width:70px">Zoom</span><input type="range" data-s="zoom" min="1" max="3" step="0.05" value="${S.crop.zoom}" style="flex:1"><span class="small" style="width:44px">${Math.round(S.crop.zoom * 100)} %</span></div>
+      <div class="row"><span class="small" style="width:70px">Plantilla</span><select data-s="layout" style="flex:1">${opt({ crop: 'Normal (recorte que llena la pantalla)', gaming: '🎮 Gaming (cámara arriba, juego abajo)', blur: 'Vídeo completo con fondo difuminado' }, S.layout === 'blur' || S.layout === 'gaming' ? S.layout : 'crop')}</select></div>
+      ${S.layout === 'gaming' ? `<div class="small muted">${d.facecam ? '✓ Cámara del jugador detectada.' : 'La cámara se detecta sola al exportar.'} En el original, el recuadro es la cámara: arrástralo para moverlo y usa la esquina para ajustar su tamaño.</div>
+        ${S.facecamSet ? '<button class="btn sm" id="camAuto">↺ Volver a la detección automática</button>' : ''}` : ''}
+      ${S.layout === 'gaming' ? '' : `<div class="row"><span class="small" style="width:70px">Zoom</span><input type="range" data-s="zoom" min="1" max="3" step="0.05" value="${S.crop.zoom}" style="flex:1"><span class="small" style="width:44px">${Math.round(S.crop.zoom * 100)} %</span></div>
       <h4>▾ Seguir cara</h4><select data-s="mode">${opt({ face: 'Sí, automático (sigue a quien habla)', fixed: 'No (encuadre fijo)', manual: 'Manual (fotogramas clave)' }, S.crop.mode)}</select>
       <div class="small ${S.crop.mode === 'fixed' ? 'warn-txt' : 'muted'}">${S.crop.mode === 'face' ? (d.autoKeys ? '✓ Encuadre automático detectado con IA local.' : 'Aún no hay seguimiento calculado: se calcula al exportar.') : S.crop.mode === 'fixed' ? '⚠ Encuadre fijo (no sigue a nadie). Arrastra el recuadro del original para moverlo.' : 'Arrastra el recuadro del original en distintos momentos: cada posición crea un fotograma clave (◆). Doble clic en un ◆ de la línea de tiempo para borrarlo.'}</div>
       ${S.crop.mode === 'manual' ? `<div class="stack" style="gap:4px">${[...S.crop.keys].sort((a, b) => a.t - b.t).map(k => `<div class="row small" style="gap:6px"><a href="#" data-goto="${k.t}">◆ ${fmtT(k.t)}</a><span class="muted">${Math.round(k.cx * 100)} %</span>
         <label class="check" style="margin:0"><input type="checkbox" data-cut="${k.t}" ${k.cut ? 'checked' : ''}> corte seco</label><button class="btn sm" data-delkey="${k.t}">✕</button></div>`).join('') || '<div class="small muted">Sin fotogramas clave.</div>'}
         <button class="btn sm" id="addkey">＋ Fotograma clave aquí</button></div>` : ''}
+`}
       ${S.layout === 'blur' ? '<div class="small muted">Con fondo difuminado se ve el vídeo entero (no hay recorte).</div>' : ''}`;
     else if (tab === 1) {
       const ws = clipWords();
@@ -270,7 +298,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-s]').forEach(el => el.oninput = el.onchange = () => {
       const v = el.type === 'checkbox' ? el.checked : el.value, k = el.dataset.s;
       if (k === 'format') { S.format = v; sizeOut(); }
-      else if (k === 'layout') S.layout = v === 'blur' ? 'blur' : (S.crop.mode === 'face' ? 'face' : 'crop');
+      else if (k === 'layout') S.layout = v === 'blur' || v === 'gaming' ? v : (S.crop.mode === 'face' ? 'face' : 'crop');
       else if (k === 'zoom') { S.crop.zoom = Number(v); el.nextElementSibling.textContent = Math.round(v * 100) + ' %'; }
       else if (k === 'mode') { S.crop.mode = v; if (v === 'manual' && !S.crop.keys.length) S.crop.keys = autoKeys.map(k => ({ ...k })); if (S.layout !== 'blur') S.layout = v === 'face' ? 'face' : 'crop'; pane(); }
       else if (k === 'cshow') S.captions.show = v;
@@ -299,6 +327,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => { S.captions.style = b.dataset.tpl; const s2 = d.styles[b.dataset.tpl]; S.captions.wpg = s2.wpg; S.captions.upper = s2.upper; changed(); pane(); render(); });
     const si = P2.querySelector('#setin'); if (si) si.onclick = () => { S.start = Math.min(vid.currentTime, S.end - 2); changed(); pane(); };
     const so = P2.querySelector('#setout'); if (so) so.onclick = () => { S.end = Math.max(vid.currentTime, S.start + 2); changed(); pane(); };
+    const ca = P2.querySelector('#camAuto'); if (ca) ca.onclick = () => { S.facecamSet = false; if (d.facecam) S.facecam = { ...d.facecam }; changed(); pane(); render(); };
     const sv = P2.querySelector('#saveTpl'); if (sv) sv.onclick = () => { try { localStorage.setItem('clipTemplate', JSON.stringify({ format: S.format, layout: S.layout, crop: { mode: S.crop.mode, zoom: S.crop.zoom, cy: S.crop.cy }, captions: S.captions })); toast('Plantilla guardada', 'good'); } catch {} };
     const ap = P2.querySelector('#applyTpl'); if (ap) ap.onclick = () => { try { const t = JSON.parse(localStorage.getItem('clipTemplate') || 'null'); if (!t) return toast('Aún no has guardado una plantilla', 'bad');
       Object.assign(S, { format: t.format, layout: t.layout }); Object.assign(S.crop, t.crop); S.captions = { ...S.captions, ...t.captions }; sizeOut(); changed(); pane(); render(); } catch {} };
@@ -317,7 +346,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   // ---------- Guardado automático y exportación ----------
   let saveT = null;
   const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, format: S.format,
-    layout: S.layout === 'blur' ? 'blur' : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
+    layout: S.layout === 'blur' || S.layout === 'gaming' ? S.layout : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
+    ...(S.layout === 'gaming' && S.facecamSet ? { facecam: S.facecam } : {}),
     ...(wordsDirty ? { words: S.words, wordsFrom: WIN.from, wordsTo: WIN.to } : {}), render });
   const changed = (save = true) => {
     if (save) $e('#saved').textContent = 'Guardando…';

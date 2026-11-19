@@ -428,7 +428,7 @@ app.post('/api/shorts', h(async (req, res) => {
     download: b.url ? { height: Math.min(2160, Math.max(144, Number(dl.height) || 1080)), from: Number(dl.from) > 0 ? Number(dl.from) : 0,
       to: Number(dl.to) > Number(dl.from || 0) ? Number(dl.to) : 0, estMB: Number(dl.estMB) || 0 } : undefined,
     count: Math.min(30, Number(b.count) || 10), minSec: Number(b.minSec) || 20, maxSec: Number(b.maxSec) || 60,
-    layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
+    layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
     captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false,
   };
   const p = await insert('projects', { type: 'shorts', title: b.title || b.filename?.replace(/\.[^.]+$/, '') || b.url, channel_id: Number(b.channel_id) || null,
@@ -446,7 +446,7 @@ app.post('/api/live', h(async (req, res) => {
   const platform = /twitch\.tv/i.test(url) ? 'Twitch' : /kick\.com/i.test(url) ? 'Kick' : /youtube\.com|youtu\.be/i.test(url) ? 'YouTube' : null;
   if (IS_VERCEL && !/\.m3u8(\?|$)/i.test(url)) throw new Error('En la versión de Vercel solo se pueden usar enlaces directos .m3u8. Para YouTube, Twitch o Kick instala la app en tu PC (ver Ayuda).');
   const options = {
-    layout: ['crop', 'blur', 'face'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
+    layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
     emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '',
     minScore: Math.min(10, Math.max(1, Number(b.minScore) || 7)), minSec: Number(b.minSec) || 15, maxSec: Number(b.maxSec) || 60,
     segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
@@ -721,7 +721,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
   const plan = c.track?.plan;
   const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
   res.json({
-    clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys,
+    clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: publicUrl(p.source), sourceDeleted: !!p.data.sourceDeletedAt, captionStyle: p.data.options?.captionStyle },
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
@@ -758,7 +758,8 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
     .map(w => ({ word: String(w.word).slice(0, 60), start: Number(w.start), end: Number(w.end) })).filter(w => Number.isFinite(w.start) && Number.isFinite(w.end)) : null;
   const edit = {
     format: ['v', 'sq', 'p45'].includes(b.format) ? b.format : 'v',
-    layout: ['face', 'crop', 'blur'].includes(b.layout) ? b.layout : c.layout,
+    layout: ['face', 'crop', 'blur', 'gaming'].includes(b.layout) ? b.layout : c.layout,
+    ...(b.facecam && ['x', 'y', 'w', 'h'].every(k => Number.isFinite(Number(b.facecam[k]))) ? { facecam: Object.fromEntries(['x', 'y', 'w', 'h'].map(k => [k, num(b.facecam[k], 0, 1, 0)])) } : {}),
     crop: { mode: ['face', 'manual', 'fixed'].includes(b.crop?.mode) ? b.crop.mode : 'face', zoom: num(b.crop?.zoom, 1, 3, 1), cx: num(b.crop?.cx, 0, 1, 0.5), cy: num(b.crop?.cy, 0, 1, 0.5),
       keys: (b.crop?.keys || []).slice(0, 500).map(k => ({ t: num(k.t, 0, 1e7, 0), cx: num(k.cx, 0, 1, 0.5), cut: !!k.cut })) },
     captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1),

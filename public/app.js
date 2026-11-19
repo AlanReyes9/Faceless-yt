@@ -411,6 +411,30 @@ routes.papelera = async () => {
   });
 };
 
+// ---------- Plantillas de encuadre (se preguntan antes de crear los clips) ----------
+const TEMPLATES = {
+  face: { name: 'Quien habla', desc: 'Recorte vertical que sigue a la persona que habla. Podcasts, entrevistas, vlogs.', art: '<div class="tp-face"><i></i></div>' },
+  gaming: { name: '🎮 Gaming', desc: 'La cámara del jugador arriba (se detecta sola) y la partida abajo, recortada al centro con todo el alto. Directos de Kick, Twitch o YouTube.', art: '<div class="tp-gaming"><div class="tp-cam"><i></i></div><div class="tp-game"></div></div>' },
+  crop: { name: 'Recorte centrado', desc: 'Recorte vertical fijo del centro de la imagen.', art: '<div class="tp-crop"></div>' },
+  blur: { name: 'Fondo difuminado', desc: 'El vídeo entero en el centro con el fondo difuminado.', art: '<div class="tp-blur"><div></div></div>' },
+};
+/** Pregunta qué plantilla usar. Devuelve la clave elegida o null si se cancela. */
+function pickTemplate() {
+  let last = 'face'; try { last = localStorage.getItem('clipLayout') || 'face'; } catch {}
+  return new Promise(resolve => {
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal stack" style="width:min(860px,96vw)"><div class="row between"><b>¿Qué plantilla usamos para los clips?</b><button class="btn sm" data-x>✕</button></div>
+      <div class="tp-grid">${Object.entries(TEMPLATES).map(([k, t]) => `<button class="tp-card ${k === last ? 'on' : ''}" data-k="${k}"><div class="tp-art">${t.art}</div><b>${t.name}</b><span class="small muted">${t.desc}</span></button>`).join('')}</div>
+      <div class="row between"><span class="small muted">Puedes cambiarla después en el editor de cada clip.</span><div class="row"><button class="btn" data-x>Cancelar</button><button class="btn gold" id="tpGo">✂ Crear clips</button></div></div></div>`;
+    document.body.appendChild(bg);
+    let sel = last;
+    const done = v => { bg.remove(); if (v) { try { localStorage.setItem('clipLayout', v); } catch {} } resolve(v); };
+    bg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => done(null));
+    bg.querySelectorAll('[data-k]').forEach(b => { b.onclick = () => { sel = b.dataset.k; bg.querySelectorAll('[data-k]').forEach(x => x.classList.toggle('on', x === b)); }; b.ondblclick = () => done(b.dataset.k); });
+    bg.querySelector('#tpGo').onclick = () => done(sel);
+  });
+}
+
 // ---------- Convertir a Clips ----------
 routes.shorts = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
@@ -432,9 +456,7 @@ routes.shorts = async () => {
       <div class="row"><div style="flex:1"><label>Nº de clips</label><input type="number" name="count" value="10" min="1" max="30"></div>
         <div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="20" min="5"></div>
         <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="180"></div></div>
-      <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
-          <option value="face">Recorte centrado en quien habla (automático, recomendado)</option>
-          <option value="crop">Recorte centrado fijo (centro de la imagen)</option><option value="blur">Fondo difuminado (vídeo completo centrado)</option></select></div>
+      <div class="row"><input type="hidden" name="layout" value="face">
         <div style="flex:1"><label>Estilo de subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       <div class="row"><div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar automáticamente</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
@@ -456,6 +478,8 @@ routes.shorts = async () => {
   f.onsubmit = async e => {
     e.preventDefault();
     if (!file.files[0] && !f.url.value && !f.source.value) return toast('Sube un vídeo o descárgalo desde un link', 'bad');
+    const layout = await pickTemplate(); if (!layout) return;
+    f.layout.value = layout;
     const go = $('#go'); go.disabled = true;
     try {
       const d = Object.fromEntries(new FormData(f)); delete d.video;
@@ -506,9 +530,7 @@ routes.directo = async () => {
         <div style="flex:1"><label>Clips máx. por segmento</label><input type="number" name="perSegment" value="3" min="1" max="5"></div></div>
       <div class="row"><div style="flex:1"><label>Duración mín. (s)</label><input type="number" name="minSec" value="15" min="5"></div>
         <div style="flex:1"><label>Duración máx. (s)</label><input type="number" name="maxSec" value="60" min="10" max="120"></div></div>
-      <div class="row"><div style="flex:1"><label>Encuadre</label><select name="layout">
-          <option value="face">Recorte centrado en quien habla (automático)</option>
-          <option value="crop">Recorte centrado fijo</option><option value="blur">Fondo difuminado</option></select></div>
+      <div class="row"><input type="hidden" name="layout" value="face">
         <div style="flex:1"><label>Estilo de subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       <div class="row"><div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar automáticamente</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
@@ -522,6 +544,8 @@ routes.directo = async () => {
   const f = $('#f');
   f.onsubmit = async e => {
     e.preventDefault();
+    const layout = await pickTemplate(); if (!layout) return;
+    f.layout.value = layout;
     const go = $('#go'); go.disabled = true;
     try {
       const d = Object.fromEntries(new FormData(f));
@@ -872,7 +896,7 @@ function shortsGrid(p, chs) {
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : 'fondo difuminado'}</span>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : 'fondo difuminado'}</span>
           ${!c.src && !p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>

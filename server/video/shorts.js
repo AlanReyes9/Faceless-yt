@@ -7,6 +7,7 @@ import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
 import { emojiImage } from './emoji.js';
+import { detectFacecam, gamingFilter } from './gaming.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
 import { getSetting } from '../settings.js';
@@ -223,6 +224,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       captions: C.show != null ? C.show !== false : p.data.options?.captions !== false,
       style: C.style || clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
       sizeScale: C.size, upper: C.upper, wpg: C.wpg,
+      // Gaming: el gancho va justo debajo de la cámara del jugador (arriba del juego) para no taparle la cara
+      ...((E?.layout || clip.layout) === 'gaming' ? { hookMarginV: Math.round(OH * 0.355) + 40 } : {}),
     }));
     const ass = assFilter(assFile);
     const input = inputs[0];
@@ -282,13 +285,28 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       if (facePlan) facePlan.H = H;
       else if (!E) layout = 'blur'; // sin caras detectadas: fondo difuminado (en el editor: encuadre fijo)
     }
+    // Plantilla Gaming: facecam arriba (detectada una vez por proyecto, o la ajustada en el editor) y partida abajo
+    let cam = null;
+    if (layout === 'gaming') {
+      if (E?.facecam) cam = E.facecam;
+      else if (p.data.facecam && 'rect' in p.data.facecam) cam = p.data.facecam.rect;
+      else {
+        await prog('Buscando la cámara del jugador', 5, true);
+        cam = await detectFacecam(input, { from: parts[0].ss, dur: Math.min(parts[0].dur, 90) }).catch(e => { console.warn('facecam:', e.message); return null; });
+        await q(`UPDATE projects SET data = jsonb_set(data, '{facecam}', $2::jsonb, true) WHERE id = $1`, [p.id, JSON.stringify({ rect: cam, at: new Date().toISOString() })]);
+        console.log(`[gaming] proyecto ${p.id}: facecam ${cam ? JSON.stringify(Object.fromEntries(Object.entries(cam).map(([k, v]) => [k, +v.toFixed(3)]))) : 'no encontrada'}`);
+      }
+    }
     let vf;
     // Los subtítulos y emojis se diseñan a 1080x1920; en modo rápido se escala al final
     const Q = quality(ctx.attempt);
     // Varios trozos: se unen (vídeo y audio) antes de aplicar el encuadre
     const vin = parts.length > 1 ? '[cv]' : '[0:v]';
     const pre = parts.length > 1 ? `${parts.map((_, i) => `[${i}:v][${i}:a]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
-    if (E && layout !== 'blur') {
+    if (layout === 'gaming') {
+      const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
+      vf = gamingFilter({ vin: '[0:v]', W, H, cam, OW, OH, ass });
+    } else if (E && layout !== 'blur') {
       // Encuadre del editor: zoom, posición vertical, fotogramas manuales, seguimiento de cara o fijo
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       const z = Math.max(1, Math.min(3, Number(E.crop?.zoom) || 1));
