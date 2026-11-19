@@ -734,6 +734,15 @@ async function liveEditSource(p, from, to) {
     return out;
   } finally { for (const f of [list, file]) fs.rmSync(f, { force: true }); }
 }
+// Modelos disponibles de un proveedor de IA (para elegir en Ajustes sin escribir el nombre a mano)
+app.get('/api/ai-models/:provider', h(async (req, res) => {
+  const p = req.params.provider;
+  if (!['openai', 'groq', 'openrouter'].includes(p)) return res.json({ models: [] });
+  const key = await getSetting(p + '_key');
+  if (!key) return res.json({ models: [], error: 'Primero pega la clave de ' + p + '.' });
+  const { providerModels } = await import('./ai/llm.js');
+  res.json({ models: await providerModels(p, key) });
+}));
 app.get('/api/clips/:id/editor', h(async (req, res) => {
   const c = await getClip(req.params.id);
   if (!c) return res.status(404).json({ error: 'No existe' });

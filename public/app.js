@@ -1564,7 +1564,9 @@ routes.ajustes = async (_, params) => {
   const card = ([g, list]) => `<div class="card stack"><h2>${g}</h2>
       ${list.map(([k, f]) => `<div><label>${f.label}</label>${f.options
         ? `<select name="${k}">${f.options.map(o => `<option ${values[k] === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
-        : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
+        : /^(openai|groq|openrouter)_model$/.test(k)
+          ? `<input name="${k}" list="ml_${k}" data-models="${k.split('_')[0]}" value="${esc(values[k])}" placeholder="Elige de la lista" autocomplete="off"><datalist id="ml_${k}"></datalist><div class="small muted" data-mhint="${k}">Haz clic para ver los modelos disponibles con tu clave.</div>`
+          : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
       ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button></div>` : ''}
       ${g === 'Publicar en YouTube' ? `<div class="small muted">URI de redirección autorizada para tu cliente OAuth:<br><code>${location.origin}/api/youtube/callback</code></div>` : ''}
       ${g === 'Redes sociales' ? `<div class="small muted">URIs de redirección para tus apps (cópialas tal cual):<br>Meta: <code>${location.origin}/api/social/meta/callback</code><br>TikTok: <code>${location.origin}/api/social/tiktok/callback</code><br>Pasos completos en <a href="#/ayuda">Ayuda</a>.</div>` : ''}
@@ -1582,6 +1584,27 @@ routes.ajustes = async (_, params) => {
     busy(f.querySelector('.btn.gold'), async () => { const body = Object.fromEntries(new FormData(f)); if ($('#useCloud')) body.use_cloud = $('#useCloud').checked ? '1' : '0';
       await api('/api/settings', { method: 'PUT', body }); toast('Ajustes guardados', 'good'); systemInfo = null; drawAiMode(true); router(); });
   };
+  // Modelos de texto: lista real del proveedor; avisa si el nombre escrito no existe
+  f.querySelectorAll('[data-models]').forEach(inp => {
+    let loaded = null;
+    const hint = f.querySelector(`[data-mhint="${inp.name}"]`);
+    const check = () => {
+      if (!loaded?.length) return;
+      const ok = loaded.includes(inp.value.trim());
+      hint.innerHTML = ok ? `✓ Modelo disponible (${loaded.length} en total)` : `⚠ <b>${esc(inp.value || '(vacío)')}</b> no existe en ${inp.dataset.models}: elige uno de la lista (si no, se usará el recomendado).`;
+      hint.style.color = ok ? '' : 'var(--warn, #f59e0b)';
+    };
+    const load = async () => {
+      if (loaded) return check();
+      const r = await api('/api/ai-models/' + inp.dataset.models).catch(e => ({ error: e.message }));
+      if (r.error) { hint.textContent = r.error; return; }
+      loaded = r.models || [];
+      f.querySelector('#ml_' + inp.name).innerHTML = loaded.map(m => `<option value="${esc(m)}">`).join('');
+      check();
+    };
+    inp.addEventListener('focus', load); inp.addEventListener('input', check);
+    load(); // al abrir Ajustes ya se avisa si el modelo guardado está mal escrito
+  });
   f.querySelectorAll('[data-test]').forEach(b => b.onclick = () => busy(b, async () => {
     await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
     const r = await api('/api/settings/test', { method: 'POST', body: { provider: b.dataset.test } });

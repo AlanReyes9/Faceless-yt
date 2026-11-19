@@ -1,4 +1,4 @@
-import { getSetting, requireKey } from '../settings.js';
+import { getSetting, requireKey, FIELDS } from '../settings.js';
 
 export function apiError(text) {
   try { const j = JSON.parse(text); return j.error?.message || j.error?.type || j.message || text.slice(0, 300); } catch { return text.slice(0, 300); }
@@ -181,15 +181,55 @@ async function chatWith(provider, system, user, { json, maxTokens, deadline = Da
   // OpenAI, Groq y OpenRouter comparten el formato chat/completions
   const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1' };
   const p = BASE[provider] ? provider : 'openai';
-  const res = await post(BASE[p] + '/chat/completions', {
-    authorization: 'Bearer ' + await requireKey(KEY_OF[p], 'usar ' + p),
-  }, {
-    model: await getSetting(p + '_model'),
-    max_completion_tokens: maxTokens,
+  const key = await requireKey(KEY_OF[p], 'usar ' + p);
+  const call = model => post(BASE[p] + '/chat/completions', { authorization: 'Bearer ' + key }, {
+    model, max_completion_tokens: maxTokens,
     messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
     ...(json && p !== 'openrouter' ? { response_format: { type: 'json_object' } } : {}),
   }, opts);
-  return res.choices?.[0]?.message?.content || '';
+  const wanted = String(await getSetting(p + '_model') || '').trim();
+  const model = await resolveModel(p, key, wanted);
+  try {
+    return (await call(model)).choices?.[0]?.message?.content || '';
+  } catch (e) {
+    // Modelo mal escrito o retirado: se usa el modelo recomendado en vez de fallar
+    const def = FIELDS[p + '_model']?.default;
+    if (!badModel(e.message) || !def || model === def) throw e;
+    console.warn(`[IA] el modelo "${model}" no existe en ${p}; se usa "${def}". Corrígelo en Ajustes.`);
+    badModels.set(p + ':' + wanted, def);
+    return (await call(def)).choices?.[0]?.message?.content || '';
+  }
+}
+
+// ---------- Modelos disponibles (OpenAI, Groq, OpenRouter) ----------
+const badModel = msg => /\(404\)|\(400\).*model|model_not_found|does not exist|not a valid model|invalid model|no such model|unknown model/i.test(msg);
+const badModels = new Map(); // "proveedor:nombre escrito" → modelo que se usa en su lugar
+const modelCache = {};
+/** Lista de modelos de texto del proveedor con esta clave (se guarda 6 h). */
+export async function providerModels(p, key) {
+  const c = modelCache[p];
+  if (c && Date.now() - c.at < 6 * 3600e3) return c.list;
+  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1' };
+  try {
+    const r = await fetch(BASE[p] + '/models', { headers: { authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return c?.list || [];
+    const ids = ((await r.json()).data || []).map(m => String(m.id))
+      .filter(id => !/whisper|tts|embed|guard|image|dall-e|audio|realtime|moderation|transcribe|search|orpheus|playai|distil/i.test(id)).sort();
+    modelCache[p] = { at: Date.now(), list: ids };
+    return ids;
+  } catch { return c?.list || []; }
+}
+const norm = s => String(s).toLowerCase().replace(/[^a-z0-9.]/g, '');
+/** Corrige nombres escritos a mano ("Qwen3 32B" → "qwen/qwen3-32b") usando la lista del proveedor. */
+async function resolveModel(p, key, wanted) {
+  if (!wanted) return FIELDS[p + '_model']?.default;
+  if (badModels.has(p + ':' + wanted)) return badModels.get(p + ':' + wanted);
+  const list = await providerModels(p, key);
+  if (!list.length || list.includes(wanted)) return wanted;
+  const w = norm(wanted);
+  const hit = list.find(id => norm(id) === w) || list.find(id => norm(id.split('/').pop()) === w);
+  if (hit) { console.log(`[IA] modelo "${wanted}" → "${hit}"`); return hit; }
+  return wanted; // si no existe, la llamada falla y se usa el recomendado
 }
 
 export function parseJSON(text) {
