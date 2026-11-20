@@ -51,7 +51,8 @@ register('shorts.start', async ({ id }) => {
     await updateProject(id, { source });
   }
   const info = await probe(inputPath(source));
-  if (!info.hasAudio) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
+  const multi = p.data.options?.multi;
+  if (!info.hasAudio && !multi) throw new Error('El vídeo no tiene audio, no se puede transcribir. (400)');
   if (!info.hasVideo) throw new Error('El archivo no tiene imagen (solo audio): no se pueden crear clips. Sube el vídeo completo. (400)');
   // Los cambios de plano se detectan durante la transcripción (misma lectura del vídeo)
   p.data = { ...p.data, cuts: p.data.cuts || [], width: info.width, height: info.height };
@@ -60,8 +61,29 @@ register('shorts.start', async ({ id }) => {
     return enqueue('shorts.pick', { id });
   }
   await updateProject(id, { duration: info.duration, data: { ...p.data, transcript: { language: '', segments: [], words: [], energy: [] } } });
+  // Multi Edit sin sonido o sin subtítulos: no hace falta transcribir
+  if (multi && (!info.hasAudio || p.data.options.captions === false)) return enqueue('shorts.pick', { id });
   await enqueue('shorts.transcribe', { id, chunk: 0 });
 }, projectFail);
+
+// Multi Edit de un vídeo subido: el vídeo entero es el clip original y de él salen las versiones
+async function multiFromUpload(p) {
+  const o = p.data.options, id = p.id;
+  await updateProject(id, { progress: 'Preparando las versiones…', percent: 50 });
+  for (const old of await q('SELECT file FROM clips WHERE project_id = $1', [id])) await removeFile(old.file);
+  await q('DELETE FROM clips WHERE project_id = $1', [id]);
+  const end = Math.min(p.duration || 0, 900);
+  if (!(end > 1)) throw new Error('El vídeo es demasiado corto. (400)');
+  const title = p.title.replace(/^🧬\s*/, '');
+  const base = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals, edit)
+    VALUES ($1,1,0,$2,$3,'',10,$4,$5,'rendering',$6,'[]','[]','{}',$7) RETURNING *`,
+    [id, end, title.slice(0, 100), '🧬 Vídeo original (con subtítulos)', o.layout || 'crop', o.captionStyle || 'impacto',
+      JSON.stringify({ captions: { show: o.captions !== false, style: o.captionStyle || 'impacto' }, hookOn: false, layout: o.layout || 'crop', crop: { mode: 'face', zoom: 1 } })]);
+  await enqueue('clip.render', { clipId: base.id });
+  const { createVersions } = await import('./multiedit.js');
+  const r = await createVersions(base, o.multi);
+  await updateProject(id, { progress: `Renderizando ${r.count} versiones…`, percent: 55 });
+}
 
 // ---------- Paso 2: transcribir por trozos ----------
 register('shorts.transcribe', async ({ id, chunk }) => {
@@ -142,6 +164,7 @@ export function snap(words, start, end) {
 
 register('shorts.pick', async ({ id }) => {
   const p = await getProject(id);
+  if (p.data.options?.multi) return multiFromUpload(p);
   if (!p.data.transcript?.segments?.length) throw new Error('No se detectó voz en el vídeo. (400)');
   await updateProject(id, { progress: 'La IA está buscando los mejores momentos…', percent: 50 });
   const opts = { count: 10, minSec: 20, maxSec: 60, layout: 'face', ...p.data.options };

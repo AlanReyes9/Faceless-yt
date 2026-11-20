@@ -31,7 +31,7 @@ async function whisper(file, language, onProgress) {
   form.append('timestamp_granularities[]', 'word');
   form.append('timestamp_granularities[]', 'segment');
   if (language) form.append('language', language);
-  const url = isGroq ? 'https://api.groq.com/openai/v1/audio/transcriptions' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/audio/transcriptions';
+  const url = isGroq ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1') + '/audio/transcriptions' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') + '/audio/transcriptions';
   const r = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + key }, body: form, signal: AbortSignal.timeout(150000) })
     .catch(e => { throw new Error(e.name === 'TimeoutError' ? 'La transcripción tardó demasiado en responder (más de 2,5 min).' : 'No se pudo conectar con el servicio de transcripción: ' + e.message); });
   const text = await r.text();

@@ -35,7 +35,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 // ---------- Navegación ----------
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
-  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'],
+  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'], ['multiedit', '🧬', 'Multi Edit'],
     ['ranking', '🏆', 'Rankings Top'], ['miniaturas', '🖼', 'Miniaturas IA'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
@@ -312,8 +312,7 @@ async function socialSection(sys) {
   if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
 }
 // ---------- Multi Edit: N versiones de un clip con textos, subtítulos, colores y encuadre distintos ----------
-function multiEditDialog(c) {
-  const OPTS = [
+const MULTI_OPTS = [
     ['hook', '✍️ Gancho y título distintos (IA)', true],
     ['style', '🔤 Estilo de subtítulos', true],
     ['color', '🎨 Color de los subtítulos', true],
@@ -321,7 +320,9 @@ function multiEditDialog(c) {
     ['zoom', '🔍 Zoom de la imagen', true],
     ['grade', '🌈 Filtro de color', true],
     ['trim', '✂️ Empezar y acabar algo distinto (±1 s)', false],
-  ];
+];
+function multiEditDialog(c) {
+  const OPTS = MULTI_OPTS;
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal stack" style="max-width:520px"><div class="row between"><b>🧬 Multi Edit · clip #${c.idx}</b><button class="btn sm" data-close>✕</button></div>
     <div class="small muted">Crea varias versiones del clip, cada una con una combinación distinta. Ideal para subir el mismo momento a varias cuentas o probar qué versión funciona mejor.</div>
@@ -640,6 +641,73 @@ routes.shorts = async () => {
   });
   const list = await api('/api/projects?type=shorts');
   $('#list').innerHTML = projectTable(list);
+};
+
+// ---------- Multi Edit: subir un vídeo y sacar varias versiones distintas ----------
+routes.multiedit = async () => {
+  const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
+  main.innerHTML = `<h1>🧬 Multi Edit</h1><p class="sub">Sube un vídeo (por ejemplo un clip o un Reel ya hecho) y crea varias versiones distintas: otro gancho, otros subtítulos, colores, zoom y filtro en cada una. Ideal para publicar el mismo vídeo en varias cuentas o probar qué versión funciona mejor.</p>
+  <form id="f" class="grid g2">
+    <div class="card stack">
+      <h2>1. Vídeo</h2>
+      <div class="drop" id="drop"><div style="font-size:30px">⬆</div><b>Arrastra tu vídeo aquí</b><div class="muted small">o haz clic para elegirlo (mp4, mov…). Mejor vídeos cortos: hasta 3 minutos.</div><div id="fname" class="small" style="margin-top:8px;color:var(--gold)"></div></div>
+      <input type="file" name="video" accept="video/*" hidden>
+      ${sys.ytdlp ? `<button type="button" class="btn block" id="linkBtn">🔗 Descargar desde un link</button>` : ''}
+      <input type="hidden" name="source"><input type="hidden" name="filename">
+      <div id="dlready" hidden></div>
+      <div><label>Nombre (opcional)</label><input name="title"></div>
+      <div><label>Canal</label><select name="channel_id">${channelOptions(chs)}</select></div>
+    </div>
+    <div class="card stack">
+      <h2>2. Versiones</h2>
+      <div><label>¿Cuántas versiones?</label><div class="row"><input type="range" name="count" min="2" max="20" value="5" style="flex:1"><b id="cnt" style="min-width:28px;text-align:right">5</b></div></div>
+      <div class="stack" style="gap:6px"><label>¿Qué cambia en cada versión?</label>
+        ${MULTI_OPTS.map(([k, l, on]) => `<label class="check" style="font-size:14px"><input type="checkbox" data-v="${k}" ${on ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+      <div><label>Encuadre</label><select name="layout">
+        <option value="crop">Recorte al centro (o el vídeo ya es vertical)</option><option value="face">Seguir a quien habla</option>
+        <option value="blur">Vídeo entero con fondo difuminado</option><option value="gaming">🎮 Gaming (cámara arriba, partida abajo)</option></select></div>
+      <div class="row"><div style="flex:1"><label>Subtítulos (estilo base)</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div>
+        <div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
+      <label class="check"><input type="checkbox" name="captions" checked> Añadir subtítulos palabra a palabra (si el vídeo ya los tiene, desmárcalo)</label>
+      <div id="up" class="small muted"></div>
+      <div class="row between"><span class="small muted">Ganchos y subtítulos con</span>${aiTag()}</div>
+      <button class="btn gold block" id="go">🧬 Crear 5 versiones</button>
+    </div>
+  </form>
+  <h2 style="margin-top:28px">Proyectos de Multi Edit</h2><div id="list" class="card"></div>`;
+  const f = $('#f'), file = f.video, drop = $('#drop');
+  f.count.oninput = () => { $('#cnt').textContent = f.count.value; $('#go').textContent = `🧬 Crear ${f.count.value} versiones`; };
+  drop.onclick = () => file.click();
+  const clearLink = () => { f.source.value = ''; f.filename.value = ''; $('#dlready').hidden = true; $('#dlready').innerHTML = ''; };
+  file.onchange = () => { $('#fname').textContent = file.files[0]?.name || ''; if (file.files[0]) clearLink(); };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); file.files = e.dataTransfer.files; file.onchange(); };
+  f.onsubmit = async e => {
+    e.preventDefault();
+    if (!file.files[0] && !f.source.value) return toast('Sube un vídeo', 'bad');
+    const vary = Object.fromEntries([...f.querySelectorAll('[data-v]')].map(i => [i.dataset.v, i.checked]));
+    if (!Object.values(vary).some(Boolean)) return toast('Elige al menos una cosa que cambiar', 'bad');
+    const go = $('#go'); go.disabled = true;
+    try {
+      const d = { title: f.title.value, channel_id: f.channel_id.value, count: Number(f.count.value), vary, layout: f.layout.value,
+        captionStyle: f.captionStyle.value, language: f.language.value, captions: f.captions.checked, source: f.source.value, filename: f.filename.value };
+      if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
+      const r = await api('/api/multiedit', { method: 'POST', body: d });
+      location.hash = '#/proyecto/' + r.id;
+    } catch (err) { toast(err.message, 'bad'); go.disabled = false; $('#up').textContent = ''; }
+  };
+  const lb = $('#linkBtn');
+  if (lb) lb.onclick = () => linkDialog(dl => {
+    file.value = ''; $('#fname').textContent = '';
+    f.source.value = dl.ref; f.filename.value = (dl.title || 'video') + '.mp4';
+    if (!f.title.value) f.title.value = dl.title || '';
+    const box = $('#dlready');
+    box.innerHTML = `<div class="card" style="padding:10px;border-color:var(--gold)"><div class="row between"><b class="small">✅ Vídeo descargado y listo</b><button type="button" class="btn sm" id="dlx">Quitar</button></div>
+      ${dl.url ? `<video src="${esc(dl.url)}" controls preload="metadata" style="width:100%;max-height:220px;border-radius:6px;margin-top:8px;background:#000"></video>` : ''}</div>`;
+    box.hidden = false; $('#dlx').onclick = clearLink;
+  });
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=shorts&multi=1'));
 };
 
 // ---------- Clips de un directo ----------
