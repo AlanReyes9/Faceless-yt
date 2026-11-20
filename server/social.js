@@ -33,9 +33,23 @@ const ensureTables = () => (ready ||= (async () => { for (const st of SOCIAL_SQL
 
 const fail = (msg, status = 400) => Object.assign(new Error(msg), { status });
 const signState = v => `${v}.${crypto.createHmac('sha256', internalSecret()).update('social:' + v).digest('hex').slice(0, 16)}`;
-const checkState = s => { const v = String(s || '').split('.')[0]; if (signState(v) !== s) throw fail('Estado OAuth no válido. Vuelve a intentarlo.'); return v; };
-const metaRedirect = req => `${baseUrl(req)}/api/social/meta/callback`;
-const ttRedirect = req => `${baseUrl(req)}/api/social/tiktok/callback`;
+const checkState = s => { s = String(s || '').replace(/^\d+~/, ''); const v = s.split('.')[0]; if (signState(v) !== s) throw fail('Estado OAuth no válido. Vuelve a intentarlo.'); return v; };
+// App de escritorio: Meta y TikTok solo aceptan direcciones https, así que la vuelta pasa por la web de Clippers Pro
+// (misma ruta /callback), que reenvía al instante a http://localhost:PUERTO del equipo. El puerto va en el "state".
+export const SOCIAL_RELAY = (process.env.SOCIAL_RELAY_URL || 'https://faceless-studio-chi.vercel.app').replace(/\/+$/, '');
+const localPort = req => { const m = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d+)$/.exec(baseUrl(req)); return m ? m[1] : null; };
+const callbackBase = req => localPort(req) ? SOCIAL_RELAY : baseUrl(req);
+const withPort = (req, state) => localPort(req) ? `${localPort(req)}~${state}` : state;
+const metaRedirect = req => `${callbackBase(req)}/api/social/meta/callback`;
+const ttRedirect = req => `${callbackBase(req)}/api/social/tiktok/callback`;
+/** En la web: si la vuelta es de una app de escritorio (state "PUERTO~…"), se reenvía a ese equipo. */
+function relayToDesktop(req, res, platform) {
+  const m = /^(\d{2,5})~/.exec(String(req.query.state || ''));
+  if (!m || localPort(req)) return false;
+  const qs = new URLSearchParams(req.query).toString();
+  res.redirect(`http://localhost:${Number(m[1])}/api/social/${platform}/callback?${qs}`);
+  return true;
+}
 const tok = a => decryptSecret(a.token);
 
 async function jget(url, opts = {}) {
@@ -57,7 +71,7 @@ async function metaAuthUrl(req) {
   const id = await getSetting('meta_app_id');
   if (!id) throw fail('Falta el "Meta App ID" en Ajustes y claves (ver Ayuda → Publicar en Instagram y Facebook).');
   const cfg = await getSetting('meta_config_id');
-  const qs = new URLSearchParams({ client_id: id, redirect_uri: metaRedirect(req), state: signState('meta'), response_type: 'code', ...(cfg ? { config_id: cfg } : { scope: META_SCOPES }) });
+  const qs = new URLSearchParams({ client_id: id, redirect_uri: metaRedirect(req), state: withPort(req, signState('meta')), response_type: 'code', ...(cfg ? { config_id: cfg } : { scope: META_SCOPES }) });
   return 'https://www.facebook.com/v21.0/dialog/oauth?' + qs;
 }
 async function metaCallback(req) {
@@ -94,7 +108,7 @@ const pkce = new Map(); // state → code_verifier (válido 15 min)
 async function ttAuthUrl(req) {
   const key = await getSetting('tiktok_client_key');
   if (!key) throw fail('Falta el "TikTok Client Key" en Ajustes y claves (ver Ayuda → Publicar en TikTok).');
-  const nonce = crypto.randomBytes(8).toString('hex'), state = signState('tt' + nonce);
+  const nonce = crypto.randomBytes(8).toString('hex'), state = withPort(req, signState('tt' + nonce));
   const verifier = crypto.randomBytes(48).toString('base64url');
   pkce.set(state, { verifier, at: Date.now() });
   for (const [k, v] of pkce) if (Date.now() - v.at > 15 * 60000) pkce.delete(k);
@@ -253,10 +267,12 @@ export function mountSocial(app, h) {
   app.get('/api/social/meta/auth', async (req, res) => { try { res.redirect(await metaAuthUrl(req)); } catch (e) { res.redirect('/#/canales?error=' + encodeURIComponent(e.message)); } });
   app.get('/api/social/tiktok/auth', async (req, res) => { try { res.redirect(await ttAuthUrl(req)); } catch (e) { res.redirect('/#/canales?error=' + encodeURIComponent(e.message)); } });
   app.get('/api/social/meta/callback', async (req, res) => {
+    if (relayToDesktop(req, res, 'meta')) return;
     try { const n = await metaCallback(req); redirectOrPage(req, res, true, `Facebook/Instagram conectado (${n} cuenta${n === 1 ? '' : 's'}). Ya puedes volver a Clippers Pro.`); }
     catch (e) { redirectOrPage(req, res, false, e.message); }
   });
   app.get('/api/social/tiktok/callback', async (req, res) => {
+    if (relayToDesktop(req, res, 'tiktok')) return;
     try { await ttCallback(req); redirectOrPage(req, res, true, 'TikTok conectado. Ya puedes volver a Clippers Pro.'); }
     catch (e) { redirectOrPage(req, res, false, e.message); }
   });

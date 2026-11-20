@@ -1549,6 +1549,8 @@ routes.servidor = async () => {
 };
 
 // ---------- Ajustes y claves ----------
+// Meta y TikTok solo aceptan direcciones https: en la app de escritorio la vuelta pasa por la web de Clippers Pro
+const socialBase = () => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(location.origin) ? 'https://faceless-studio-chi.vercel.app' : location.origin;
 routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
@@ -1569,7 +1571,7 @@ routes.ajustes = async (_, params) => {
           : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
       ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button></div>` : ''}
       ${g === 'Publicar en YouTube' ? `<div class="small muted">URI de redirección autorizada para tu cliente OAuth:<br><code>${location.origin}/api/youtube/callback</code></div>` : ''}
-      ${g === 'Redes sociales' ? `<div class="small muted">URIs de redirección para tus apps (cópialas tal cual):<br>Meta: <code>${location.origin}/api/social/meta/callback</code><br>TikTok: <code>${location.origin}/api/social/tiktok/callback</code><br>Pasos completos en <a href="#/ayuda">Ayuda</a>.</div>` : ''}
+      ${g === 'Redes sociales' ? `<div class="small muted">URIs de redirección para tus apps (cópialas tal cual):<br>Meta: <code>${socialBase()}/api/social/meta/callback</code><br>TikTok: <code>${socialBase()}/api/social/tiktok/callback</code><br>Pasos completos en <a href="#/ayuda">Ayuda</a>.</div>` : ''}
       </div>`;
   main.innerHTML = `<h1>Ajustes</h1><p class="sub">${localMode ? 'La IA funciona en tu equipo: transcripción, elección de clips, títulos e imágenes. No necesitas claves ni pagas por uso.' : 'Tus claves API se guardan cifradas en tu servidor y nunca se envían al navegador. Solo pagas lo que uses en cada proveedor.'}</p>
     <div id="localModels"></div>
@@ -1755,7 +1757,7 @@ routes.ayuda = () => {
       • <b>Administrar todo en tu página</b> (Manage everything on your Page) → <b>Personalizar</b> → añade los permisos <code>pages_show_list</code>, <code>pages_read_engagement</code> y <code>pages_manage_posts</code>.<br>
       • <b>Administrar mensajes y contenido en Instagram</b> → <b>Configuración de la API con inicio de sesión con Facebook</b> → añade <code>instagram_basic</code> e <code>instagram_content_publish</code>.<br>
       <span class="muted">Si al conectar Facebook dice <i>"Invalid Scopes"</i>, es que falta alguno de estos casos de uso o permisos.</span></li>
-    <li>Añade también el producto <b>Inicio de sesión con Facebook</b> (si no aparece ya) y en su <b>Configuración</b>, en <b>URI de redireccionamiento de OAuth válidos</b>, pega:<br><code>${location.origin}/api/social/meta/callback</code></li>
+    <li>Añade también el producto <b>Inicio de sesión con Facebook</b> (si no aparece ya) y en su <b>Configuración</b>, en <b>URI de redireccionamiento de OAuth válidos</b>, pega:<br><code>${socialBase()}/api/social/meta/callback</code></li>
     <li>En Configuración de la app → Básica copia el <b>Identificador de la app</b> y la <b>Clave secreta</b> y pégalos en Ajustes y claves (Meta App ID / Secret). Deja vacío el "Configuration ID" salvo que uses Facebook Login for Business.</li>
     <li>Mientras la app está en modo desarrollo solo funciona con tu cuenta (y las que añadas en Roles como administradores o probadores): para publicar en <b>tus propias</b> páginas y cuentas no necesitas la revisión de Meta.</li>
     <li>En Mis canales → Redes sociales pulsa <b>Conectar Facebook / Instagram</b> y acepta todas las páginas y permisos.</li></ol>
@@ -1763,7 +1765,7 @@ routes.ayuda = () => {
   <div class="card stack"><h2>Publicar en TikTok</h2><ol>
     <li>Entra en <a href="https://developers.tiktok.com/apps" target="_blank">developers.tiktok.com</a> → <b>Manage apps → Connect an app</b>.</li>
     <li>Añade los productos <b>Login Kit</b> y <b>Content Posting API</b>, con los permisos <code>user.info.basic</code>, <code>video.upload</code> y <code>video.publish</code>.</li>
-    <li>En Login Kit añade la URI de redirección:<br><code>${location.origin}/api/social/tiktok/callback</code></li>
+    <li>En Login Kit añade la URI de redirección:<br><code>${socialBase()}/api/social/tiktok/callback</code></li>
     <li>Copia el <b>Client key</b> y el <b>Client secret</b> en Ajustes y claves.</li>
     <li>En Mis canales → Redes sociales pulsa <b>Conectar TikTok</b>.</li></ol>
     <p class="muted small">Hasta que TikTok audite tu app, los vídeos se envían a tus <b>borradores de TikTok</b> (te llega un aviso en la app de TikTok para publicarlo con un toque) o se publican en privado. Para publicar directamente en público, solicita la auditoría en el portal de desarrolladores.</p></div>
