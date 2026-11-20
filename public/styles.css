@@ -342,3 +342,13 @@ table tr:hover td { background: rgba(255, 255, 255, .015); }
 .pub-steps ol { margin: 4px 0 0 18px; padding: 0; display: grid; gap: 6px; }
 kbd { border: 1px solid var(--line, #444); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; font-size: 12px; }
 @media (max-width: 720px) { .pub-grid { grid-template-columns: 1fr; } .pub-video { max-height: 40vh; } .pub-nets { grid-template-columns: repeat(2, 1fr); } }
+
+/* Mi marca */
+.brandbox { border: 1px solid var(--line, #2a2d35); border-radius: 12px; padding: 12px; }
+.brand-grid { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: start; }
+.brand-prev { position: relative; width: 96px; aspect-ratio: 9/16; border-radius: 8px; overflow: hidden; background: linear-gradient(160deg, #3b4252, #1b1e26 60%, #2d3343); }
+.brand-prev .bp-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.brand-prev .bp-logo { position: absolute; height: auto; }
+.bp-tl { top: 3.5%; left: 4.5%; } .bp-tr { top: 3.5%; right: 4.5%; } .bp-tc { top: 3.5%; left: 50%; transform: translateX(-50%); }
+.bp-bl { bottom: 4.5%; left: 4.5%; } .bp-br { bottom: 4.5%; right: 4.5%; } .bp-bc { bottom: 4.5%; left: 50%; transform: translateX(-50%); }
+.brand-prev .bp-sub { position: absolute; left: 0; right: 0; top: 74%; text-align: center; font: 800 7px sans-serif; color: #fff; letter-spacing: .3px; text-shadow: 0 0 2px #000; }

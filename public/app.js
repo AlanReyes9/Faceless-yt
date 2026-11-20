@@ -311,6 +311,60 @@ async function socialSection(sys) {
   });
   if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
 }
+// ---------- Mi marca: logo (marca de agua) y marco sobre los clips ----------
+const BRAND_POS = { tl: '↖ Arriba izquierda', tc: '⬆ Arriba centro', tr: '↗ Arriba derecha', bl: '↙ Abajo izquierda', bc: '⬇ Abajo centro', br: '↘ Abajo derecha' };
+/**
+ * Recuadro reutilizable (Convertir a Clips, Directos, Multi Edit): sube/cambia logo y marco, con vista previa.
+ * La marca se guarda para todos los proyectos; la casilla decide si se aplica a estos clips. Devuelve () => boolean.
+ */
+async function brandBox(el, { title = 'Poner mi logo y marco en estos clips' } = {}) {
+  let B = await api('/api/brand').catch(() => ({}));
+  let applyOn = null;
+  const draw = () => {
+    const has = B.hasLogo || B.hasFrame;
+    if (applyOn == null) applyOn = has;
+    el.innerHTML = `<div class="brandbox stack">
+      <div class="row between"><b>🎨 Mi marca</b><label class="check" style="margin:0"><input type="checkbox" data-bapply ${applyOn ? 'checked' : ''} ${has ? '' : 'disabled'}> ${esc(title)}</label></div>
+      <div class="brand-grid">
+        <div class="brand-prev">${B.frameUrl ? `<img class="bp-frame" src="${esc(B.frameUrl)}">` : ''}${B.logoUrl ? `<img class="bp-logo bp-${B.pos}" src="${esc(B.logoUrl)}" style="width:${(B.size * 100).toFixed(0)}%;opacity:${B.opacity}">` : ''}<span class="bp-sub">SUBTÍTULOS</span></div>
+        <div class="stack" style="gap:8px">
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button type="button" class="btn sm" data-bup="logo">🖼 ${B.hasLogo ? 'Cambiar logo' : 'Subir logo'}</button>${B.hasLogo ? '<button type="button" class="btn sm" data-bdel="logo" title="Quitar logo">✕</button>' : ''}
+            <button type="button" class="btn sm" data-bup="frame">🖼 ${B.hasFrame ? 'Cambiar marco' : 'Subir marco'}</button>${B.hasFrame ? '<button type="button" class="btn sm" data-bdel="frame" title="Quitar marco">✕</button>' : ''}
+          </div>
+          ${B.hasLogo ? `<div class="row"><span class="small" style="width:72px">Posición</span><select data-bset="pos" style="flex:1">${Object.entries(BRAND_POS).map(([k, v]) => `<option value="${k}" ${B.pos === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+            <div class="row"><span class="small" style="width:72px">Tamaño</span><input type="range" data-bset="size" min="0.08" max="0.5" step="0.01" value="${B.size}" style="flex:1"></div>
+            <div class="row"><span class="small" style="width:72px">Opacidad</span><input type="range" data-bset="opacity" min="0.2" max="1" step="0.05" value="${B.opacity}" style="flex:1"></div>` : ''}
+          <div class="small muted">Logo: PNG con fondo transparente. Marco: PNG vertical (1080×1920) con el centro transparente. Se guardan para todos tus clips.</div>
+        </div>
+      </div>
+      <input type="file" accept="image/png,image/webp,image/jpeg" hidden data-bfile></div>`;
+    const file = el.querySelector('[data-bfile]');
+    let which = null;
+    el.querySelector('[data-bapply]').onchange = e => { applyOn = e.target.checked; };
+    el.querySelectorAll('[data-bup]').forEach(b => b.onclick = () => { which = b.dataset.bup; file.value = ''; file.click(); });
+    file.onchange = async () => {
+      const f = file.files[0]; if (!f) return;
+      try {
+        toast('Subiendo ' + (which === 'logo' ? 'logo' : 'marco') + '…');
+        const ref = await uploadFile(f, () => {});
+        B = await api('/api/brand', { method: 'PUT', body: { [which]: ref } });
+        applyOn = true; draw(); toast(which === 'logo' ? 'Logo guardado' : 'Marco guardado', 'good');
+      } catch (e) { toast(e.message, 'bad'); }
+    };
+    el.querySelectorAll('[data-bdel]').forEach(b => b.onclick = async () => { B = await api('/api/brand', { method: 'PUT', body: { [b.dataset.bdel]: '' } }); if (!B.hasLogo && !B.hasFrame) applyOn = false; draw(); });
+    let t = null;
+    el.querySelectorAll('[data-bset]').forEach(inp => inp.oninput = () => {
+      B[inp.dataset.bset] = inp.dataset.bset === 'pos' ? inp.value : Number(inp.value);
+      const lg = el.querySelector('.bp-logo');
+      if (lg) { lg.className = `bp-logo bp-${B.pos}`; lg.style.width = (B.size * 100).toFixed(0) + '%'; lg.style.opacity = B.opacity; }
+      clearTimeout(t); t = setTimeout(() => api('/api/brand', { method: 'PUT', body: { [inp.dataset.bset]: inp.value } }).catch(e => toast(e.message, 'bad')), 400);
+    });
+  };
+  draw();
+  return () => !!applyOn && !!(B.hasLogo || B.hasFrame);
+}
+
 // ---------- Multi Edit: N versiones de un clip con textos, subtítulos, colores y encuadre distintos ----------
 const MULTI_OPTS = [
     ['hook', '✍️ Gancho y título distintos (IA)', true],
@@ -330,17 +384,19 @@ function multiEditDialog(c) {
     <div class="stack" style="gap:6px"><label>¿Qué cambia en cada versión?</label>
       ${OPTS.map(([k, l, on]) => `<label class="check" style="font-size:14px"><input type="checkbox" data-v="${k}" ${on ? 'checked' : ''}> ${l}</label>`).join('')}</div>
     ${c.src ? '<div class="small muted">Clip de directo: el inicio y el final se mantienen.</div>' : ''}
+    <div id="mbrand"></div>
     <div class="small muted" id="mnote">Cada versión se renderiza como un clip nuevo en este proyecto (🧬 V1, V2…).</div>
     <div class="row between"><span></span><div class="row"><button class="btn gold" id="mgo">🧬 Crear 5 versiones</button><button class="btn" data-close>Cancelar</button></div></div></div>`;
   document.body.appendChild(bg);
   const $m = s => bg.querySelector(s), close = () => bg.remove();
   bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  let brandOn = () => false; brandBox($m('#mbrand'), { title: 'Poner mi logo y marco' }).then(f => { brandOn = f; });
   $m('#mn').oninput = () => { $m('#mnv').textContent = $m('#mn').value; $m('#mgo').textContent = `🧬 Crear ${$m('#mn').value} versiones`; };
   $m('#mgo').onclick = () => busy($m('#mgo'), async () => {
     const vary = Object.fromEntries([...bg.querySelectorAll('[data-v]')].map(i => [i.dataset.v, i.checked]));
     if (!Object.values(vary).some(Boolean)) throw new Error('Elige al menos una cosa que cambiar.');
     $m('#mnote').textContent = vary.hook ? 'La IA está escribiendo los ganchos…' : 'Creando versiones…';
-    const r = await api(`/api/clips/${c.id}/multiedit`, { method: 'POST', body: { count: Number($m('#mn').value), vary } });
+    const r = await api(`/api/clips/${c.id}/multiedit`, { method: 'POST', body: { count: Number($m('#mn').value), vary, brand: brandOn() } });
     toast(`🧬 ${r.count} versiones en cola: aparecen abajo mientras se renderizan.`, 'good');
     close(); router();
   });
@@ -596,6 +652,7 @@ routes.shorts = async () => {
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <div id="brand"></div>
       <div id="up" class="small muted"></div>
       <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">✂ Crear clips</button>
@@ -618,12 +675,13 @@ routes.shorts = async () => {
     try {
       const d = Object.fromEntries(new FormData(f)); delete d.video;
       if (!d.source) { delete d.source; delete d.filename; }
-      d.captions = f.captions.checked; d.emojis = f.emojis.checked;
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn();
       if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
       const r = await api('/api/shorts', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
     } catch (err) { toast(err.message, 'bad'); go.disabled = false; $('#up').textContent = ''; }
   };
+  const brandOn = await brandBox($('#brand'));
   const lb = $('#linkBtn');
   // Descargar desde un link: la ventana solo descarga; al terminar el vídeo queda cargado aquí
   if (lb) lb.onclick = () => linkDialog(dl => {
@@ -669,6 +727,7 @@ routes.multiedit = async () => {
       <div class="row"><div style="flex:1"><label>Subtítulos (estilo base)</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div>
         <div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Añadir subtítulos palabra a palabra (si el vídeo ya los tiene, desmárcalo)</label>
+      <div id="brand"></div>
       <div id="up" class="small muted"></div>
       <div class="row between"><span class="small muted">Ganchos y subtítulos con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">🧬 Crear 5 versiones</button>
@@ -677,6 +736,7 @@ routes.multiedit = async () => {
   <h2 style="margin-top:28px">Proyectos de Multi Edit</h2><div id="list" class="card"></div>`;
   const f = $('#f'), file = f.video, drop = $('#drop');
   f.count.oninput = () => { $('#cnt').textContent = f.count.value; $('#go').textContent = `🧬 Crear ${f.count.value} versiones`; };
+  const brandOn = await brandBox($('#brand'), { title: 'Poner mi logo y marco en las versiones' });
   drop.onclick = () => file.click();
   const clearLink = () => { f.source.value = ''; f.filename.value = ''; $('#dlready').hidden = true; $('#dlready').innerHTML = ''; };
   file.onchange = () => { $('#fname').textContent = file.files[0]?.name || ''; if (file.files[0]) clearLink(); };
@@ -691,7 +751,7 @@ routes.multiedit = async () => {
     const go = $('#go'); go.disabled = true;
     try {
       const d = { title: f.title.value, channel_id: f.channel_id.value, count: Number(f.count.value), vary, layout: f.layout.value,
-        captionStyle: f.captionStyle.value, language: f.language.value, captions: f.captions.checked, source: f.source.value, filename: f.filename.value };
+        captionStyle: f.captionStyle.value, language: f.language.value, captions: f.captions.checked, brand: brandOn(), source: f.source.value, filename: f.filename.value };
       if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
       const r = await api('/api/multiedit', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
@@ -737,12 +797,14 @@ routes.directo = async () => {
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <div id="brand"></div>
       <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">🔴 Empezar a grabar y clipear</button>
     </div>
   </form>
   <h2 style="margin-top:28px">Directos</h2><div id="list" class="card"></div>`;
   const f = $('#f');
+  const brandOn = await brandBox($('#brand'));
   f.onsubmit = async e => {
     e.preventDefault();
     const layout = await pickTemplate(); if (!layout) return;
@@ -750,7 +812,7 @@ routes.directo = async () => {
     const go = $('#go'); go.disabled = true;
     try {
       const d = Object.fromEntries(new FormData(f));
-      d.captions = f.captions.checked; d.emojis = f.emojis.checked;
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn();
       const r = await api('/api/live', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
     } catch (err) { toast(err.message, 'bad'); go.disabled = false; }
@@ -1746,6 +1808,7 @@ routes.ajustes = async (_, params) => {
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
+    if (f.group === 'Marca') continue;
     const target = localMode && !KEEP.includes(k) ? cloud : groups;
     (target[f.group] ||= []).push([k, f]);
   }

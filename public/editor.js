@@ -20,6 +20,10 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     // Gaming: recuadro de la cámara del jugador (normalizado); si aún no se detectó, uno provisional arriba a la izquierda
     facecam: d.facecam ? { ...d.facecam } : { x: 0.02, y: 0.04, w: 0.25, h: 0.38 }, facecamSet: !!E.facecam,
   };
+  // Mi marca (logo y marco): imágenes para la vista previa
+  const BR = d.brand || {}; S.brand = !!BR.on;
+  const brandImg = u => { if (!u) return null; const im = new Image(); im.onload = () => render(); im.src = u; return im; };
+  const bLogo = brandImg(BR.logoUrl), bFrame = brandImg(BR.frameUrl);
   if (S.layout === 'face' && S.crop.mode === 'fixed') S.layout = 'crop';
   let wordsDirty = false;
   const W = P.width, H = P.height, WIN = d.window;
@@ -149,6 +153,16 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
           drawText(parts[i], x, y - size * 0.5, active && st.mode === 'pop' ? size * 1.08 : size, active && st.mode !== 'box' ? S.captions.color : '#fff', active && st.mode === 'box' ? { box: S.captions.color } : {});
           x += widths[i];
         });
+      }
+    }
+    // Mi marca: marco y logo encima de todo, como en el vídeo final
+    if (S.brand) {
+      if (bFrame?.complete && bFrame.naturalWidth) ctx.drawImage(bFrame, 0, 0, cwid, chei);
+      if (bLogo?.complete && bLogo.naturalWidth) {
+        const lw = cwid * BR.size, lh = lw * bLogo.naturalHeight / bLogo.naturalWidth, m = cwid * 0.045;
+        const lx = BR.pos.endsWith('l') ? m : BR.pos.endsWith('r') ? cwid - lw - m : (cwid - lw) / 2;
+        const ly = BR.pos.startsWith('t') ? chei * 0.035 : chei - lh - chei * 0.045;
+        ctx.globalAlpha = BR.opacity; ctx.drawImage(bLogo, lx, ly, lw, lh); ctx.globalAlpha = 1;
       }
     }
     // rectángulo del original
@@ -284,6 +298,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <h4>▾ Gancho (4 s arriba)</h4>
       <div class="row"><input data-s="hook" value="${esc(S.hook)}" style="flex:1"><label class="check" style="margin:0"><input type="checkbox" data-s="hookOn" ${S.hookOn ? 'checked' : ''}> Mostrar</label></div>
       <label class="check"><input type="checkbox" data-s="emojis" ${S.emojis ? 'checked' : ''}> Emojis animados</label>
+      <h4>▾ Mi marca</h4>
+      ${BR.logoUrl || BR.frameUrl ? `<label class="check"><input type="checkbox" data-s="brand" ${S.brand ? 'checked' : ''}> Poner mi logo y marco</label>` : '<div class="small muted">Sube tu logo o marco en Convertir a Clips, Clips de directos o Multi Edit (recuadro 🎨 Mi marca).</div>'}
       <h4>▾ Transcripción del clip <span class="small muted">(clic = ir · edita o borra palabras)</span></h4>
       <div class="ed-words">${ws.map(w => `<span class="ed-w" data-wt="${w.start}"><input value="${esc(w.word)}" data-word="${w.start}" size="${Math.max(2, w.word.length)}"><button data-delw="${w.start}" title="Borrar">×</button></span>`).join('') || '<span class="small muted">Sin voz en este tramo.</span>'}</div>`;
     } else if (tab === 2) P2.innerHTML = `
@@ -317,6 +333,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'hook') S.hook = v;
       else if (k === 'hookOn') S.hookOn = v;
       else if (k === 'emojis') S.emojis = v;
+      else if (k === 'brand') S.brand = v;
       else if (k === 'title') S.title = v;
       else if (k === 'tstart' || k === 'tend') { if (el.type !== 'checkbox' && /^\d+:\d+:\d+(\.\d+)?$/.test(v)) { const t = v.split(':').reduce((a, n) => a * 60 + Number(n), 0); if (k === 'tstart') S.start = Math.min(t, S.end - 2); else S.end = Math.max(t, S.start + 2); } }
       changed(); render();
@@ -351,7 +368,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
 
   // ---------- Guardado automático y exportación ----------
   let saveT = null;
-  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, format: S.format,
+  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, format: S.format,
     layout: S.layout === 'blur' || S.layout === 'gaming' ? S.layout : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
     ...(S.layout === 'gaming' && S.facecamSet ? { facecam: S.facecam } : {}),
     ...(wordsDirty ? { words: S.words, wordsFrom: WIN.from, wordsTo: WIN.to } : {}), render });

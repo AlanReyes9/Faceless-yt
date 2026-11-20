@@ -21,7 +21,7 @@ async function clipWords(p, c) {
 }
 
 /** Crea `count` versiones del clip `c` y las pone a renderizar. Devuelve { ids, count, hooks }. */
-export async function createVersions(c, { count, vary } = {}) {
+export async function createVersions(c, { count, vary, brand } = {}) {
   const n = Math.max(2, Math.min(20, Math.round(Number(count) || 5)));
   const v = { hook: true, style: true, color: true, position: true, zoom: true, grade: true, trim: false, ...(vary || {}) };
   const p = await getProject(c.project_id);
@@ -62,6 +62,7 @@ JSON: {"items":[{"hook":"gancho de 3 a 7 palabras que sale arriba del vídeo","t
         upper: v.style ? (k % 3 === 2 ? false : null) : (caps.upper ?? null),
       },
       hookOn: true,
+      ...(typeof brand === 'boolean' ? { brand } : {}),
       grade: v.grade ? rot(MULTI.grades, k, 1) || undefined : base.grade,
     };
     const t = texts.length ? texts[(i - 1) % texts.length] : null;

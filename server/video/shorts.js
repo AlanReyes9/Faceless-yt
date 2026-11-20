@@ -374,6 +374,12 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
         `[${last}][e${i}]overlay=x=(W-w)/2:y=${capY - 300}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
       last = `o${i}`;
     }
+    // Mi marca: marco y logo encima de todo (si el proyecto o el clip lo piden)
+    if (E?.brand ?? p.data.options?.brand) {
+      const { brandFilter } = await import('../brand.js');
+      const bf = await brandFilter({ last, firstInput: parts.length + k, OW, OH });
+      extra.push(...bf.args); vf += bf.filter; last = bf.last;
+    }
     vf += Q.W !== 1080 ? `;[${last}]scale=${Q.W}:${Math.round(Q.W * OH / OW / 2) * 2}[v]` : `;[${last}]null[v]`;
     if (ctx.remaining() < 45000) { // no empezar un render sin tiempo suficiente: va a una ejecución nueva
       await prog('En cola para renderizar', 0, true);
