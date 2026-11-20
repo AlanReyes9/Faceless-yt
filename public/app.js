@@ -311,6 +311,105 @@ async function socialSection(sys) {
   });
   if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
 }
+// ---------- Publicar un clip: YouTube por su API; Instagram, Facebook y TikTok en su web con el texto copiado ----------
+const PUB_NETS = {
+  instagram: { name: 'Instagram', icon: '📸', url: 'https://business.facebook.com/latest/reels_composer', where: 'Meta Business Suite (marca Instagram como destino)' },
+  facebook: { name: 'Facebook', icon: '📘', url: 'https://business.facebook.com/latest/reels_composer', where: 'Meta Business Suite (marca tu página de Facebook)' },
+  tiktok: { name: 'TikTok', icon: '🎵', url: 'https://www.tiktok.com/tiktokstudio/upload', where: 'TikTok Studio' },
+};
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch {}
+  const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch {} ta.remove(); return ok;
+}
+async function publishDialog(c, p) {
+  const desk = window.clippersDesktop?.dragFile ? window.clippersDesktop : null;
+  const mac = /Mac/i.test(navigator.platform || navigator.userAgent), paste = mac ? '⌘V' : 'Ctrl+V';
+  const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
+  const chs = (await channelsCache.get()).filter(x => x.connected);
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal stack pubm"><div class="row between"><b>📤 Publicar clip</b><button class="btn sm" data-close>✕</button></div>
+    <div class="pub-grid">
+      <div class="stack" style="gap:8px"><video id="pv" src="${esc(c.url)}" controls playsinline class="pub-video"></video>
+        ${desk ? `<div class="pub-drag" id="pdrag" draggable="true" title="Arrástralo a la página de la red social">🎬 <b>Arrastra el vídeo</b><span class="small muted">a la página de Instagram, Facebook o TikTok</span></div>` : `<a class="btn sm" id="pdl" href="${esc(c.url)}" download>⬇ Descargar vídeo</a>`}
+        ${langs.length ? `<select id="plang"><option value="">Versión original</option>${langs.map(([l]) => `<option value="${l}">${LANGS[l] || l}</option>`).join('')}</select>` : ''}
+      </div>
+      <div class="stack" style="gap:10px">
+        <div><label>Título</label><input id="pt" maxlength="100" placeholder="Generando…"></div>
+        <div><label>Descripción</label><textarea id="pd" rows="4" placeholder="Generando…"></textarea></div>
+        <div><label>Hashtags</label><input id="ph" placeholder="#viral #fyp"></div>
+        <div class="row between"><button class="btn sm" id="pregen">✨ Generar otro texto</button><span class="small muted" id="pcount"></span></div>
+        <div class="pub-nets">
+          ${Object.entries(PUB_NETS).map(([k, n]) => `<button class="btn pub-net" data-net="${k}">${n.icon} ${n.name}</button>`).join('')}
+          <button class="btn pub-net" data-net="youtube">▶️ YouTube</button>
+        </div>
+        <div id="pinfo"></div>
+      </div>
+    </div></div>`;
+  document.body.appendChild(bg);
+  const $m = s => bg.querySelector(s), close = () => bg.remove();
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  bg.onclick = e => { if (e.target === bg) close(); };
+  const lang = () => $m('#plang')?.value || '';
+  const fill = x => { $m('#pt').value = x.title || ''; $m('#pd').value = x.description || ''; $m('#ph').value = x.hashtags || ''; count(); };
+  const text = () => [$m('#pt').value.trim(), $m('#pd').value.trim(), $m('#ph').value.trim()].filter(Boolean).join('\n\n');
+  const count = () => { const n = text().length; $m('#pcount').textContent = `${n} caracteres${n > 2200 ? ' · ⚠ Instagram admite 2200' : ''}`; };
+  ['#pt', '#pd', '#ph'].forEach(s => $m(s).oninput = count);
+  const save = () => api(`/api/clips/${c.id}/caption`, { method: 'PUT', body: { title: $m('#pt').value, description: $m('#pd').value, hashtags: $m('#ph').value } }).catch(() => {});
+  const gen = regen => api(`/api/clips/${c.id}/caption`, { method: 'POST', body: { regen } }).then(fill);
+  if (c.social?.description) fill(c.social); else gen(false).catch(e => { fill({ title: c.title, description: c.hook, hashtags: '#viral #fyp #reels' }); toast(e.message, 'bad'); });
+  $m('#pregen').onclick = e => busy(e.target, () => gen(true));
+  if ($m('#plang')) $m('#plang').onchange = () => { const v = c.variants[lang()]; $m('#pv').src = v?.url || c.url; if ($m('#pdl')) $m('#pdl').href = v?.url || c.url; if (v?.title && lang()) $m('#pt').value = v.title; count(); };
+  // Escritorio: ruta del vídeo en el equipo (para arrastrarlo y guardarlo en Descargas)
+  const localPath = async () => (await api(`/api/clips/${c.id}/localfile${lang() ? '?lang=' + lang() : ''}`).catch(() => ({}))).path;
+  let dragPath = null;
+  if (desk) {
+    localPath().then(f => { dragPath = f; if (!f) $m('#pdrag').outerHTML = `<a class="btn sm" href="${esc(c.url)}" download>⬇ Descargar vídeo</a>`; });
+    if ($m('#plang')) $m('#plang').addEventListener('change', async () => { dragPath = await localPath(); });
+    $m('#pdrag').ondragstart = e => { e.preventDefault(); if (dragPath) desk.dragFile(dragPath); };
+  }
+  bg.querySelectorAll('[data-net]').forEach(btn => btn.onclick = () => busy(btn, async () => {
+    const net = btn.dataset.net;
+    bg.querySelectorAll('[data-net]').forEach(b => b.classList.toggle('gold', b === btn));
+    save();
+    if (net === 'youtube') return youtubePane();
+    const n = PUB_NETS[net];
+    const copied = await copyText(text());
+    let saved = null;
+    if (desk && dragPath) saved = await desk.saveToDownloads(await localPath() || dragPath, $m('#pt').value || c.title).catch(() => null);
+    else { const a = document.createElement('a'); a.href = c.variants?.[lang()]?.url || c.url; a.download = ($m('#pt').value || 'clip').replace(/[\\/:*?"<>|#%]+/g, ' ').trim().slice(0, 80) + '.mp4'; document.body.appendChild(a); a.click(); a.remove(); }
+    window.open(n.url, '_blank');
+    $m('#pinfo').innerHTML = `<div class="card stack pub-steps"><b>${n.icon} Se abrió ${esc(n.where)}</b><ol>
+      <li><b>Sube el vídeo:</b> ${desk && dragPath ? 'arrastra <b>🎬 el vídeo</b> de esta ventana a la página' : 'arrástralo desde Descargas'}${saved ? ` (también está en <b>Descargas</b>, ya se abrió la carpeta)` : ''}.</li>
+      <li><b>Pega el texto</b> con <kbd>${paste}</kbd> en la descripción ${copied ? '— ya está copiado ✓' : `— <button class="btn sm" id="pcopy">📋 Copiar texto</button>`}.</li>
+      <li>${net === 'tiktok' ? 'Elige portada y pulsa <b>Publicar</b> o <b>Programar</b>.' : 'Pulsa <b>Compartir ahora</b> o <b>Programar</b> y elige la fecha.'}</li></ol>
+      <div class="row"><button class="btn sm" id="precopy">📋 Copiar texto otra vez</button><button class="btn sm" id="preopen">↗ Abrir la página otra vez</button></div></div>`;
+    $m('#precopy').onclick = async () => { toast(await copyText(text()) ? 'Texto copiado' : 'No se pudo copiar', 'good'); };
+    if ($m('#pcopy')) $m('#pcopy').onclick = $m('#precopy').onclick;
+    $m('#preopen').onclick = () => window.open(n.url, '_blank');
+    toast(copied ? `Texto copiado. Pégalo en ${n.name} con ${paste}.` : 'Pulsa "Copiar texto".', 'good');
+  }));
+  function youtubePane() {
+    $m('#pinfo').innerHTML = `<div class="card stack pub-steps"><b>▶️ Publicar en YouTube (Shorts)</b>
+      ${c.yt_video_id ? `<a class="small" target="_blank" href="https://youtube.com/shorts/${c.yt_video_id}">✓ Ya publicado: ver en YouTube</a>` : ''}
+      ${chs.length ? `<select id="ych">${channelOptions(chs, p.channel_id, 'Elige canal')}</select>
+        <select id="ypriv"><option value="public">Público</option><option value="unlisted">Oculto</option><option value="private">Privado</option></select>
+        <div><label>Programar (opcional)</label><input type="datetime-local" id="yat"></div>
+        <button class="btn gold" id="ygo">Publicar en YouTube</button>`
+      : '<div class="small">Conecta un canal en <a href="#/canales">Mis canales</a> para publicar en YouTube desde aquí.</div>'}</div>`;
+    const go = $m('#ygo'); if (!go) return;
+    go.onclick = () => busy(go, async () => {
+      const channel_id = $m('#ych').value; if (!channel_id) throw new Error('Elige un canal conectado a YouTube.');
+      const at = $m('#yat').value;
+      const r = await api(`/api/clips/${c.id}/publish`, { method: 'POST', body: { channel_id, lang: lang(), privacy: $m('#ypriv').value,
+        title: $m('#pt').value || c.title, description: [$m('#pd').value.trim(), $m('#ph').value.trim()].filter(Boolean).join('\n\n'),
+        publishAt: at ? new Date(at).toISOString() : undefined } });
+      c.yt_video_id = r.videoId;
+      toast(at ? '⏰ Programado en YouTube' : '¡Publicado en YouTube!', 'good');
+      youtubePane();
+    });
+  }
+}
 /** Publicar o programar un clip/vídeo en varias redes a la vez. */
 async function socialDialog({ clip_id, project_id, caption = '', langs = [] }) {
   const accs = await api('/api/social/accounts');
@@ -916,14 +1015,7 @@ function shortsGrid(p, chs) {
           <select data-lang>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
           ${langs.map(([l, v]) => `<a href="${v.url}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
-        <button class="btn sm" data-social>📱 Instagram · Facebook · TikTok</button>
-        <details><summary>📤 Publicar en YouTube</summary><div class="stack" style="margin-top:6px">
-          ${c.yt_video_id ? `<a class="small" target="_blank" href="https://youtube.com/shorts/${c.yt_video_id}">✓ Publicado en YouTube</a>` : ''}
-          <select data-ch>${channelOptions(chs.filter(x => x.connected), p.channel_id, 'Elige canal conectado')}</select>
-          <select data-pub-lang><option value="">Versión original</option>${langs.map(([l]) => `<option value="${l}">${LANGS[l] || l}</option>`).join('')}</select>
-          <select data-priv><option value="public">Público</option><option value="unlisted">Oculto</option><option value="private">Privado</option></select>
-          <div><label>Programar (opcional)</label><input type="datetime-local" data-at></div>
-          <button class="btn gold sm" data-pub>Publicar ahora</button></div></details>
+        <button class="btn gold" data-publish>📤 Publicar${c.yt_video_id ? ' <span class="small">· YouTube ✓</span>' : ''}</button>
         <label class="check"><input type="checkbox" data-zip ${c.include_zip ? 'checked' : ''}> Incluir en el .zip</label>
       </div></div>`;
   }).join('')}</div>`;
@@ -982,16 +1074,7 @@ function bindClips(p) {
     if (rb) rb.onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/render`, { method: 'POST' }); toast('Reintentando…'); router(); });
     $('[data-x]', el).onclick = async () => { if (confirm('¿Eliminar este clip?')) { await api('/api/clips/' + c.id, { method: 'DELETE' }); router(); } };
     $('[data-tr]', el).onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/translate`, { method: 'POST', body: { lang: $('[data-lang]', el).value } }); toast('Traduciendo y renderizando…'); router(); });
-    $('[data-social]', el).onclick = () => socialDialog({ clip_id: c.id, caption: $('[data-f=title]', el).value, langs: Object.keys(c.variants || {}).filter(l => c.variants[l]?.url) });
-    $('[data-pub]', el).onclick = e => busy(e.target, async () => {
-      const channel_id = $('[data-ch]', el).value;
-      if (!channel_id) throw new Error('Elige un canal conectado a YouTube (Mis canales).');
-      const at = $('[data-at]', el).value;
-      const r = await api(`/api/clips/${c.id}/publish`, { method: 'POST', body: {
-        channel_id, lang: $('[data-pub-lang]', el).value, privacy: $('[data-priv]', el).value,
-        title: $('[data-f=title]', el).value, publishAt: at ? new Date(at).toISOString() : undefined } });
-      toast('¡Publicado! ' + r.url, 'good'); router();
-    });
+    $('[data-publish]', el).onclick = () => publishDialog(c, p);
   });
 }
 

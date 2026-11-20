@@ -1,7 +1,7 @@
 // Clippers Pro de escritorio (Windows / macOS / Linux).
 // Arranca el mismo servidor de la web dentro de la app (base de datos y vídeos en tu ordenador)
 // y lo muestra en una ventana. ffmpeg y yt-dlp van incluidos.
-import { app, BrowserWindow, shell, Menu, dialog, safeStorage, ipcMain } from 'electron';
+import { app, BrowserWindow, shell, Menu, dialog, safeStorage, ipcMain, nativeImage } from 'electron';
 import * as lic from './license.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -164,6 +164,19 @@ app.on('activate', () => { if (!win && baseUrl && licensed) createWindow(); });
 let licensed = false, loginWin = null, loginMessage = '', loginResolve = null;
 const NO_LICENSE = !app.isPackaged && process.env.CLIPPERS_NO_LICENSE === '1'; // solo para desarrollo
 
+// ---------- Publicar a mano: el vídeo del clip se arrastra a la web (Instagram, Facebook, TikTok) o se guarda en Descargas ----------
+const DRAG_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAQklEQVR4nO3OQQ0AIAwAsVlBGG4RhguOR5MK6KyzvzL5QEhISKgeCAkJCdUDISEhoXogJCQkVA+EhISE6oGQkNBjF7PXUqaJlJzbAAAAAElFTkSuQmCC';
+const insideData = f => { try { const r = path.relative(path.resolve(process.env.DATA_DIR), path.resolve(String(f))); return !!f && !r.startsWith('..') && !path.isAbsolute(r) && fs.existsSync(f); } catch { return false; } };
+ipcMain.on('clip:drag', (e, file) => { if (insideData(file)) e.sender.startDrag({ file, icon: nativeImage.createFromDataURL(DRAG_ICON) }); });
+ipcMain.handle('clip:save', async (e, { file, name }) => {
+  if (!insideData(file)) throw new Error('No se encontró el vídeo del clip.');
+  const base = String(name || 'clip').replace(/[\\/:*?"<>|#%\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'clip';
+  let dest = path.join(app.getPath('downloads'), base + '.mp4');
+  for (let i = 2; fs.existsSync(dest); i++) dest = path.join(app.getPath('downloads'), `${base} (${i}).mp4`);
+  await fs.promises.copyFile(file, dest);
+  shell.showItemInFolder(dest);
+  return dest;
+});
 ipcMain.handle('license:info', () => ({ ...lic.licenseInfo(), message: loginMessage }));
 ipcMain.handle('license:login', async (e, { username, password }) => {
   try {

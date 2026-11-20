@@ -863,6 +863,46 @@ app.delete('/api/clips/:id', h(async (req, res) => {
   await q('DELETE FROM clips WHERE id = $1', [c.id]);
   res.json({ ok: true });
 }));
+// ---------- Publicar a mano en Instagram / Facebook / TikTok: título, descripción y hashtags listos para pegar ----------
+app.post('/api/clips/:id/caption', h(async (req, res) => {
+  const c = await getClip(req.params.id);
+  if (!c) return res.status(404).json({ error: 'No existe' });
+  if (c.social?.description && !req.body?.regen) return res.json(c.social);
+  const p = await getProject(c.project_id);
+  const { sliceWords } = await import('./video/ass.js');
+  const all = p.type === 'live' ? await liveWords(p.id, c.start, c.end) : (p.data.transcript?.words || []);
+  const said = sliceWords(c.edit?.words || all, c.start, c.end).map(w => w.word).join(' ').slice(0, 2500);
+  const lang = p.data.options?.titleLanguage || p.data.options?.language || '';
+  let out = {};
+  try {
+    out = await chatJSON('Eres experto en redes sociales y vídeos cortos virales (Reels, TikTok, Shorts).', `Clip vertical. Título actual: "${c.title || ''}". Gancho: "${c.hook || ''}".
+Lo que se dice en el clip: """${said}"""
+Escribe ${lang ? 'en el idioma con código ' + lang : 'en el idioma del texto'} un JSON:
+{"title":"título con gancho, máx 80 caracteres, sin hashtags","description":"1 o 2 frases que den ganas de verlo y una pregunta o llamada a comentar, máx 220 caracteres, sin hashtags","hashtags":["6 a 8 hashtags relevantes y populares, con #, sin espacios"]}`, { maxTokens: 400 });
+  } catch (e) { console.warn('[publicar] la IA no generó el texto:', e.message); }
+  const tags = (Array.isArray(out.hashtags) ? out.hashtags : String(out.hashtags || '').split(/[\s,]+/))
+    .map(t => '#' + String(t).replace(/^#+/, '').replace(/\s+/g, '')).filter(t => t.length > 2).slice(0, 10);
+  const social = {
+    title: String(out.title || c.title || '').slice(0, 100),
+    description: String(out.description || c.hook || '').slice(0, 500),
+    hashtags: (tags.length ? tags : ['#viral', '#fyp', '#reels']).join(' '),
+  };
+  await updateClip(c.id, { social });
+  res.json(social);
+}));
+app.put('/api/clips/:id/caption', h(async (req, res) => {
+  const b = req.body || {};
+  const social = { title: String(b.title || '').slice(0, 100), description: String(b.description || '').slice(0, 2000), hashtags: String(b.hashtags || '').slice(0, 600) };
+  await updateClip(Number(req.params.id), { social });
+  res.json(social);
+}));
+// Ruta del vídeo en este equipo (app de escritorio: para arrastrarlo a la web de la red social o guardarlo en Descargas)
+app.get('/api/clips/:id/localfile', h(async (req, res) => {
+  const c = await getClip(req.params.id);
+  const ref = req.query.lang ? c?.variants?.[req.query.lang]?.file : c?.file;
+  const f = ref && STORAGE_MODE !== 's3' && !/^https?:/.test(ref) ? inputPath(ref) : null;
+  res.json({ path: f && fs.existsSync(f) ? f : null });
+}));
 app.post('/api/clips/:id/publish', h(async (req, res) => {
   const c = await getClip(req.params.id);
   const { channel_id, title, description = '', tags = [], privacy = 'public', publishAt, lang } = req.body;
