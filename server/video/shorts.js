@@ -326,7 +326,11 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     else if (layout === 'crop') vf = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,${ass}[base]`;
     else vf = `[0:v]split=2[a][b];[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920,eq=brightness=-0.06[bg];` +
       `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
-    vf = pre + vf.replace('[0:v]', vin);
+    // Multi Edit: filtro de color de la versión (se aplica a la imagen antes del encuadre y los subtítulos)
+    const GRADES = { vivo: 'eq=saturation=1.28:contrast=1.06', calido: 'colorbalance=rs=0.07:gs=0.02:bs=-0.06,eq=saturation=1.1', frio: 'colorbalance=rs=-0.05:bs=0.08,eq=contrast=1.04',
+      cine: 'eq=contrast=1.12:saturation=0.88:brightness=-0.02', brillo: 'eq=brightness=0.04:contrast=1.04:saturation=1.12' };
+    const grade = GRADES[E?.grade] ? GRADES[E.grade] + ',' : '';
+    vf = pre + vf.replace('[0:v]', vin + grade);
 
     // Emojis animados sobre los subtítulos cuando se dice la palabra
     const extra = [];

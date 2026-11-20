@@ -311,6 +311,40 @@ async function socialSection(sys) {
   });
   if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
 }
+// ---------- Multi Edit: N versiones de un clip con textos, subtítulos, colores y encuadre distintos ----------
+function multiEditDialog(c) {
+  const OPTS = [
+    ['hook', '✍️ Gancho y título distintos (IA)', true],
+    ['style', '🔤 Estilo de subtítulos', true],
+    ['color', '🎨 Color de los subtítulos', true],
+    ['position', '↕️ Posición y tamaño del texto', true],
+    ['zoom', '🔍 Zoom de la imagen', true],
+    ['grade', '🌈 Filtro de color', true],
+    ['trim', '✂️ Empezar y acabar algo distinto (±1 s)', false],
+  ];
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal stack" style="max-width:520px"><div class="row between"><b>🧬 Multi Edit · clip #${c.idx}</b><button class="btn sm" data-close>✕</button></div>
+    <div class="small muted">Crea varias versiones del clip, cada una con una combinación distinta. Ideal para subir el mismo momento a varias cuentas o probar qué versión funciona mejor.</div>
+    <div><label>¿Cuántas versiones?</label><div class="row"><input type="range" id="mn" min="2" max="20" value="5" style="flex:1"><b id="mnv" style="min-width:28px;text-align:right">5</b></div></div>
+    <div class="stack" style="gap:6px"><label>¿Qué cambia en cada versión?</label>
+      ${OPTS.map(([k, l, on]) => `<label class="check" style="font-size:14px"><input type="checkbox" data-v="${k}" ${on ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    ${c.src ? '<div class="small muted">Clip de directo: el inicio y el final se mantienen.</div>' : ''}
+    <div class="small muted" id="mnote">Cada versión se renderiza como un clip nuevo en este proyecto (🧬 V1, V2…).</div>
+    <div class="row between"><span></span><div class="row"><button class="btn gold" id="mgo">🧬 Crear 5 versiones</button><button class="btn" data-close>Cancelar</button></div></div></div>`;
+  document.body.appendChild(bg);
+  const $m = s => bg.querySelector(s), close = () => bg.remove();
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  $m('#mn').oninput = () => { $m('#mnv').textContent = $m('#mn').value; $m('#mgo').textContent = `🧬 Crear ${$m('#mn').value} versiones`; };
+  $m('#mgo').onclick = () => busy($m('#mgo'), async () => {
+    const vary = Object.fromEntries([...bg.querySelectorAll('[data-v]')].map(i => [i.dataset.v, i.checked]));
+    if (!Object.values(vary).some(Boolean)) throw new Error('Elige al menos una cosa que cambiar.');
+    $m('#mnote').textContent = vary.hook ? 'La IA está escribiendo los ganchos…' : 'Creando versiones…';
+    const r = await api(`/api/clips/${c.id}/multiedit`, { method: 'POST', body: { count: Number($m('#mn').value), vary } });
+    toast(`🧬 ${r.count} versiones en cola: aparecen abajo mientras se renderizan.`, 'good');
+    close(); router();
+  });
+}
+
 // ---------- Publicar un clip: YouTube por su API; Instagram, Facebook y TikTok en su web con el texto copiado ----------
 const PUB_NETS = {
   instagram: { name: 'Instagram', icon: '📸', url: 'https://business.facebook.com/latest/reels_composer', where: 'Meta Business Suite (marca Instagram como destino)' },
@@ -995,7 +1029,7 @@ function shortsGrid(p, chs) {
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b><span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : 'fondo difuminado'}</span>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b>${c.variant_label ? `<span class="pill" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}<span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : 'fondo difuminado'}</span>
           ${!p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
@@ -1015,6 +1049,7 @@ function shortsGrid(p, chs) {
           <select data-lang>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
           ${langs.map(([l, v]) => `<a href="${v.url}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
+        <button class="btn" data-multi>🧬 Multi Edit: crear versiones</button>
         <button class="btn gold" data-publish>📤 Publicar${c.yt_video_id ? ' <span class="small">· YouTube ✓</span>' : ''}</button>
         <label class="check"><input type="checkbox" data-zip ${c.include_zip ? 'checked' : ''}> Incluir en el .zip</label>
       </div></div>`;
@@ -1075,6 +1110,7 @@ function bindClips(p) {
     $('[data-x]', el).onclick = async () => { if (confirm('¿Eliminar este clip?')) { await api('/api/clips/' + c.id, { method: 'DELETE' }); router(); } };
     $('[data-tr]', el).onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/translate`, { method: 'POST', body: { lang: $('[data-lang]', el).value } }); toast('Traduciendo y renderizando…'); router(); });
     $('[data-publish]', el).onclick = () => publishDialog(c, p);
+    $('[data-multi]', el).onclick = () => multiEditDialog(c);
   });
 }
 
