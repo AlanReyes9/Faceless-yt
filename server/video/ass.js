@@ -39,7 +39,7 @@ function wrap(text, max = 22) {
  * @param words  [{word,start,end}] con tiempos RELATIVOS al inicio del clip
  * @param opts   { hook, hookSeconds, duration, highlight, captionY, wordsPerGroup }
  */
-export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg, hookMarginV = 190 } = {}) {
+export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg, hookMarginV = 190, layout = null } = {}) {
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -88,6 +88,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const baseTag = st.size !== capSize ? `{\\fs${st.size}${st.outline != null ? `\\bord${st.outline}` : ''}}` : '';
     groups.forEach((g, gi) => {
       const nextStart = groups[gi + 1]?.[0]?.start ?? g[g.length - 1].end + 0.4;
+      // Una palabra muy larga no cabe en el ancho (libass no la parte): se reduce la letra solo en este grupo
+      const longest = Math.max(...g.map(x => String(x.word).length));
+      const fitSize = Math.min(st.size, Math.floor((width - 140) / (longest * (st.upper ? 0.64 : 0.55) * 1.12)));
+      const gTag = fitSize < st.size ? `{\\fs${fitSize}${st.outline != null ? `\\bord${st.outline}` : ''}}` : baseTag;
       g.forEach((w, wi) => {
         const start = w.start;
         let end = wi < g.length - 1 ? g[wi + 1].start : Math.min(nextStart, w.end + 0.5);
@@ -103,8 +107,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }).join(' ');
         // "impacto": cada grupo entra con un pequeño "pop"
         const pop = st.mode === 'pop' && wi === 0 ? '{\\fscx75\\fscy75\\t(0,110,\\fscx100\\fscy100)}' : '';
-        capEvents.push({ start, end: Math.min(end, duration), text: `${baseTag}${pop}${text}` });
+        capEvents.push({ start, end: Math.min(end, duration), text: `${gTag}${pop}${text}` });
       });
+      // Líneas que ocupará el grupo (libass parte el texto si no cabe en el ancho): para colocar los emojis encima
+      if (layout) {
+        const chars = g.reduce((n, x) => n + String(x.word).length, 0) + g.length - 1;
+        const textW = chars * Math.min(st.size, fitSize) * (st.upper ? 0.68 : 0.58) * 1.05;
+        layout.push({ start: g[0].start, end: Math.min(nextStart, g[g.length - 1].end + 0.5), size: Math.min(st.size, fitSize), lines: Math.min(3, Math.max(1, Math.ceil(textW / (width - 140)))) });
+      }
     });
     // Garantía final: nunca dos subtítulos a la vez (si coinciden, el motor los dibuja uno encima de otro)
     capEvents.sort((x, y) => x.start - y.start);

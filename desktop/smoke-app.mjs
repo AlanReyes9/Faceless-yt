@@ -102,5 +102,29 @@ await step('Directo: audio y vídeo sincronizados', async () => {
   ok('Directo: audio y vídeo sincronizados', f0 != null && b0 != null && Math.abs(f0 - b0) < 0.3, `imagen ${f0?.toFixed(2)} s · sonido ${b0?.toFixed(2)} s`);
 });
 
+await step('Cortes de silencios: audio y vídeo sincronizados', async () => {
+  // destello + pitido a la vez cada 2.4 s (vídeo a 29.97 fps); se cortan los silencios entre ellos
+  const { one, FILES_DIR } = await import('../server/db.js');
+  const { saveFile } = await import('../server/storage.js');
+  const { renderClip } = await import('../server/video/shorts.js');
+  const { run } = await import('../server/video/ffmpeg.js');
+  const src = path.join(process.env.DATA_DIR, 'cortes.mp4');
+  await ffmpeg(['-f', 'lavfi', '-i', "color=black:s=640x360:r=30000/1001:d=20,geq=lum='if(lt(mod(T-1.3,2.4),0.15)*gte(T,1.3),255,16)':cb=128:cr=128",
+    '-f', 'lavfi', '-i', "sine=f=1000:d=20,volume='if(lt(mod(t-1.3,2.4),0.15)*gte(t,1.3),1,0)':eval=frame", '-c:v', 'libx264', '-g', '60', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', src]);
+  const ref = await saveFile(src, 'cortes.mp4');
+  const W = [1.3, 3.7, 6.1, 8.5, 10.9, 13.3, 15.7, 18.1].map(t => ({ word: 'ahora', start: t - 0.05, end: t + 0.9 }));
+  const pr = await one(`INSERT INTO projects (type, title, status, source, data, duration) VALUES ('shorts','cortes','done',$1,$2,20) RETURNING id`,
+    [ref, JSON.stringify({ width: 640, height: 360, transcript: { words: W }, options: { cutSilence: true, normalize: true } })]);
+  const c = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, layout, status, style, keywords, emojis, signals) VALUES ($1,1,0.5,19.5,'t','',9,'crop','rendering','impacto','[]','[]','{}') RETURNING id`, [pr.id]);
+  await renderClip(c.id);
+  const x = await one('SELECT status, error, file, keep FROM clips WHERE id=$1', [c.id]);
+  if (x.status !== 'ready') throw new Error(x.error || x.status);
+  const out = path.join(FILES_DIR, path.basename(x.file));
+  const fl = ((await run(FFMPEG, ['-hide_banner', '-i', out, '-vf', "select='gt(scene,0.3)',showinfo", '-an', '-f', 'null', '-'], { allowFail: true })).err.match(/pts_time:([\d.]+)/g) || []).map(v => +v.split(':')[1]).filter((_, i) => i % 2 === 0);
+  const bp = ((await run(FFMPEG, ['-hide_banner', '-i', out, '-vn', '-af', 'silencedetect=n=-30dB:d=0.05', '-f', 'null', '-'], { allowFail: true })).err.match(/silence_end: ([\d.]+)/g) || []).map(v => +v.split(' ')[1]);
+  const worst = Math.max(...fl.map(t => Math.min(...bp.map(b => Math.abs(b - t)))));
+  ok('Cortes de silencios: audio y vídeo sincronizados', x.keep?.length >= 6 && fl.length >= 6 && worst < 0.07, `${x.keep?.length} tramos · desfase máx. ${Math.round(worst * 1000)} ms`);
+});
+
 console.log(bad ? `\n${bad} prueba(s) fallaron` : '\nTodo correcto');
 process.exit(bad ? 1 : 0);

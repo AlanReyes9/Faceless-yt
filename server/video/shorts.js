@@ -242,7 +242,9 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     if (keep.length) console.log(`[edición automática] clip ${clipId}: ${keep.length} tramo(s), ${(clip.end - clip.start).toFixed(1)} s → ${keep.reduce((t, [a, b]) => t + b - a, 0).toFixed(1)} s`);
   }
   if (!(cutSilence || cutRetakes)) keep = null;
-  if (keep?.length) { parts = cutParts(parts, clip.start, keep); dur = parts.reduce((t, x) => t + x.dur, 0); }
+  if (keep?.length) parts = cutParts(parts, clip.start, keep);
+  // Varios trozos: cada uno dura un número exacto de fotogramas (vídeo y audio se recortan igual al unirlos)
+  if (parts.length > 1) { parts = parts.map(x => ({ ...x, dur: Math.max(1, Math.round(x.dur * 30)) / 30 })); dur = parts.reduce((t, x) => t + x.dur, 0); }
   const inputs = parts.map(x => inputPath(x.ref));
   const words0 = lang ? (clip.variants[lang]?.words || []) : sliceWords(allWords, clip.start, clip.end);
   const words = keep?.length ? remapWords(words0, keep, clip.start) : words0;
@@ -256,7 +258,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const assFile = path.join(WORK_DIR, `${tag}.ass`);
   const out = path.join(WORK_DIR, `${tag}.mp4`);
   try {
-    fs.writeFileSync(assFile, buildASS(words, {
+    const capLayout = []; // líneas que ocupa cada subtítulo (para colocar los emojis encima sin taparlo)
+    fs.writeFileSync(assFile, buildASS(words, { layout: capLayout,
       hook, duration: dur, highlight: C.color || await getSetting('caption_color'),
       captionMarginV: Math.round(capMargin), width: OW, height: OH,
       captions: C.show != null ? C.show !== false : p.data.options?.captions !== false,
@@ -341,7 +344,9 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     const Q = quality(ctx.attempt);
     // Varios trozos: se unen (vídeo y audio) antes de aplicar el encuadre
     const vin = parts.length > 1 ? '[cv]' : '[0:v]';
-    const pre = parts.length > 1 ? `${parts.map((_, i) => `[${i}:v][${i}:a]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
+    const pre = parts.length > 1 ? parts.map((x, i) => `[${i}:v]fps=30,trim=duration=${x.dur.toFixed(5)},setpts=PTS-STARTPTS,setsar=1[pv${i}];` +
+        `[${i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=duration=${x.dur.toFixed(5)},asetpts=PTS-STARTPTS[pa${i}];`).join('') +
+      `${parts.map((_, i) => `[pv${i}][pa${i}]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
     if (layout === 'gaming') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       vf = gamingFilter({ vin: '[0:v]', W, H, cam, OW, OH, ass });
@@ -386,8 +391,12 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       extra.push('-loop', '1', '-i', img);
       const t0 = Math.max(0, w.start - 0.05).toFixed(2), t1 = (w.start + 1.3).toFixed(2);
       // aparece con un pequeño rebote de escala
+      // altura del bloque de subtítulos mientras se ve el emoji (la más alta si cambia de grupo)
+      const blocks = capLayout.filter(b => b.end > w.start - 0.05 && b.start < w.start + 1.3);
+      const blockH = Math.max(1, ...blocks.map(b => b.lines)) * (blocks[0]?.size || 90) * 1.22;
+      const ey = Math.max(30, Math.round(capY - blockH - 170 - 30));
       vf += `;[${i}:v]format=rgba,scale=170:170,fade=in:st=${t0}:d=0.12:alpha=1,fade=out:st=${(w.start + 1.1).toFixed(2)}:d=0.2:alpha=1[e${i}];` +
-        `[${last}][e${i}]overlay=x=(W-w)/2:y=${capY - 300}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
+        `[${last}][e${i}]overlay=x=(W-w)/2:y=${ey}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
       last = `o${i}`;
     }
     // Mi marca: marco y logo encima de todo (si el proyecto o el clip lo piden)
@@ -421,7 +430,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       if (a && a !== '[0:a]' && a !== '[ca]') amap = a;
     }
     await prog('Renderizando', 0, true);
-    const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', x.dur.toFixed(3)] : []), '-i', inputs[i]]);
+    const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', (x.dur + 0.5).toFixed(3)] : []), '-i', inputs[i]]);
     await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', dur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', amap,
       '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
