@@ -1750,10 +1750,13 @@ routes.ayuda = () => {
     <p class="muted small">Nota: los proyectos de Google no verificados suben los vídeos como privados hasta que pases la auditoría de la API.</p></div>
   <div class="card stack"><h2>Publicar en Instagram y Facebook</h2><ol>
     <li>Tu Instagram tiene que ser una <b>cuenta profesional</b> (empresa o creador) <b>vinculada a una página de Facebook</b> (Instagram → Configuración → Cuenta → Cambiar a cuenta profesional; y en la página de Facebook → Configuración → Cuentas vinculadas).</li>
-    <li>Entra en <a href="https://developers.facebook.com/apps" target="_blank">developers.facebook.com/apps</a> → <b>Crear app</b> → tipo <b>Empresa</b> (o "Otro" → "Empresa").</li>
-    <li>Añade los productos <b>Inicio de sesión con Facebook</b> e <b>Instagram</b> (API de Instagram con inicio de sesión de Facebook).</li>
-    <li>En Inicio de sesión con Facebook → Configuración, en <b>URI de redireccionamiento de OAuth válidos</b> pega:<br><code>${location.origin}/api/social/meta/callback</code></li>
-    <li>En Configuración → Básica copia el <b>Identificador de la app</b> y la <b>Clave secreta</b> y pégalos en Ajustes y claves (Meta App ID / Secret).</li>
+    <li>Entra en <a href="https://developers.facebook.com/apps" target="_blank">developers.facebook.com/apps</a> → <b>Crear app</b>. En "Casos de uso" elige <b>Otro</b> y en tipo de app <b>Empresa</b>. (Si ya creaste la app con otro caso de uso, sigue con el paso siguiente.)</li>
+    <li>En el panel de la app → <b>Casos de uso</b> → <b>Agregar casos de uso</b>, añade:<br>
+      • <b>Administrar todo en tu página</b> (Manage everything on your Page) → <b>Personalizar</b> → añade los permisos <code>pages_show_list</code>, <code>pages_read_engagement</code> y <code>pages_manage_posts</code>.<br>
+      • <b>Administrar mensajes y contenido en Instagram</b> → <b>Configuración de la API con inicio de sesión con Facebook</b> → añade <code>instagram_basic</code> e <code>instagram_content_publish</code>.<br>
+      <span class="muted">Si al conectar Facebook dice <i>"Invalid Scopes"</i>, es que falta alguno de estos casos de uso o permisos.</span></li>
+    <li>Añade también el producto <b>Inicio de sesión con Facebook</b> (si no aparece ya) y en su <b>Configuración</b>, en <b>URI de redireccionamiento de OAuth válidos</b>, pega:<br><code>${location.origin}/api/social/meta/callback</code></li>
+    <li>En Configuración de la app → Básica copia el <b>Identificador de la app</b> y la <b>Clave secreta</b> y pégalos en Ajustes y claves (Meta App ID / Secret). Deja vacío el "Configuration ID" salvo que uses Facebook Login for Business.</li>
     <li>Mientras la app está en modo desarrollo solo funciona con tu cuenta (y las que añadas en Roles como administradores o probadores): para publicar en <b>tus propias</b> páginas y cuentas no necesitas la revisión de Meta.</li>
     <li>En Mis canales → Redes sociales pulsa <b>Conectar Facebook / Instagram</b> y acepta todas las páginas y permisos.</li></ol>
     <p class="muted small">Si tu app usa "Facebook Login for Business", crea una configuración con los permisos de páginas e Instagram y pega su Configuration ID en Ajustes.</p></div>

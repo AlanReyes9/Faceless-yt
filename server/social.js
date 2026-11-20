@@ -13,7 +13,8 @@ import { baseUrl } from './youtube.js';
 
 const G = process.env.META_GRAPH_URL || 'https://graph.facebook.com/v21.0'; // (variables solo para pruebas)
 const TT = process.env.TIKTOK_API_URL || 'https://open.tiktokapis.com/v2';
-const META_SCOPES = 'pages_show_list,pages_read_engagement,pages_manage_posts,business_management,instagram_basic,instagram_content_publish';
+// Solo los permisos imprescindibles para publicar (business_management solo existe en apps de tipo Empresa y no hace falta)
+const META_SCOPES = 'pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish';
 const TT_SCOPES = 'user.info.basic,video.upload,video.publish';
 
 export const SOCIAL_SQL = `
