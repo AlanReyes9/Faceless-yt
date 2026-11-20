@@ -10,6 +10,7 @@ import { emojiImage } from './emoji.js';
 import { detectFacecam, gamingFilter } from './gaming.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
+import { computeKeep, cutParts, remapWords, timeMapper } from './autocut.js';
 import { getSetting } from '../settings.js';
 import { register, enqueue } from '../jobs.js';
 import { saveFile, inputPath, removeFile } from '../storage.js';
@@ -221,17 +222,31 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   if (!clip) return;
   const p = await getProject(clip.project_id);
   // Trozos de vídeo que forman el clip: normalmente el original; en directos, uno o dos segmentos grabados
-  const dur = clip.end - clip.start;
-  const parts = clip.src ? JSON.parse(clip.src) : [{ ref: p.source, ss: clip.start, dur }];
+  let dur = clip.end - clip.start;
+  let parts = clip.src ? JSON.parse(clip.src) : [{ ref: p.source, ss: clip.start, dur }];
   if (parts.some(x => !x.ref) || p.data.sourceDeletedAt) throw new Error('El vídeo original se borró para ahorrar espacio; no se puede volver a renderizar. (410)');
-  const inputs = parts.map(x => inputPath(x.ref));
   const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
   await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
   const E = clip.edit || null; // ajustes del editor (encuadre, formato, subtítulos, texto corregido)
   let allWords = p.type === 'live' ? await liveWords(p.id, clip.start, clip.end) : (p.data.transcript?.words || []);
   if (E?.words) allWords = [...allWords.filter(w => w.end <= E.wordsFrom || w.start >= E.wordsTo), ...E.words].sort((a, b) => a.start - b.start);
-  const words = lang ? (clip.variants[lang]?.words || []) : sliceWords(allWords, clip.start, clip.end);
+  // Edición automática: cortar silencios y retomas (se calcula una vez y se guarda; [] = nada que cortar)
+  const o = p.data.options || {}, AC = E?.autocut || {};
+  const cutSilence = AC.silence ?? o.cutSilence, cutRetakes = AC.retakes ?? o.cutRetakes, condense = AC.condense ?? o.condense;
+  let keep = clip.keep;
+  if (keep == null && (cutSilence || cutRetakes)) {
+    await prog(cutRetakes ? 'Quitando retomas y silencios…' : 'Quitando silencios…', 0, true);
+    keep = await computeKeep({ words: allWords, start: clip.start, end: clip.end, cutSilence, cutRetakes, condense, language: o.titleLanguage || o.language }) || [];
+    await updateClip(clipId, { keep });
+    if (keep.length) console.log(`[edición automática] clip ${clipId}: ${keep.length} tramo(s), ${(clip.end - clip.start).toFixed(1)} s → ${keep.reduce((t, [a, b]) => t + b - a, 0).toFixed(1)} s`);
+  }
+  if (!(cutSilence || cutRetakes)) keep = null;
+  if (keep?.length) { parts = cutParts(parts, clip.start, keep); dur = parts.reduce((t, x) => t + x.dur, 0); }
+  const inputs = parts.map(x => inputPath(x.ref));
+  const words0 = lang ? (clip.variants[lang]?.words || []) : sliceWords(allWords, clip.start, clip.end);
+  const words = keep?.length ? remapWords(words0, keep, clip.start) : words0;
+  const mapT = keep?.length ? timeMapper(keep, clip.start) : null;
   const hook = lang ? (clip.variants[lang]?.hook || '') : (E?.hookOn === false ? '' : clip.hook);
   const FMT = { v: [1080, 1920], sq: [1080, 1080], p45: [1080, 1350] }[E?.format] || [1080, 1920];
   const [OW, OH] = FMT;
@@ -269,7 +284,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     if (layout === 'face' && !manualKeys && E?.crop?.mode !== 'fixed') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       // v2: encuadre en quien habla (los encuadres guardados con la versión anterior se recalculan)
-      const cached = clip.track && clip.track.v === 2 && clip.track.start === clip.start && clip.track.end === clip.end ? clip.track : null;
+      const keepKey = keep?.length ? JSON.stringify(keep) : '';
+      const cached = clip.track && clip.track.v === 2 && clip.track.start === clip.start && clip.track.end === clip.end && (clip.track.keep || '') === keepKey ? clip.track : null;
       facePlan = cached ? cached.plan : null;
       if (!cached) {
         try {
@@ -281,7 +297,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
           const multi = samples.filter(x => x.n >= 2).length >= samples.length * 0.3;
           if (multi) {
             try {
-              const voice = sliceWords(allWords, clip.start, clip.end);
+              const voice = words;
               const t0 = Date.now();
               const spk = await overParts((inp, part, acc) => trackSpeakers(inp, part.ss, part.dur, {
                 words: voice.filter(w => w.start >= acc && w.start < acc + part.dur).map(w => ({ ...w, start: w.start - acc, end: w.end - acc })),
@@ -297,7 +313,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
           }
           facePlan = cropPlan(samples, W, H);
         } catch (e) { console.warn('caras:', e.message); }
-        await updateClip(clipId, { track: { v: 2, start: clip.start, end: clip.end, plan: facePlan } });
+        await updateClip(clipId, { track: { v: 2, start: clip.start, end: clip.end, keep: keepKey, plan: facePlan } });
         // En Vercel el render va en un paso nuevo para tener el tiempo completo
         if (ctx.remaining() < 200000) {
           await prog('En cola para renderizar', 0, true);
@@ -338,7 +354,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       const y = Math.max(0, Math.min(H - ch, Math.round((Number(E.crop?.cy ?? 0.5)) * H - ch / 2)));
       const clampX = cx => Math.max(0, Math.min(W - cw, Math.round(cx * W - cw / 2)));
       let keys;
-      if (manualKeys) keys = [...manualKeys].sort((a, b) => a.t - b.t).map(k => ({ t: Math.max(0, k.t - clip.start), x: clampX(k.cx), cut: !!k.cut }));
+      if (manualKeys) keys = [...manualKeys].sort((a, b) => a.t - b.t).map(k => ({ t: Math.max(0, mapT ? mapT(k.t - clip.start, true) : k.t - clip.start), x: clampX(k.cx), cut: !!k.cut }));
       else if (layout === 'face' && facePlan) keys = facePlan.keys.map(k => ({ ...k, x: clampX((k.x + facePlan.cw / 2) / W) }));
       else keys = [{ t: 0, x: clampX(Number(E.crop?.cx ?? 0.5)), cut: true }];
       if (keys[0].t > 0) keys.unshift({ ...keys[0], t: 0, cut: true });
@@ -386,10 +402,28 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       await enqueue('clip.render', { clipId, lang });
       return 'requeued';
     }
+    // Audio: volumen parejo (loudnorm) y música de fondo que baja cuando se habla
+    let amap = parts.length > 1 ? '[ca]' : '0:a?';
+    const normalize = E?.audio?.normalize ?? o.normalize, music = E?.audio?.music ?? o.music;
+    if (!lang && (normalize || music)) {
+      const hasA = parts.length > 1 || (await probe(inputs[0]).catch(() => ({ hasAudio: true }))).hasAudio;
+      let a = parts.length > 1 ? '[ca]' : hasA ? '[0:a]' : null;
+      if (a && normalize) { vf += `;${a}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[an]`; a = '[an]'; }
+      if (music) {
+        const mi = parts.length + extra.filter(x => x === '-i').length;
+        extra.push('-stream_loop', '-1', '-i', inputPath(music));
+        const vol = Math.max(0.02, Math.min(1, Number(E?.audio?.musicVolume ?? o.musicVolume) || 0.18));
+        vf += `;[${mi}:a]aresample=48000,aformat=channel_layouts=stereo,volume=${vol.toFixed(2)}[mus]`;
+        if (a) vf += `;${a}aformat=channel_layouts=stereo,asplit=2[a1][a2];[mus][a2]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[duck];[a1][duck]amix=inputs=2:duration=first:normalize=0[aout]`;
+        else vf += `;[mus]atrim=0:${dur.toFixed(3)}[aout]`;
+        a = '[aout]';
+      }
+      if (a && a !== '[0:a]' && a !== '[ca]') amap = a;
+    }
     await prog('Renderizando', 0, true);
     const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', x.dur.toFixed(3)] : []), '-i', inputs[i]]);
     await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', dur.toFixed(3),
-      '-filter_complex', vf, '-map', '[v]', '-map', parts.length > 1 ? '[ca]' : '0:a?',
+      '-filter_complex', vf, '-map', '[v]', '-map', amap,
       '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
       onProgress: sec => prog('Renderizando', (sec / dur) * 95),

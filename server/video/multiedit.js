@@ -74,11 +74,11 @@ JSON: {"items":[{"hook":"gancho de 3 a 7 palabras que sale arriba del vídeo","t
       if (end - start < 3) { start = c.start; end = c.end; }
     }
     const label = `V${k}`;
-    const row = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals, src, track, edit, variant_of, variant_label)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+    const row = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals, src, track, edit, variant_of, variant_label, keep)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [c.project_id, ++idx, start, end, String(t?.title || c.title || '').slice(0, 100), String(t?.hook || c.hook || '').slice(0, 80), c.score, `🧬 Versión ${k} de #${c.idx}`,
         edit.layout, style, JSON.stringify(c.keywords || []), JSON.stringify(c.emojis || []), JSON.stringify(c.signals || {}), c.src, c.track ? JSON.stringify(c.track) : null,
-        JSON.stringify(edit), c.id, label]);
+        JSON.stringify(edit), c.id, label, start === c.start && end === c.end && c.keep ? JSON.stringify(c.keep) : null]);
     ids.push(row.id);
     await enqueue('clip.render', { clipId: row.id });
   }

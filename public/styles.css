@@ -352,3 +352,11 @@ kbd { border: 1px solid var(--line, #444); border-bottom-width: 2px; border-radi
 .bp-tl { top: 3.5%; left: 4.5%; } .bp-tr { top: 3.5%; right: 4.5%; } .bp-tc { top: 3.5%; left: 50%; transform: translateX(-50%); }
 .bp-bl { bottom: 4.5%; left: 4.5%; } .bp-br { bottom: 4.5%; right: 4.5%; } .bp-bc { bottom: 4.5%; left: 50%; transform: translateX(-50%); }
 .brand-prev .bp-sub { position: absolute; left: 0; right: 0; top: 74%; text-align: center; font: 800 7px sans-serif; color: #fff; letter-spacing: .3px; text-shadow: 0 0 2px #000; }
+
+/* Edición automática */
+.autoedit { border: 1px solid var(--line, #2a2d35); border-radius: 12px; padding: 12px; gap: 10px; }
+.ae-item { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; padding: 8px 0; border-top: 1px solid var(--line, #2a2d35); margin: 0; }
+.ae-item > input { margin-top: 3px; }
+.ae-item > span { display: flex; flex-direction: column; gap: 2px; }
+.ae-sub { margin-top: 6px !important; font-size: 13px; }
+.ae-music { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line, #2a2d35); }

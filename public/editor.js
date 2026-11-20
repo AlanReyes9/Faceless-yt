@@ -22,6 +22,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   };
   // Mi marca (logo y marco): imágenes para la vista previa
   const BR = d.brand || {}; S.brand = !!BR.on;
+  S.autocut = { silence: !!d.autocut?.silence, retakes: !!d.autocut?.retakes, condense: !!d.autocut?.condense };
   const brandImg = u => { if (!u) return null; const im = new Image(); im.onload = () => render(); im.src = u; return im; };
   const bLogo = brandImg(BR.logoUrl), bFrame = brandImg(BR.frameUrl);
   if (S.layout === 'face' && S.crop.mode === 'fixed') S.layout = 'crop';
@@ -309,6 +310,11 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <div class="row"><span class="small" style="width:50px">Fin</span><input data-s="tend" value="${fmtT(S.end)}" style="flex:1"><button class="btn sm" data-nudge="end:-0.5">-0,5</button><button class="btn sm" data-nudge="end:0.5">+0,5</button></div>
       <div class="row"><button class="btn sm" id="setin">⟦ Inicio en el cabezal</button><button class="btn sm" id="setout">Fin en el cabezal ⟧</button></div>
       <div class="small muted">También puedes arrastrar los bordes verdes de la línea de tiempo.</div>
+      <h4>▾ Edición automática</h4>
+      <label class="check"><input type="checkbox" data-s="acRetakes" ${S.autocut.retakes ? 'checked' : ''}> ✂️ Cortar retomas y falsos comienzos (IA)</label>
+      <label class="check" style="margin-left:22px"><input type="checkbox" data-s="acCondense" ${S.autocut.condense ? 'checked' : ''} ${S.autocut.retakes ? '' : 'disabled'}> Condensar ideas redundantes</label>
+      <label class="check"><input type="checkbox" data-s="acSilence" ${S.autocut.silence ? 'checked' : ''}> ✂️ Cortar silencios</label>
+      <div class="small muted">${d.autocut?.cuts ? `En el último render se hicieron ${d.autocut.cuts} corte(s). ` : ''}Los cortes se aplican al exportar; la vista previa muestra el tramo completo.</div>
       <h4>▾ Audio</h4><div class="small muted">El clip conserva el audio original. El volumen de abajo solo afecta a la vista previa.</div>`;
     else P2.innerHTML = `<h4>▾ Plantillas de subtítulos</h4><div class="ed-tpl">${Object.entries(d.styles).map(([k, v]) => `<button class="ed-tplc ${S.captions.style === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(v.label.split(' (')[0])}</b><span class="small muted">${esc((v.label.match(/\((.*)\)/) || [])[1] || '')}</span></button>`).join('')}</div>
       <h4>▾ Mi plantilla</h4><div class="row"><button class="btn sm" id="saveTpl">💾 Guardar estos ajustes</button><button class="btn sm" id="applyTpl">Aplicar mi plantilla</button></div>
@@ -334,6 +340,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'hookOn') S.hookOn = v;
       else if (k === 'emojis') S.emojis = v;
       else if (k === 'brand') S.brand = v;
+      else if (k === 'acRetakes') { S.autocut.retakes = v; if (!v) S.autocut.condense = false; pane(); }
+      else if (k === 'acCondense') S.autocut.condense = v;
+      else if (k === 'acSilence') S.autocut.silence = v;
       else if (k === 'title') S.title = v;
       else if (k === 'tstart' || k === 'tend') { if (el.type !== 'checkbox' && /^\d+:\d+:\d+(\.\d+)?$/.test(v)) { const t = v.split(':').reduce((a, n) => a * 60 + Number(n), 0); if (k === 'tstart') S.start = Math.min(t, S.end - 2); else S.end = Math.max(t, S.start + 2); } }
       changed(); render();
@@ -368,7 +377,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
 
   // ---------- Guardado automático y exportación ----------
   let saveT = null;
-  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, format: S.format,
+  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, autocut: S.autocut, format: S.format,
     layout: S.layout === 'blur' || S.layout === 'gaming' ? S.layout : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
     ...(S.layout === 'gaming' && S.facecamSet ? { facecam: S.facecam } : {}),
     ...(wordsDirty ? { words: S.words, wordsFrom: WIN.from, wordsTo: WIN.to } : {}), render });

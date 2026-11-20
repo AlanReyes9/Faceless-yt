@@ -421,6 +421,14 @@ app.post('/api/projects/:id/cancel', h(async (req, res) => {
   await updateProject(id, { status: 'error', error: 'Descarga cancelada.', progress: null });
   res.json({ ok: true });
 }));
+// Edición automática (cortar retomas/silencios, volumen parejo, música): opciones comunes de los proyectos de clips
+function autoEditOptions(b) {
+  return {
+    cutRetakes: b.cutRetakes === true, condense: b.cutRetakes === true && b.condense === true, cutSilence: b.cutSilence === true, normalize: b.normalize === true,
+    music: typeof b.music === 'string' && b.music && b.music.length < 400 && !/[\s"']/.test(b.music) ? b.music : null,
+    musicVolume: Math.max(0.02, Math.min(1, Number(b.musicVolume) || 0.18)),
+  };
+}
 app.post('/api/shorts', h(async (req, res) => {
   const b = req.body;
   if (!b.source && !b.url) throw new Error('Sube un vídeo o pega un enlace.');
@@ -430,7 +438,7 @@ app.post('/api/shorts', h(async (req, res) => {
       to: Number(dl.to) > Number(dl.from || 0) ? Number(dl.to) : 0, estMB: Number(dl.estMB) || 0 } : undefined,
     count: Math.min(30, Number(b.count) || 10), minSec: Number(b.minSec) || 20, maxSec: Number(b.maxSec) || 60,
     layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
-    captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false, brand: b.brand === true,
+    captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false, brand: b.brand === true, ...autoEditOptions(b),
   };
   const p = await insert('projects', { type: 'shorts', title: b.title || b.filename?.replace(/\.[^.]+$/, '') || b.url, channel_id: Number(b.channel_id) || null,
     source: b.source || null, source_url: b.url || null, data: { options }, progress: 'En cola…' });
@@ -448,7 +456,7 @@ app.post('/api/live', h(async (req, res) => {
   if (IS_VERCEL && !/\.m3u8(\?|$)/i.test(url)) throw new Error('En la versión de Vercel solo se pueden usar enlaces directos .m3u8. Para YouTube, Twitch o Kick instala la app en tu PC (ver Ayuda).');
   const options = {
     layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
-    emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '', brand: b.brand === true,
+    emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '', brand: b.brand === true, ...autoEditOptions(b),
     minScore: Math.min(10, Math.max(1, Number(b.minScore) || 7)), minSec: Number(b.minSec) || 15, maxSec: Number(b.maxSec) || 60,
     segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
     perSegment: Math.min(5, Math.max(1, Number(b.perSegment) || 3)),
@@ -762,6 +770,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
   const plan = c.track?.plan;
   const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
   res.json({
+    autocut: { silence: E.autocut?.silence ?? !!p.data.options?.cutSilence, retakes: E.autocut?.retakes ?? !!p.data.options?.cutRetakes, condense: E.autocut?.condense ?? !!p.data.options?.condense, cuts: Array.isArray(c.keep) ? Math.max(0, c.keep.length - 1) : null },
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
@@ -813,10 +822,15 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
       keys: (b.crop?.keys || []).slice(0, 500).map(k => ({ t: num(k.t, 0, 1e7, 0), cx: num(k.cx, 0, 1, 0.5), cut: !!k.cut })) },
     captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1),
       y: num(b.captions?.y, 0.1, 0.95, null), color: /^#[0-9a-f]{6}$/i.test(b.captions?.color || '') ? b.captions.color : null, upper: b.captions?.upper == null ? null : !!b.captions.upper, wpg: num(b.captions?.wpg, 1, 8, null) },
+    ...(b.autocut && typeof b.autocut === 'object' ? { autocut: { silence: !!b.autocut.silence, retakes: !!b.autocut.retakes, condense: !!b.autocut.retakes && !!b.autocut.condense } } : c.edit?.autocut ? { autocut: c.edit.autocut } : {}),
     hookOn: b.hookOn !== false, emojis: b.emojis !== false, ...(typeof b.brand === 'boolean' ? { brand: b.brand } : c.edit?.brand != null ? { brand: c.edit.brand } : {}),
     ...(words ? { words, wordsFrom: num(b.wordsFrom, 0, 1e7, start), wordsTo: num(b.wordsTo, 0, 1e7, end) } : (c.edit?.words ? { words: c.edit.words, wordsFrom: c.edit.wordsFrom, wordsTo: c.edit.wordsTo } : {})),
   };
   const f = { start, end, edit, layout: edit.layout, style: edit.captions.style };
+  // Los cortes automáticos se recalculan al renderizar si cambian inicio/fin o qué se corta
+  const po = (await getProject(c.project_id))?.data?.options || {};
+  const eff = a => JSON.stringify(a ? { s: !!a.silence, r: !!a.retakes, c: !!a.condense } : { s: !!po.cutSilence, r: !!po.cutRetakes, c: !!po.condense });
+  if (start !== c.start || end !== c.end || eff(edit.autocut) !== eff(c.edit?.autocut)) f.keep = null;
   // Directos: el clip se forma con los trozos de los segmentos grabados que cubren el nuevo inicio y final
   if (c.src && (start !== c.start || end !== c.end)) {
     const segs = await liveSegs(c.project_id, start, end);
@@ -897,7 +911,7 @@ app.post('/api/multiedit', h(async (req, res) => {
   const options = {
     multi: { count: Math.max(2, Math.min(20, Number(b.count) || 5)), vary: b.vary || {} },
     layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'crop', language: b.language || '', titleLanguage: b.titleLanguage || '',
-    captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto', emojis: false, brand: b.brand === true,
+    captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto', emojis: false, brand: b.brand === true, ...autoEditOptions(b),
   };
   const p = await insert('projects', { type: 'shorts', title: '🧬 ' + (b.title || b.filename?.replace(/\.[^.]+$/, '') || 'Multi Edit'), channel_id: Number(b.channel_id) || null,
     source: b.source, data: { options }, progress: 'En cola…' });

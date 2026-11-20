@@ -311,6 +311,43 @@ async function socialSection(sys) {
   });
   if (posts.some(p => ['queued', 'publishing'].includes(p.status))) setTimeout(() => { if (location.hash.startsWith('#/canales')) socialSection(sys); }, 5000);
 }
+// ---------- Edición automática: retomas, silencios, volumen parejo y música de fondo ----------
+/** Recuadro reutilizable (Convertir a Clips, Directos, Multi Edit). Devuelve () => opciones para la API. */
+function autoEditBox(el, { retakes = true, silence = true, normalize = true, note = '' } = {}) {
+  const st = { music: null, musicName: '', musicVolume: 0.18 };
+  const item = (name, on, icon, title, desc, extra = '') => `<label class="ae-item"><input type="checkbox" name="${name}" ${on ? 'checked' : ''}>
+    <span><b>${icon} ${title}</b><span class="small muted">${desc}</span>${extra}</span></label>`;
+  el.innerHTML = `<div class="autoedit stack">
+    <b>✂ Edición automática</b>
+    ${item('cutRetakes', retakes, '✂️', 'Cortar retomas y falsos comienzos', 'Cuando te trabas y repites, deja solo la última toma limpia (IA).',
+      `<label class="check ae-sub"><input type="checkbox" name="condense"> Condensar además ideas redundantes (más agresivo)</label>`)}
+    ${item('cutSilence', silence, '✂️', 'Cortar silencios', 'Elimina los vacíos y pausas muertas para un ritmo ágil.')}
+    ${item('normalize', normalize, '🔊', 'Volumen parejo', 'Iguala el volumen de todo el clip. Se respetan los colores originales.')}
+    ${note ? `<div class="small muted">${note}</div>` : ''}
+    <div class="ae-music"><button type="button" class="btn sm" data-mup>🎵 Agregar música de fondo (opcional)</button><span data-mname class="small"></span>
+      <div class="row" data-mvol hidden><span class="small" style="width:72px">Volumen</span><input type="range" min="0.05" max="0.6" step="0.01" value="0.18" style="flex:1"><button type="button" class="btn sm" data-mdel title="Quitar música">✕</button></div>
+      <div class="small muted" data-mhint hidden>La música baja sola cuando alguien habla.</div></div>
+    <input type="file" accept="audio/*" hidden data-mfile></div>`;
+  const $a = q => el.querySelector(q);
+  const sub = $a('[name=condense]'); const syncSub = () => { sub.disabled = !$a('[name=cutRetakes]').checked; if (sub.disabled) sub.checked = false; };
+  $a('[name=cutRetakes]').onchange = syncSub; syncSub();
+  $a('[data-mup]').onclick = () => { $a('[data-mfile]').value = ''; $a('[data-mfile]').click(); };
+  $a('[data-mfile]').onchange = async () => {
+    const f = $a('[data-mfile]').files[0]; if (!f) return;
+    try {
+      $a('[data-mname]').textContent = 'Subiendo…';
+      st.music = await uploadFile(f, pct => { $a('[data-mname]').textContent = `Subiendo… ${pct}%`; });
+      st.musicName = f.name;
+      $a('[data-mname]').textContent = '🎵 ' + f.name; $a('[data-mvol]').hidden = false; $a('[data-mhint]').hidden = false;
+      $a('[data-mup]').textContent = '🎵 Cambiar música';
+    } catch (e) { toast(e.message, 'bad'); $a('[data-mname]').textContent = ''; }
+  };
+  $a('[data-mvol] input').oninput = e => { st.musicVolume = Number(e.target.value); };
+  $a('[data-mdel]').onclick = () => { st.music = null; $a('[data-mname]').textContent = ''; $a('[data-mvol]').hidden = true; $a('[data-mhint]').hidden = true; $a('[data-mup]').textContent = '🎵 Agregar música de fondo (opcional)'; };
+  return () => ({ cutRetakes: $a('[name=cutRetakes]').checked, condense: $a('[name=condense]').checked, cutSilence: $a('[name=cutSilence]').checked,
+    normalize: $a('[name=normalize]').checked, music: st.music, musicVolume: st.musicVolume });
+}
+
 // ---------- Mi marca: logo (marca de agua) y marco sobre los clips ----------
 const BRAND_POS = { tl: '↖ Arriba izquierda', tc: '⬆ Arriba centro', tr: '↗ Arriba derecha', bl: '↙ Abajo izquierda', bc: '⬇ Abajo centro', br: '↘ Abajo derecha' };
 /**
@@ -652,6 +689,7 @@ routes.shorts = async () => {
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <div id="autoedit"></div>
       <div id="brand"></div>
       <div id="up" class="small muted"></div>
       <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
@@ -675,12 +713,13 @@ routes.shorts = async () => {
     try {
       const d = Object.fromEntries(new FormData(f)); delete d.video;
       if (!d.source) { delete d.source; delete d.filename; }
-      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn();
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn(); Object.assign(d, autoOpts());
       if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
       const r = await api('/api/shorts', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
     } catch (err) { toast(err.message, 'bad'); go.disabled = false; $('#up').textContent = ''; }
   };
+  const autoOpts = autoEditBox($('#autoedit'));
   const brandOn = await brandBox($('#brand'));
   const lb = $('#linkBtn');
   // Descargar desde un link: la ventana solo descarga; al terminar el vídeo queda cargado aquí
@@ -727,6 +766,7 @@ routes.multiedit = async () => {
       <div class="row"><div style="flex:1"><label>Subtítulos (estilo base)</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div>
         <div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Añadir subtítulos palabra a palabra (si el vídeo ya los tiene, desmárcalo)</label>
+      <div id="autoedit"></div>
       <div id="brand"></div>
       <div id="up" class="small muted"></div>
       <div class="row between"><span class="small muted">Ganchos y subtítulos con</span>${aiTag()}</div>
@@ -736,6 +776,7 @@ routes.multiedit = async () => {
   <h2 style="margin-top:28px">Proyectos de Multi Edit</h2><div id="list" class="card"></div>`;
   const f = $('#f'), file = f.video, drop = $('#drop');
   f.count.oninput = () => { $('#cnt').textContent = f.count.value; $('#go').textContent = `🧬 Crear ${f.count.value} versiones`; };
+  const autoOpts = autoEditBox($('#autoedit'), { retakes: false, silence: false });
   const brandOn = await brandBox($('#brand'), { title: 'Poner mi logo y marco en las versiones' });
   drop.onclick = () => file.click();
   const clearLink = () => { f.source.value = ''; f.filename.value = ''; $('#dlready').hidden = true; $('#dlready').innerHTML = ''; };
@@ -751,7 +792,7 @@ routes.multiedit = async () => {
     const go = $('#go'); go.disabled = true;
     try {
       const d = { title: f.title.value, channel_id: f.channel_id.value, count: Number(f.count.value), vary, layout: f.layout.value,
-        captionStyle: f.captionStyle.value, language: f.language.value, captions: f.captions.checked, brand: brandOn(), source: f.source.value, filename: f.filename.value };
+        captionStyle: f.captionStyle.value, language: f.language.value, captions: f.captions.checked, brand: brandOn(), ...autoOpts(), source: f.source.value, filename: f.filename.value };
       if (file.files[0]) { d.source = await uploadFile(file.files[0], pct => { $('#up').textContent = `Subiendo… ${pct}%`; }); d.filename = file.files[0].name; }
       const r = await api('/api/multiedit', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
@@ -797,6 +838,7 @@ routes.directo = async () => {
         <div style="flex:1"><label>Idioma de títulos y ganchos</label><select name="titleLanguage"><option value="">Igual que el vídeo</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Subtítulos palabra a palabra</label>
       <label class="check"><input type="checkbox" name="emojis" checked> Emojis animados y palabras clave resaltadas</label>
+      <div id="autoedit"></div>
       <div id="brand"></div>
       <div class="row between"><span class="small muted">Se analiza con</span>${aiTag()}</div>
       <button class="btn gold block" id="go">🔴 Empezar a grabar y clipear</button>
@@ -804,6 +846,7 @@ routes.directo = async () => {
   </form>
   <h2 style="margin-top:28px">Directos</h2><div id="list" class="card"></div>`;
   const f = $('#f');
+  const autoOpts = autoEditBox($('#autoedit'), { retakes: false, silence: false, note: 'En directos de gaming, mejor sin cortar silencios: la partida sigue aunque nadie hable.' });
   const brandOn = await brandBox($('#brand'));
   f.onsubmit = async e => {
     e.preventDefault();
@@ -812,7 +855,7 @@ routes.directo = async () => {
     const go = $('#go'); go.disabled = true;
     try {
       const d = Object.fromEntries(new FormData(f));
-      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn();
+      d.captions = f.captions.checked; d.emojis = f.emojis.checked; d.brand = brandOn(); Object.assign(d, autoOpts());
       const r = await api('/api/live', { method: 'POST', body: d });
       location.hash = '#/proyecto/' + r.id;
     } catch (err) { toast(err.message, 'bad'); go.disabled = false; }
