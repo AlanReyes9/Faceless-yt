@@ -45,7 +45,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       </div>
     </div>
     <div class="ed-bar row">
-      <button class="ed-round ed-play" id="play" title="Reproducir (espacio)">▶</button><button class="ed-round" id="stop" title="Detener">■</button>
+      <button class="ed-round ed-play" id="play" title="Reproducir (espacio)">▶</button><button class="ed-round" id="stop" title="Detener">■</button><button class="ed-round" id="fprev" title="Fotograma anterior (←) · Mayús+← = 1 s">⏴|</button><button class="ed-round" id="fnext" title="Fotograma siguiente (→) · Mayús+→ = 1 s">|⏵</button>
       <input type="range" id="vol" min="0" max="1" step="0.05" value="1" style="width:90px" title="Volumen">
       <span class="small mono" id="tnow"></span><span class="small muted mono" id="trange"></span>
       <span style="flex:1"></span>
@@ -408,10 +408,23 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   vid.addEventListener('loadedmetadata', () => { vid.currentTime = S.start; sizeOut(); render(); }, { once: true });
   vid.onerror = () => { $e('#orig').insertAdjacentHTML('beforeend', '<div class="err small" style="position:absolute;inset:auto 8px 8px">Este navegador no puede reproducir el vídeo original (formato). El encuadre se puede ajustar igual y verse al exportar.</div>'); };
   window.addEventListener('resize', () => { if (document.body.contains(tl)) { sizeOut(); sizeTl(); render(); } });
+  // Avanzar / retroceder un fotograma (o un segundo con Mayús)
+  const stepFrame = (dir, second = false) => {
+    const fps = Number(P.fps) || 30;
+    if (!vid.paused) vid.pause();
+    const raw = vid.currentTime - OFF;                         // tiempo dentro del archivo de vídeo
+    const n = Math.floor(raw * fps + 1e-3);                    // fotograma actual
+    const target = second ? raw + dir : (n + dir + 0.5) / fps; // centro del fotograma siguiente/anterior
+    vid.currentTime = Math.max(WIN.from, Math.min(WIN.to, OFF + target));
+  };
+  $e('#fprev').onclick = e => stepFrame(-1, e.shiftKey);
+  $e('#fnext').onclick = e => stepFrame(1, e.shiftKey);
   window.addEventListener('keydown', function key(e) {
     if (!document.body.contains(vid)) return window.removeEventListener('keydown', key);
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
     if (e.code === 'Space') { e.preventDefault(); $e('#play').click(); }
+    // ← → : un fotograma atrás / adelante (mantener pulsado = varios). Mayús + ← → : un segundo
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); stepFrame(e.key === 'ArrowRight' ? 1 : -1, e.shiftKey); }
   });
   pane(); sizeOut(); sizeTl(); changed(false);
   api(`/api/projects/${P.id}/waveform?clip=${d.clip.id}&from=${WIN.from}&to=${WIN.to}&n=${Math.max(200, tl.width)}`).then(r => { peaks = r.peaks; drawTimeline(); }).catch(() => {});

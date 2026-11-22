@@ -72,6 +72,7 @@ export async function probe(input) {
   return {
     duration: d ? (+d[1]) * 3600 + (+d[2]) * 60 + parseFloat(d[3]) : 0,
     width: v ? +v[1] : 0, height: v ? +v[2] : 0,
+    fps: (m => m ? +m[1] : 0)((err.match(/Stream #.*Video:.*/)?.[0] || '').match(/([\d.]+) fps/)),
     hasAudio: /Stream #.*Audio:/.test(err),
     hasVideo: /Stream #.*Video:/.test(err) && !/Video: (mjpeg|png).*attached pic/.test(err.match(/Stream #.*Video:.*/)?.[0] || ''),
   };

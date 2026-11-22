@@ -768,12 +768,19 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
   // Encuadre automático ya calculado (centros normalizados, tiempos absolutos)
   const W = p.data.width || 1920, H = p.data.height || 1080;
   const plan = c.track?.plan;
+  // Fotogramas por segundo del vídeo (para avanzar fotograma a fotograma con las flechas); se guarda en el proyecto
+  let fps = Number(p.data.fps) || 0;
+  if (!fps) {
+    const ref = live ? live.ref : p.source;
+    fps = ref ? (await probe(inputPath(ref)).catch(() => ({}))).fps || 0 : 0;
+    if (fps) await q(`UPDATE projects SET data = data || $2::jsonb WHERE id = $1`, [p.id, JSON.stringify({ fps })]).catch(() => {});
+  }
   const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
   res.json({
     autocut: { silence: E.autocut?.silence ?? !!p.data.options?.cutSilence, retakes: E.autocut?.retakes ?? !!p.data.options?.cutRetakes, condense: E.autocut?.condense ?? !!p.data.options?.condense, cuts: Array.isArray(c.keep) ? Math.max(0, c.keep.length - 1) : null },
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
-    project: { id: p.id, title: p.title, width: W, height: H, duration: dur, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
+    project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
