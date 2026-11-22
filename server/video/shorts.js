@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { downloadVideo } from './ytdlp.js';
 import path from 'node:path';
 import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VERCEL } from '../db.js';
-import { ffmpeg, probe, run, assFilter } from './ffmpeg.js';
+import { ffmpeg, probe, run, assFilter, FFMPEG } from './ffmpeg.js';
 import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
@@ -359,7 +359,14 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       const y = Math.max(0, Math.min(H - ch, Math.round((Number(E.crop?.cy ?? 0.5)) * H - ch / 2)));
       const clampX = cx => Math.max(0, Math.min(W - cw, Math.round(cx * W - cw / 2)));
       let keys;
-      if (manualKeys) keys = [...manualKeys].sort((a, b) => a.t - b.t).map(k => ({ t: Math.max(0, mapT ? mapT(k.t - clip.start, true) : k.t - clip.start), x: clampX(k.cx), cut: !!k.cut }));
+      if (manualKeys) {
+        // El cambio se aplica en el fotograma donde se puso la marca: se adelanta 0,6 fotogramas (las marcas antiguas del
+        // editor estaban en el centro del fotograma y el corte salía un fotograma tarde)
+        let fps = Number(p.data.fps) || 0;
+        if (!fps) { fps = (await probe(input).catch(() => ({}))).fps || 30; await q(`UPDATE projects SET data = data || $2::jsonb WHERE id = $1`, [p.id, JSON.stringify({ fps })]).catch(() => {}); }
+        const early = 0.6 / fps;
+        keys = [...manualKeys].sort((a, b) => a.t - b.t).map(k => ({ t: Math.max(0, (mapT ? mapT(k.t - clip.start, true) : k.t - clip.start) - early), x: clampX(k.cx), cut: !!k.cut }));
+      }
       else if (layout === 'face' && facePlan) keys = facePlan.keys.map(k => ({ ...k, x: clampX((k.x + facePlan.cw / 2) / W) }));
       else keys = [{ t: 0, x: clampX(Number(E.crop?.cx ?? 0.5)), cut: true }];
       if (keys[0].t > 0) keys.unshift({ ...keys[0], t: 0, cut: true });
@@ -374,7 +381,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     const GRADES = { vivo: 'eq=saturation=1.28:contrast=1.06', calido: 'colorbalance=rs=0.07:gs=0.02:bs=-0.06,eq=saturation=1.1', frio: 'colorbalance=rs=-0.05:bs=0.08,eq=contrast=1.04',
       cine: 'eq=contrast=1.12:saturation=0.88:brightness=-0.02', brillo: 'eq=brightness=0.04:contrast=1.04:saturation=1.12' };
     const grade = GRADES[E?.grade] ? GRADES[E.grade] + ',' : '';
-    vf = pre + vf.replace('[0:v]', vin + grade);
+    // Un solo trozo: se pasa a 30 fps al principio (como con varios trozos), para que los cambios de encuadre caigan en su fotograma
+    vf = pre + vf.replace('[0:v]', vin + (parts.length > 1 ? '' : 'fps=30,') + grade);
 
     // Emojis animados sobre los subtítulos cuando se dice la palabra
     const extra = [];
@@ -417,7 +425,21 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     if (!lang && (normalize || music)) {
       const hasA = parts.length > 1 || (await probe(inputs[0]).catch(() => ({ hasAudio: true }))).hasAudio;
       let a = parts.length > 1 ? '[ca]' : hasA ? '[0:a]' : null;
-      if (a && normalize) { vf += `;${a}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[an]`; a = '[an]'; }
+      if (a && normalize) {
+        // Volumen parejo: se mide el volumen real del tramo y se aplica una ganancia fija con limitador
+        // (el loudnorm dinámico movía el audio unos ms al final del clip)
+        let sum = 0, tot = 0;
+        for (const [i, x] of parts.entries()) {
+          const { err } = await run(FFMPEG, ['-hide_banner', '-ss', x.ss.toFixed(3), '-t', x.dur.toFixed(3), '-i', inputs[i], '-vn', '-af', 'ebur128=framelog=quiet', '-f', 'null', '-'], { allowFail: true, timeoutMs: 60000 }).catch(() => ({ err: '' }));
+          const I = Number((err.match(/I:\s+(-?[\d.]+) LUFS/g) || []).pop()?.match(/-?[\d.]+/)?.[0]);
+          if (Number.isFinite(I) && I > -70) { sum += Math.pow(10, I / 10) * x.dur; tot += x.dur; }
+        }
+        const I = tot ? 10 * Math.log10(sum / tot) : null;
+        if (I != null) {
+          const gain = Math.max(-20, Math.min(24, -14 - I));
+          vf += `;${a}aresample=48000,volume=${gain.toFixed(2)}dB,alimiter=limit=0.84:level=false[an]`; a = '[an]';
+        }
+      }
       if (music) {
         const mi = parts.length + extra.filter(x => x === '-i').length;
         extra.push('-stream_loop', '-1', '-i', inputPath(music));

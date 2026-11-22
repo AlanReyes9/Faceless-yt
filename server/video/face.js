@@ -345,8 +345,8 @@ export function cropExpr(plan, ease = 0.6) {
   for (let i = keys.length - 1; i >= 1; i--) {
     const a = keys[i - 1], b = keys[i];
     // antes de b.t se mantiene a.x; si no es corte, transición suave entre b.t y b.t+ease
-    const hold = `if(lt(t\\,${b.t.toFixed(2)})\\,${a.x}\\,`;
-    const tail = b.cut ? expr : `if(lt(t\\,${(b.t + ease).toFixed(2)})\\,${a.x}+(${b.x - a.x})*(t-${b.t.toFixed(2)})/${ease}\\,${expr})`;
+    const hold = `if(lt(t\\,${b.t.toFixed(4)})\\,${a.x}\\,`;
+    const tail = b.cut ? expr : `if(lt(t\\,${(b.t + ease).toFixed(4)})\\,${a.x}+(${b.x - a.x})*(t-${b.t.toFixed(4)})/${ease}\\,${expr})`;
     expr = hold + tail + ')';
   }
   return expr;

@@ -87,6 +87,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     }
     return cx;
   };
+  // Inicio exacto del fotograma que se ve en t (un poco antes): así el encuadre cambia justo en ese fotograma
+  const frameStart = t => { const fps = Number(P.fps) || 30, raw = t - OFF; return OFF + Math.floor(raw * fps + 1e-3) / fps - 0.002; };
   const rectAt = t => {
     const { cw, ch } = geom();
     const x = Math.max(0, Math.min(W - cw, cxAt(t) * W - cw / 2)), y = Math.max(0, Math.min(H - ch, S.crop.cy * H - ch / 2));
@@ -258,7 +260,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       S.crop.cy = cy;
       if (S.crop.mode === 'manual') {
         let k = S.crop.keys.find(k => Math.abs(k.t - t) < 0.25);
-        if (!k) { k = { t, cx, cut: true }; S.crop.keys.push(k); }
+        if (!k) { k = { t: frameStart(t), cx, cut: true }; S.crop.keys.push(k); }
         k.cx = cx;
       } else S.crop.cx = cx;
       render();
@@ -350,7 +352,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); vid.currentTime = Number(a.dataset.goto); });
     P2.querySelectorAll('[data-delkey]').forEach(b => b.onclick = () => { S.crop.keys = S.crop.keys.filter(k => String(k.t) !== b.dataset.delkey); changed(); pane(); render(); });
     P2.querySelectorAll('[data-cut]').forEach(b => b.onchange = () => { const k = S.crop.keys.find(k => String(k.t) === b.dataset.cut); if (k) k.cut = b.checked; changed(); });
-    const ak = P2.querySelector('#addkey'); if (ak) ak.onclick = () => { S.crop.keys.push({ t: vid.currentTime, cx: cxAt(vid.currentTime), cut: true }); changed(); pane(); render(); };
+    const ak = P2.querySelector('#addkey'); if (ak) ak.onclick = () => { S.crop.keys.push({ t: frameStart(vid.currentTime), cx: cxAt(vid.currentTime), cut: true }); changed(); pane(); render(); };
     P2.querySelectorAll('[data-word]').forEach(inp => {
       inp.onfocus = () => { vid.currentTime = Number(inp.dataset.word); };
       inp.oninput = () => { const w = S.words.find(w => String(w.start) === inp.dataset.word); if (w) { w.word = inp.value; wordsDirty = true; changed(); render(); } inp.size = Math.max(2, inp.value.length); };
