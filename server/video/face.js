@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FFMPEG } from './ffmpeg.js';
 import { localUrl } from './netproxy.js';
 
@@ -18,7 +18,8 @@ async function session() {
   if (!sessionP) sessionP = (async () => {
     const ort = require('onnxruntime-web');
     ort.env.wasm.numThreads = 1;
-    ort.env.wasm.wasmPaths = path.dirname(require.resolve('onnxruntime-web')) + path.sep;
+    // en Windows la ruta tiene que ir como URL file:// (si no: "Received protocol 'd:'")
+    ort.env.wasm.wasmPaths = pathToFileURL(path.dirname(require.resolve('onnxruntime-web')) + path.sep).href;
     ort.env.logLevel = 'error';
     const s = await ort.InferenceSession.create(MODEL, { logSeverityLevel: 3, graphOptimizationLevel: 'all' });
     return { ort, s };

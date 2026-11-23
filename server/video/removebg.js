@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run, FFMPEG } from './ffmpeg.js';
 
 const require = createRequire(import.meta.url);
@@ -15,7 +15,8 @@ async function session() {
   if (!sessionP) sessionP = (async () => {
     const ort = require('onnxruntime-web');
     ort.env.wasm.numThreads = 1;
-    ort.env.wasm.wasmPaths = path.dirname(require.resolve('onnxruntime-web')) + path.sep;
+    // en Windows la ruta tiene que ir como URL file:// (si no: "Received protocol 'd:'")
+    ort.env.wasm.wasmPaths = pathToFileURL(path.dirname(require.resolve('onnxruntime-web')) + path.sep).href;
     ort.env.logLevel = 'error';
     // "silueta" (U²-Net reducido, mejor borde) si está; si no, "u2netp" (pequeño)
     const file = ['silueta.onnx', 'u2netp.onnx'].map(f => path.join(MODELS, f)).find(f => fs.existsSync(f));
