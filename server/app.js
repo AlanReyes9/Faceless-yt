@@ -24,7 +24,7 @@ import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from
 import { analyzeChannel } from './analyzer.js';
 import { preview as cleanupPreview, runCleanup } from './cleanup.js';
 import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl } from './jobs.js';
-import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey, inputPath } from './storage.js';
+import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey, inputPath, toLocal } from './storage.js';
 import { s3Configured, presign, putBucketCors, S3 } from './s3.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,6 +106,24 @@ app.post('/api/upload', upload.single('file'), h(async (req, res) => {
   res.json({ ref, url: publicUrl(ref) });
 }));
 // App de escritorio: usar un archivo del propio equipo sin subirlo (se copia a la carpeta de la app; en APFS es instantáneo)
+// Quitar el fondo de una foto (IA local, sin internet): devuelve un PNG transparente
+const nobgCache = new Map();
+app.post('/api/removebg', h(async (req, res) => {
+  const ref = String(req.body?.ref || '');
+  if (!ref || ref.length > 400 || /[\s"']/.test(ref)) throw new Error('Foto no válida.');
+  if (nobgCache.has(ref)) return res.json(nobgCache.get(ref));
+  const { removeBackground } = await import('./video/removebg.js');
+  const os = await import('node:os');
+  const src = await toLocal(ref, path.join(os.tmpdir(), `nobg_src_${Date.now()}_${path.basename(ref)}`));
+  const out = path.join(os.tmpdir(), `nobg_${Date.now()}.png`);
+  try {
+    await removeBackground(src, out);
+    const nref = await saveFile(out, path.basename(ref).replace(/\.[^.]+$/, '') + '_sinfondo.png', 'image/png');
+    const r = { ref: nref, url: publicUrl(nref) };
+    nobgCache.set(ref, r);
+    res.json(r);
+  } finally { for (const f of [out, src !== inputPath(ref) ? src : null].filter(Boolean)) fs.rmSync(f, { force: true }); }
+}));
 app.post('/api/upload-local', h(async (req, res) => {
   if (!globalThis.__desktop) throw new Error('Solo en la app de escritorio. (400)');
   const fsx = await import('node:fs');
@@ -842,7 +860,7 @@ function editLook(b, prev, num) {
   pick('speed', v => num(v, 1, 1.5, 1));
   pick('split2', v => rectOk(v, num));
   pick('overlays', v => Array.isArray(v) ? v.slice(0, 10).filter(o => o && typeof o.ref === 'string' && o.ref.length < 400 && !/[\s"']/.test(o.ref)).map(o => ({
-    ref: o.ref, url: String(o.url || '').slice(0, 500), kind: o.kind === 'logo' ? 'logo' : 'photo', opacity: num(o.opacity, 0.1, 1, 1), pos: ['tl', 'tr', 'tc', 'bl', 'br', 'bc', 'free'].includes(o.pos) ? o.pos : undefined, x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
+    ref: o.ref, url: String(o.url || '').slice(0, 500), kind: o.kind === 'logo' ? 'logo' : 'photo', opacity: num(o.opacity, 0.1, 1, 1), nobg: !!o.nobg, ...(typeof o.orig === 'object' && o.orig?.ref && !/[\s"']/.test(o.orig.ref) ? { orig: { ref: String(o.orig.ref).slice(0, 400), url: String(o.orig.url || '').slice(0, 500) } } : {}), pos: ['tl', 'tr', 'tc', 'bl', 'br', 'bc', 'free'].includes(o.pos) ? o.pos : undefined, x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
   if (b.grade === '' || b.grade === null) delete out.grade;
   return out;
 }

@@ -126,5 +126,17 @@ await step('Cortes de silencios: audio y vídeo sincronizados', async () => {
   ok('Cortes de silencios: audio y vídeo sincronizados', x.keep?.length >= 6 && fl.length >= 6 && worst < 0.07, `${x.keep?.length} tramos · desfase máx. ${Math.round(worst * 1000)} ms`);
 });
 
+await step('Quitar el fondo de una foto (IA local)', async () => {
+  // círculo de color sobre fondo gris con ruido: la esquina debe quedar transparente y el centro opaco
+  const src = path.join(process.env.DATA_DIR, 'foto fondo.png'), out = path.join(process.env.DATA_DIR, 'sinfondo.png');
+  await ffmpeg(['-f', 'lavfi', '-i', "color=c=0x777777:s=400x400,noise=alls=20:allf=t,geq=r='if(lt(hypot(X-200,Y-210),120),230,r(X,Y))':g='if(lt(hypot(X-200,Y-210),120),40,g(X,Y))':b='if(lt(hypot(X-200,Y-210),120),60,b(X,Y))'", '-frames:v', '1', src]);
+  const { removeBackground } = await import('../server/video/removebg.js');
+  const t = Date.now(); await removeBackground(src, out);
+  const { run } = await import('../server/video/ffmpeg.js');
+  const px = async (x, y) => (await run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-i', out, '-vf', `crop=1:1:${x}:${y},format=rgba`, '-f', 'rawvideo', 'pipe:1'], { allowFail: true })).out;
+  const corner = Buffer.from(await px(5, 5), 'latin1')[3], center = Buffer.from(await px(200, 210), 'latin1')[3];
+  ok('Quitar el fondo de una foto (IA local)', corner < 60 && center > 200, `esquina alfa ${corner} · centro alfa ${center} · ${((Date.now() - t) / 1000).toFixed(1)} s`);
+});
+
 console.log(bad ? `\n${bad} prueba(s) fallaron` : '\nTodo correcto');
 process.exit(bad ? 1 : 0);

@@ -332,6 +332,15 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
   };
 
+  // Quitar / devolver el fondo de una foto o logo (la original se guarda para poder volver atrás)
+  const setNoBg = async (o, on) => {
+    if (on && !o.nobg) {
+      const r = await api('/api/removebg', { method: 'POST', body: { ref: o.ref } });
+      o.orig = { ref: o.ref, url: o.url }; Object.assign(o, { ref: r.ref, url: r.url, nobg: true });
+      toast('✂ Fondo quitado', 'good');
+    } else if (!on && o.nobg) { if (o.orig) Object.assign(o, { ref: o.orig.ref, url: o.orig.url }); o.nobg = false; delete o.orig; }
+    if (o.kind === 'logo') placeLogo(o);
+  };
   // Logo en una esquina: centro calculado con su tamaño (márgenes como los de "Mi marca")
   const placeLogo = lg => {
     if (!lg.pos || lg.pos === 'free') return;
@@ -429,13 +438,16 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
         <div class="row"><span class="small" style="width:64px">Posición</span><select data-lpos="${li}" style="flex:1">${opt({ tl: '↖ Arriba izquierda', tr: '↗ Arriba derecha', bl: '↙ Abajo izquierda', br: '↘ Abajo derecha', tc: '⬆ Arriba centro', bc: '⬇ Abajo centro', free: '✋ Donde lo arrastre' }, lg.pos || 'free')}</select></div>
         <div class="row"><span class="small" style="width:64px">Tamaño</span><input type="range" data-ov="${li}" data-ok="w" min="0.05" max="0.6" step="0.01" value="${lg.w}" style="flex:1"></div>
         <div class="row"><span class="small" style="width:64px">Opacidad</span><input type="range" data-ov="${li}" data-ok="opacity" min="0.1" max="1" step="0.05" value="${lg.opacity ?? 1}" style="flex:1"></div>
+        <label class="check" style="margin:0"><input type="checkbox" data-nobg="${li}" ${lg.nobg ? 'checked' : ''}> ✂ Quitar el fondo</label>
         <div class="row"><button class="btn sm" id="changeLogo">Cambiar logo</button><button class="btn sm red" data-ovx="${li}">✕ Quitar</button></div></div></div>` : '<button class="btn sm" id="addLogo">🏷 Añadir logo</button>'; })()}
       <div class="small muted">Mejor PNG con fondo transparente.</div>
       <h4>▾ 🖼 Fotos <span class="small muted">(arrástralas sobre el resultado)</span></h4>
-      <button class="btn sm" id="addPhoto">🖼 Añadir foto</button><input type="file" id="photoFile" accept="image/png,image/jpeg,image/webp" hidden>
+      <div class="row"><button class="btn sm" id="addPhoto">🖼 Añadir foto</button><label class="check" style="margin:0"><input type="checkbox" id="nobgNew" ${localStorage.getItem('nobgNew') === '1' ? 'checked' : ''}> Quitar el fondo al añadir</label></div>
+      <input type="file" id="photoFile" accept="image/png,image/jpeg,image/webp" hidden>
       ${S.overlays.map((o, i) => o.kind === 'logo' ? '' : `<div class="ed-ov"><img src="${esc(o.url || '')}"><div class="stack" style="gap:4px;flex:1">
         <div class="row"><span class="small" style="width:56px">Tamaño</span><input type="range" data-ov="${i}" data-ok="w" min="0.05" max="1" step="0.01" value="${o.w}" style="flex:1"></div>
         <div class="row small"><span>Desde ${(o.from || 0).toFixed(1)} s</span><button class="btn sm" data-ovt="${i}:from">⏱ desde aquí</button><span>Hasta ${o.to > (o.from || 0) ? o.to.toFixed(1) + ' s' : 'el final'}</span><button class="btn sm" data-ovt="${i}:to">⏱ hasta aquí</button></div>
+        <label class="check" style="margin:0"><input type="checkbox" data-nobg="${i}" ${o.nobg ? 'checked' : ''}> ✂ Quitar el fondo</label>
         <div class="row"><button class="btn sm" data-ovc="${i}">Centrar</button><button class="btn sm red" data-ovx="${i}">✕ Quitar</button></div></div></div>`).join('')}
       ${S.overlays.length ? '<button class="btn sm gold" id="ovAll">📌 Poner el logo y las fotos en TODOS los clips</button>' : ''}`;
     else P2.innerHTML = `<h4>▾ Plantillas de subtítulos</h4><div class="ed-tpl">${Object.entries(d.styles).map(([k, v]) => `<button class="ed-tplc ${S.captions.style === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(v.label.split(' (')[0])}</b><span class="small muted">${esc((v.label.match(/\((.*)\)/) || [])[1] || '')}</span></button>`).join('')}</div>
@@ -519,8 +531,18 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
         const old = S.overlays.find(o => o.kind === 'logo');
         if (old) Object.assign(old, { ref: r.ref, url: r.url });
         else { const lg = { kind: 'logo', ref: r.ref, url: r.url, w: 0.2, opacity: 0.9, pos: 'tr', from: 0, to: 0 }; placeLogo(lg); S.overlays.push(lg); }
-      } else S.overlays.push({ kind: 'photo', ref: r.ref, url: r.url, x: 0.5, y: 0.4, w: 0.35, from: 0, to: 0 });
+      } else {
+        const ph = { kind: 'photo', ref: r.ref, url: r.url, x: 0.5, y: 0.4, w: 0.35, from: 0, to: 0 };
+        S.overlays.push(ph);
+        if (P2.querySelector('#nobgNew')?.checked) { pane(); await setNoBg(ph, true); }
+      }
       changed(); pane(); render();
+    });
+    const nn = P2.querySelector('#nobgNew'); if (nn) nn.onchange = () => { try { localStorage.setItem('nobgNew', nn.checked ? '1' : '0'); } catch {} };
+    P2.querySelectorAll('[data-nobg]').forEach(cb => cb.onchange = () => {
+      const o = S.overlays[cb.dataset.nobg]; cb.disabled = true;
+      const lbl = cb.parentElement; const txt = lbl.lastChild.textContent; lbl.lastChild.textContent = cb.checked ? ' Quitando el fondo…' : txt;
+      setNoBg(o, cb.checked).catch(e => { toast(e.message, 'bad'); cb.checked = !cb.checked; }).finally(() => { changed(); pane(); render(); });
     });
     P2.querySelectorAll('[data-lpos]').forEach(sel => sel.onchange = () => { const lg = S.overlays[sel.dataset.lpos]; lg.pos = sel.value; placeLogo(lg); changed(); render(); });
     P2.querySelectorAll('[data-ok]').forEach(inp => inp.oninput = () => { const o = S.overlays[inp.dataset.ov]; o[inp.dataset.ok] = Number(inp.value); if (o.kind === 'logo') placeLogo(o); changed(); render(); });
