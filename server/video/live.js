@@ -313,9 +313,7 @@ register('live.analyze', async ({ id, seg, last, batch }, ctx) => {
   // 1) Transcribir el segmento (tiempos absolutos del directo)
   const manual = o.clipMode === 'manual' || o.clipMode === 'smart';
   const stage = t => setLive(id, { stage: t ? (manual ? `Trozo ${seg + 1}: ${t}` : `Segmento ${seg + 1}: ${t}`) : null }).catch(() => {});
-  // Modos «Hacer clips» y automático por tramos: no se transcribe mientras se graba (el equipo queda libre);
-  // todo se transcribe al procesar la tanda. Solo un «✂ Clip ahora» pendiente obliga a transcribir este trozo ya.
-  if (manual && !batch && !((await getProject(id)).data.live?.marks || []).some(m => !m.done)) return;
+  // Se transcribe cada trozo en cuanto se graba (así, al pulsar «✂ Hacer clips», los clips salen enseguida)
   await transcribeRow(id, row, o, stage);
 
   // 2) Ventana: final del segmento anterior + este (para no perder momentos que cruzan el corte)
