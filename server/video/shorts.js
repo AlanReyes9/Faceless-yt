@@ -129,7 +129,7 @@ export async function pickClips(transcript, sig, opts) {
   return pickClipsOnce(transcript, sig, opts);
 }
 
-async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language, onProgress }) {
+async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language, onProgress, strict }) {
   // IA local: respuesta más corta (sin el desglose de notas) = bastante más rápida en equipos sin gráfica
   const local = (await getSetting('llm_provider')) === 'local';
   const lines = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`).join('\n');
@@ -144,7 +144,11 @@ Las etiquetas entre corchetes son señales medidas del audio y el vídeo: 🔊 e
   const user = `Transcripción con marcas de tiempo en segundos:
 ${lines}
 
-Devuelve hasta ${count} clips que NO se solapen, de entre ${minSec} y ${maxSec} segundos cada uno, ordenados de más a menos viral.
+Devuelve hasta ${count} clips que NO se solapen, de entre ${minSec} y ${maxSec} segundos cada uno, ordenados de más a menos viral.${strict ? `
+MUY IMPORTANTE: esto es un tramo de un directo y no todo tiene valor. Elige SOLO momentos que de verdad funcionarían solos como vídeo corto
+(algo gracioso, sorprendente, emocionante, polémico, una jugada o reacción buena, un consejo o historia que se entienda sin contexto).
+Si no hay ninguno así, devuelve {"clips":[]}. NO rellenes con charla de relleno, saludos, silencios, lectura del chat sin gracia ni partes aburridas.
+Sé honesto con "score": 8-10 solo si lo subirías sin dudar; 5-7 si es normalito.` : ''}
 JSON: {"clips":[{"start":número,"end":número,
  "title":"título para YouTube con gancho (máx 70 caracteres)",
  "hook":"frase de gancho de 3 a 7 palabras para mostrar arriba los primeros 4 segundos",

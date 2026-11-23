@@ -83,10 +83,10 @@ register('live.capture', async ({ id, seg }, ctx) => {
 
   // Duración del segmento: lo configurado, sin pasarse del tiempo que queda en esta ejecución
   // El primer segmento es corto (máx. 60 s) para que los primeros clips lleguen antes
-  const manual = o.clipMode === 'manual';
+  const manual = o.clipMode === 'manual' || o.clipMode === 'smart';
   // Modo "Hacer clips" a mano: se graba en trozos internos de 5 min (se transcriben mientras tanto) y los clips
   // se buscan solo cuando el usuario pulsa el botón. Modo automático: el primer segmento es corto para ver clips antes.
-  const want = manual ? 300 : seg === 0 ? Math.min(60, Math.max(30, Number(o.segmentSec) || 120)) : Math.max(30, Number(o.segmentSec) || 120);
+  const want = manual ? (o.clipMode === 'smart' ? Math.min(300, Number(process.env.LIVE_BATCH_EVERY_SEC) || Math.max(5, Number(o.batchEvery) || 10) * 60) : 300) : seg === 0 ? Math.min(60, Math.max(30, Number(o.segmentSec) || 120)) : Math.max(30, Number(o.segmentSec) || 120);
   const segSec = Math.floor(Math.min(want, maxSec - st.secs, (ctx.remaining() - 45000) / 1000));
   if (segSec < 20) { await enqueue('live.capture', { id, seg }); return; } // sin tiempo: a una ejecución nueva
 
@@ -148,8 +148,11 @@ register('live.capture', async ({ id, seg }, ctx) => {
     // Primero se encadena la grabación (para no dejar huecos) y después el análisis de este segmento
     if (!stop) await enqueue('live.capture', { id, seg: seg + 1 });
     else await setLive(id, { stopping: true, reason: endedNow ? 'el directo terminó' : fresh.data.live?.stopRequested ? 'detenido' : 'duración máxima alcanzada' });
-    // Modo manual: la tanda se cierra si se pulsó "Hacer clips" (o si el directo termina)
-    const batch = manual && (stop || !!fresh.data.live?.batchAt);
+    // Modo manual: la tanda se cierra si se pulsó "Hacer clips" (o si el directo termina).
+    // Modo "smart": además, sola cuando el tramo llega a los minutos elegidos.
+    const every = Number(process.env.LIVE_BATCH_EVERY_SEC) || Math.max(5, Math.min(60, Number(o.batchEvery) || 10)) * 60; // (variable: solo para pruebas)
+    const due = o.clipMode === 'smart' && start + info.duration - (Number(fresh.data.live?.batchFromT) || 0) >= every - 20;
+    const batch = manual && (stop || due || !!fresh.data.live?.batchAt);
     if (batch && fresh.data.live?.batchAt) await setLive(id, { batchAt: null });
     await enqueue('live.analyze', { id, seg, last: stop, ...(batch ? { batch: true } : {}) });
   } finally { for (const f of [out, ...tmp]) fs.rmSync(f, { force: true }); }
@@ -265,7 +268,7 @@ async function batchClips(id, seg, o, last) {
     await stage(`la IA busca los mejores momentos de ${fmtMin(winEnd - winStart)} grabados…`);
     const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
     const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;
-    const picked = await pickClips(transcript, sig, { count: Math.min(10, Number(o.perSegment) || 3), minSec, maxSec, language: o.titleLanguage });
+    const picked = await pickClips(transcript, sig, { count: Math.min(10, Number(o.perSegment) || 3), minSec, maxSec, language: o.titleLanguage, strict: true });
     const existing = await q('SELECT start, "end" FROM clips WHERE project_id = $1', [id]);
     let idx = (await one('SELECT COALESCE(MAX(idx), 0)::int AS n FROM clips WHERE project_id = $1', [id])).n;
     const minScore = Number(o.minScore) || 7;
@@ -296,7 +299,7 @@ async function batchClips(id, seg, o, last) {
   }
   const hist = [...(live.batchLog || []), { n, from: winStart, to: winEnd, clips: made, at: Date.now() }].slice(-30);
   await setLive(id, { batchFromSeg: seg + 1, batchFromT: winEnd, batches: n, batchLog: hist, stage: null,
-    ...(made ? {} : { warning: `Tanda ${n}: no hubo momentos con nota ${Number(o.minScore) || 7}/10 o más en esos ${fmtMin(winEnd - winStart)}. Puedes bajar la nota mínima.` }) });
+    ...(made || o.clipMode === 'smart' ? {} : { warning: `Tanda ${n}: no hubo momentos con nota ${Number(o.minScore) || 7}/10 o más en esos ${fmtMin(winEnd - winStart)}. Puedes bajar la nota mínima.` }) });
 }
 
 // ---------- Analizar un segmento y cortar los momentos virales ----------
@@ -308,7 +311,7 @@ register('live.analyze', async ({ id, seg, last, batch }, ctx) => {
   if (!row) return;
 
   // 1) Transcribir el segmento (tiempos absolutos del directo)
-  const manual = o.clipMode === 'manual';
+  const manual = o.clipMode === 'manual' || o.clipMode === 'smart';
   const stage = t => setLive(id, { stage: t ? (manual ? `Trozo ${seg + 1}: ${t}` : `Segmento ${seg + 1}: ${t}`) : null }).catch(() => {});
   await transcribeRow(id, row, o, stage);
 

@@ -814,7 +814,7 @@ routes.multiedit = async () => {
 // ---------- Clips de un directo ----------
 routes.directo = async () => {
   const [chs, sys] = await Promise.all([channelsCache.get(), getSystem()]);
-  main.innerHTML = `<h1>🔴 Clips de directos</h1><p class="sub">Pega el enlace de un directo. La app lo va grabando por segmentos, la IA analiza cada uno y crea clips verticales de los momentos más virales mientras el directo sigue en marcha.</p>
+  main.innerHTML = `<h1>🔴 Clips de directos</h1><p class="sub">Pega el enlace de un directo. La app graba el directo sin parar y la IA saca los momentos que valen la pena: cuando tú pulses «✂ Hacer clips» o automáticamente por tramos largos.</p>
   ${sys.vercel ? `<div class="card warn" style="margin-bottom:16px">En la versión de Vercel solo funcionan enlaces directos <b>.m3u8</b> (HLS). Para directos de YouTube, Twitch o Kick instala la app en tu PC con Linux (ver Ayuda): allí yt-dlp obtiene el vídeo del directo.</div>`
     : sys.ytdlp ? '' : '<div class="card warn" style="margin-bottom:16px">yt-dlp no está instalado: solo funcionarán enlaces .m3u8, rtmp, srt o rtsp.</div>'}
   <form id="f" class="grid g2">
@@ -826,9 +826,12 @@ routes.directo = async () => {
       <div class="row"><div style="flex:1"><label>Grabar como máximo (min)</label><input type="number" name="maxMinutes" value="120" min="5" max="600"></div>
         <div style="flex:1" data-auto hidden><label>Analizar cada (s)</label><select name="segmentSec"><option value="60">1 min (clips antes)</option><option value="120" selected>2 min (recomendado)</option><option value="180">3 min (más contexto)</option></select></div></div>
       <div><label>¿Cuándo se hacen los clips?</label><select name="clipMode">
-        <option value="manual" selected>Cuando yo pulse «✂ Hacer clips» (graba seguido; recomendado)</option>
-        <option value="auto">Automáticamente cada pocos minutos</option></select>
-        <div class="small muted" data-mhelp>Se graba sin parar. Cada vez que pulses <b>✂ Hacer clips</b>, la IA saca los mejores momentos de lo grabado desde la vez anterior y sigue grabando.</div></div>
+        <option value="manual" selected>Cuando yo pulse «✂ Hacer clips» (graba seguido)</option>
+        <option value="smart">Automático por tramos largos: solo lo que valga la pena</option>
+        <option value="auto">Automático cada 1–3 minutos (antiguo)</option></select>
+        <div class="small muted" data-mhelp>Se graba sin parar. Cada vez que pulses <b>✂ Hacer clips</b>, la IA saca los mejores momentos de lo grabado desde la vez anterior y sigue grabando.</div>
+        <div class="row" data-smart hidden style="margin-top:6px"><div style="flex:1"><label>Buscar clips cada</label><select name="batchEvery">${[5, 10, 15, 20, 30].map(m => `<option value="${m}" ${m === 10 ? 'selected' : ''}>${m} minutos</option>`).join('')}</select></div>
+          <div class="small muted" style="flex:2;align-self:flex-end">La IA revisa el tramo entero y <b>solo</b> corta momentos con valor; si no hay nada bueno, no hace clips. También puedes pulsar «✂ Hacer clips» cuando quieras.</div></div></div>
     </div>
     <div class="card stack">
       <h2>2. Opciones de los clips</h2>
@@ -851,7 +854,7 @@ routes.directo = async () => {
   <h2 style="margin-top:28px">Directos</h2><div id="list" class="card"></div>`;
   const f = $('#f');
   const autoOpts = autoEditBox($('#autoedit'), { retakes: false, silence: false, note: 'En directos de gaming, mejor sin cortar silencios: la partida sigue aunque nadie hable.' });
-  const modeSync = () => { const auto = f.clipMode.value === 'auto'; f.querySelector('[data-auto]').hidden = !auto; f.querySelector('[data-mhelp]').hidden = auto; f.querySelector('[data-plabel]').textContent = auto ? 'Clips máx. por segmento' : 'Clips máx. por tanda'; };
+  const modeSync = () => { const auto = f.clipMode.value === 'auto'; f.querySelector('[data-auto]').hidden = !auto; f.querySelector('[data-mhelp]').hidden = f.clipMode.value !== 'manual'; f.querySelector('[data-smart]').hidden = f.clipMode.value !== 'smart'; f.querySelector('[data-plabel]').textContent = auto ? 'Clips máx. por segmento' : 'Clips máx. por tanda'; };
   f.clipMode.onchange = modeSync; modeSync();
   const brandOn = await brandBox($('#brand'));
   f.onsubmit = async e => {
@@ -1166,25 +1169,25 @@ function liveBanner(p) {
   const state = l.ended ? `⏹ Directo terminado${l.reason ? ' · ' + esc(l.reason) : ''}` : l.stopRequested ? '⏹ Deteniendo…' : '<span class="livedot"></span> Grabando en directo';
   return `<div class="card livebox" style="margin-bottom:16px"><div class="row between"><b>${state}</b><span class="muted small">${esc(p.progress || '')}</span></div>
     <div class="row" style="gap:22px;margin-top:10px"><div><div class="muted small">Grabado</div><b>${mmss(l.secs || 0)}</b></div>
-      ${p.data?.options?.clipMode === 'manual' ? `<div><div class="muted small">Tandas</div><b>${l.batches || 0}</b></div>` : `<div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>`}
+      ${['manual', 'smart'].includes(p.data?.options?.clipMode) ? `<div><div class="muted small">Tandas</div><b>${l.batches || 0}</b></div>` : `<div><div class="muted small">Segmentos</div><b>${l.segs || 0}</b>${l.pending ? ` <span class="muted small">(${l.pending} analizando)</span>` : ''}</div>`}
       <div><div class="muted small">Clips listos</div><b>${ok}</b> <span class="muted small">de ${(p.clips || []).length}</span></div></div>
     ${l.stage && !l.ended ? `<div class="small" style="margin-top:10px;color:var(--gold)"><span class="spinner"></span> ${esc(l.stage)}</div>` : ''}
     ${l.warning ? `<div class="small err" style="margin-top:10px">⚠️ ${esc(l.warning)}</div>` : ''}
     ${l.ended || l.stopRequested ? '' : liveControls(p)}
-    ${l.ended ? '' : `<div class="muted small" style="margin-top:8px">${p.data?.options?.clipMode === 'manual' ? 'La grabación sigue sin parar: pulsa «✂ Hacer clips» cuando quieras sacar los clips de lo grabado. Al detener el directo se hacen los del último tramo.' : 'Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.'}</div>`}</div>`;
+    ${l.ended ? '' : `<div class="muted small" style="margin-top:8px">${p.data?.options?.clipMode === 'smart' ? `La grabación sigue sin parar y cada ${p.data.options.batchEvery || 10} min la IA revisa el tramo y corta solo lo que valga la pena. Al detener el directo se revisa el último tramo.` : p.data?.options?.clipMode === 'manual' ? 'La grabación sigue sin parar: pulsa «✂ Hacer clips» cuando quieras sacar los clips de lo grabado. Al detener el directo se hacen los del último tramo.' : 'Cada pocos minutos se analiza lo grabado y los mejores momentos aparecen abajo. Puedes cerrar esta página.'}</div>`}</div>`;
 }
 /** Controles del directo en curso: clip manual y ajustes que se aplican al siguiente análisis. */
 function liveControls(p) {
   const o = p.data?.options || {}, l = p.live || {};
   const waiting = (l.marks || []).filter(m => !m.done).length;
-  const manual = o.clipMode === 'manual';
+  const manual = o.clipMode === 'manual' || o.clipMode === 'smart', smart = o.clipMode === 'smart';
   // tramo actual: desde la última tanda hasta ahora (lo guardado + lo que se está grabando)
   const now = l.recWall ? (l.recPos || 0) + (Date.now() - l.recWall) / 1000 : (l.secs || 0);
   const tramo = Math.max(0, now - (l.batchFromT || 0));
   const batchBox = manual ? `<div class="batch-box">
       <button class="btn gold batch-btn" data-batch ${l.batchAt ? 'disabled' : ''}>${l.batchAt ? '<span class="spinner"></span> Cortando el tramo…' : '✂ Hacer clips'}</button>
       <div class="stack" style="gap:2px"><div class="small">Tramo actual: <b data-tramo data-from="${l.batchFromT || 0}" data-pos="${l.recPos || 0}" data-wall="${l.recWall || 0}">${mmss(tramo)}</b> grabados desde ${l.batches ? 'la última tanda' : 'el inicio'}</div>
-        <div class="small muted">Al pulsar, la IA saca los mejores momentos de este tramo y la grabación sigue con uno nuevo.</div>
+        <div class="small muted">${smart ? `Búsqueda automática cada <select data-lo="batchEvery" class="inline-sel">${[5, 10, 15, 20, 30].map(m => `<option value="${m}" ${Number(o.batchEvery || 10) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select> (solo momentos con valor). Puedes pulsar antes si pasa algo bueno.` : 'Al pulsar, la IA saca los mejores momentos de este tramo y la grabación sigue con uno nuevo.'}</div>
         ${(l.batchLog || []).length ? `<div class="small muted">${l.batchLog.slice(-4).map(b => `Tanda ${b.n}: ${mmss(b.to - b.from)} → ${b.clips} clip${b.clips === 1 ? '' : 's'}`).join(' · ')}</div>` : ''}</div></div>` : '';
   return `${batchBox}<div class="live-ctl">
     <div class="stack" style="gap:6px"><div class="small muted">¿Ha pasado algo bueno?</div>

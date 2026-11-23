@@ -364,3 +364,5 @@ kbd { border: 1px solid var(--line, #444); border-bottom-width: 2px; border-radi
 /* Directo: botón Hacer clips */
 .batch-box { display: flex; gap: 14px; align-items: center; margin-top: 12px; padding: 12px; border: 1px solid var(--gold, #22c55e); border-radius: 12px; background: rgba(34,197,94,.06); flex-wrap: wrap; }
 .batch-btn { font-size: 17px; padding: 14px 22px; }
+
+.inline-sel { display: inline-block; width: auto; padding: 2px 6px; font-size: 12px; height: auto; }
