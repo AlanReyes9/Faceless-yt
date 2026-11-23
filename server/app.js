@@ -10,8 +10,8 @@ import { q, one, insert, update, getProject, updateProject, getClip, updateClip,
 import { publicSettings, setSettings, internalSecret, getSetting, aiMode } from './settings.js';
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
-import { run, FFMPEG, probe } from './video/ffmpeg.js';
-import { CAPTION_STYLES } from './video/ass.js';
+import { run, FFMPEG, probe, FONTS_DIR } from './video/ffmpeg.js';
+import { CAPTION_STYLES, FONTS } from './video/ass.js';
 import { liveWords } from './video/shorts.js';
 import { setLive, liveCuts } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
@@ -714,7 +714,7 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   const c = await getClip(req.params.id);
   const f = {};
   for (const k of ['title', 'hook']) if (k in req.body) f[k] = String(req.body[k]);
-  if (['face', 'blur', 'crop'].includes(req.body.layout)) f.layout = req.body.layout;
+  if (['face', 'blur', 'crop', 'gaming', 'split'].includes(req.body.layout)) f.layout = req.body.layout;
   if (CAPTION_STYLES[req.body.style]) f.style = req.body.style;
   if ('keywords' in req.body) f.keywords = (Array.isArray(req.body.keywords) ? req.body.keywords : String(req.body.keywords).split(','))
     .map(x => String(x).trim()).filter(Boolean).slice(0, 10);
@@ -793,6 +793,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
+    fonts: FONTS, split2: E.split2 || null,
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
@@ -825,6 +826,46 @@ app.get('/api/projects/:id/waveform', h(async (req, res) => {
   for (let i = 0; i < samples.length; i += per) { let m = 0; for (let j = i; j < i + per && j < samples.length; j++) { const v = Math.abs(samples[j]); if (v > m) m = v; } peaks.push(+(m / 32768).toFixed(3)); }
   res.json({ from, to, peaks });
 }));
+// Ajustes de estilo del editor (letra, título fijo, color, espejo, movimiento, velocidad, fotos, pantalla dividida)
+const hexOk = v => /^#[0-9a-f]{6}$/i.test(v || '');
+const rectOk = (r, num) => r && ['x', 'y', 'w', 'h'].every(k => Number.isFinite(Number(r[k]))) ? Object.fromEntries(['x', 'y', 'w', 'h'].map(k => [k, num(r[k], 0, 1, 0)])) : null;
+function editLook(b, prev, num) {
+  const out = {};
+  const pick = (k, fn) => { if (k in b) { const v = fn(b[k]); if (v != null) out[k] = v; } else if (prev[k] != null) out[k] = prev[k]; };
+  pick('font', v => FONTS[v] ? v : null);
+  pick('titleBar', v => v && typeof v === 'object' ? { show: !!v.show, text: String(v.text || '').slice(0, 140), color: hexOk(v.color) ? v.color : '#FFFFFF',
+    bg: v.bg === 'none' ? 'none' : hexOk(v.bg) ? v.bg : '#E11D48', size: num(v.size, 0.6, 1.6, 1), upper: v.upper !== false } : null);
+  pick('grade', v => ['vivo', 'calido', 'frio', 'cine', 'brillo', 'bn'].includes(v) ? v : null);
+  pick('adjust', v => v && typeof v === 'object' ? { b: num(v.b, -50, 50, 0), c: num(v.c, -50, 50, 0), s: num(v.s, -50, 50, 0) } : null);
+  pick('mirror', v => !!v);
+  pick('motion', v => num(v, 0, 30, 0));
+  pick('speed', v => num(v, 1, 1.5, 1));
+  pick('split2', v => rectOk(v, num));
+  pick('overlays', v => Array.isArray(v) ? v.slice(0, 10).filter(o => o && typeof o.ref === 'string' && o.ref.length < 400 && !/[\s"']/.test(o.ref)).map(o => ({
+    ref: o.ref, url: String(o.url || '').slice(0, 500), x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
+  if (b.grade === '' || b.grade === null) delete out.grade;
+  return out;
+}
+// Aplicar el estilo de un clip (textos, imagen, fotos) a todos los clips del proyecto
+app.post('/api/projects/:id/apply-style', h(async (req, res) => {
+  const src = await getClip(Number(req.body?.clipId));
+  if (!src || String(src.project_id) !== String(req.params.id)) throw new Error('Clip no encontrado.');
+  const what = new Set(Array.isArray(req.body?.what) ? req.body.what : ['text', 'look', 'photos']);
+  const E = src.edit || {};
+  const KEYS = { text: ['captions', 'font', 'titleBar', 'hookOn', 'emojis', 'brand'], look: ['grade', 'adjust', 'mirror', 'motion', 'speed', 'format'], photos: ['overlays'] };
+  const keys = [...what].flatMap(w => KEYS[w] || []);
+  const others = await q('SELECT * FROM clips WHERE project_id = $1 AND id <> $2', [src.project_id, src.id]);
+  for (const c of others) {
+    const edit = { ...(c.edit || {}) };
+    for (const k of keys) { if (E[k] === undefined) delete edit[k]; else edit[k] = E[k]; }
+    // los títulos fijos usan el título de cada clip, no el del clip de origen
+    if (edit.titleBar) edit.titleBar = { ...edit.titleBar, text: '' };
+    await updateClip(c.id, { edit, ...(what.has('text') && E.captions?.style ? { style: E.captions.style } : {}), status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
+    await enqueue('clip.render', { clipId: c.id });
+  }
+  await updateProject(src.project_id, { status: 'processing', error: null, progress: 'Aplicando el estilo a todos los clips…' });
+  res.json({ ok: true, count: others.length });
+}));
 app.put('/api/clips/:id/edit', h(async (req, res) => {
   const c = await getClip(req.params.id);
   const b = req.body || {};
@@ -835,13 +876,14 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
     .map(w => ({ word: String(w.word).slice(0, 60), start: Number(w.start), end: Number(w.end) })).filter(w => Number.isFinite(w.start) && Number.isFinite(w.end)) : null;
   const edit = {
     format: ['v', 'sq', 'p45'].includes(b.format) ? b.format : 'v',
-    layout: ['face', 'crop', 'blur', 'gaming'].includes(b.layout) ? b.layout : c.layout,
+    layout: ['face', 'crop', 'blur', 'gaming', 'split'].includes(b.layout) ? b.layout : c.layout,
     ...(b.facecam && ['x', 'y', 'w', 'h'].every(k => Number.isFinite(Number(b.facecam[k]))) ? { facecam: Object.fromEntries(['x', 'y', 'w', 'h'].map(k => [k, num(b.facecam[k], 0, 1, 0)])) } : {}),
     crop: { mode: ['face', 'manual', 'fixed'].includes(b.crop?.mode) ? b.crop.mode : 'face', zoom: num(b.crop?.zoom, 1, 3, 1), cx: num(b.crop?.cx, 0, 1, 0.5), cy: num(b.crop?.cy, 0, 1, 0.5),
       keys: (b.crop?.keys || []).slice(0, 500).map(k => ({ t: num(k.t, 0, 1e7, 0), cx: num(k.cx, 0, 1, 0.5), cut: !!k.cut })) },
-    captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1),
+    captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1), textColor: /^#[0-9a-f]{6}$/i.test(b.captions?.textColor || '') ? b.captions.textColor : null,
       y: num(b.captions?.y, 0.1, 0.95, null), color: /^#[0-9a-f]{6}$/i.test(b.captions?.color || '') ? b.captions.color : null, upper: b.captions?.upper == null ? null : !!b.captions.upper, wpg: num(b.captions?.wpg, 1, 8, null) },
     ...(b.autocut && typeof b.autocut === 'object' ? { autocut: { silence: !!b.autocut.silence, retakes: !!b.autocut.retakes, condense: !!b.autocut.retakes && !!b.autocut.condense } } : c.edit?.autocut ? { autocut: c.edit.autocut } : {}),
+    ...editLook(b, c.edit || {}, num),
     hookOn: b.hookOn !== false, emojis: b.emojis !== false, ...(typeof b.brand === 'boolean' ? { brand: b.brand } : c.edit?.brand != null ? { brand: c.edit.brand } : {}),
     ...(words ? { words, wordsFrom: num(b.wordsFrom, 0, 1e7, start), wordsTo: num(b.wordsTo, 0, 1e7, end) } : (c.edit?.words ? { words: c.edit.words, wordsFrom: c.edit.wordsFrom, wordsTo: c.edit.wordsTo } : {})),
   };
@@ -1112,6 +1154,7 @@ JSON: {"items":[{"date":"YYYY-MM-DD","kind":"short|long","title":"...","notes":"
 
 // ---------- Archivos y frontend ----------
 if (!IS_VERCEL) app.use('/files', express.static(FILES_DIR, { maxAge: '1h' }));
+app.use('/fonts', express.static(FONTS_DIR, { maxAge: '7d' }));
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|files).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 

@@ -7,7 +7,7 @@ import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
 import { emojiImage } from './emoji.js';
-import { detectFacecam, gamingFilter } from './gaming.js';
+import { detectFacecam, gamingFilter, splitFilter } from './gaming.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
 import { computeKeep, cutParts, remapWords, timeMapper } from './autocut.js';
@@ -263,7 +263,8 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const out = path.join(WORK_DIR, `${tag}.mp4`);
   try {
     const capLayout = []; // líneas que ocupa cada subtítulo (para colocar los emojis encima sin taparlo)
-    fs.writeFileSync(assFile, buildASS(words, { layout: capLayout,
+    fs.writeFileSync(assFile, buildASS(words, { layout: capLayout, font: E?.font, textColor: C.textColor,
+      titleBar: E?.titleBar?.show && (E.titleBar.text || clip.title) ? { ...E.titleBar, text: (lang ? (clip.variants[lang]?.title || '') : '') || E.titleBar.text || clip.title } : null,
       hook, duration: dur, highlight: C.color || await getSetting('caption_color'),
       captionMarginV: Math.round(capMargin), width: OW, height: OH,
       captions: C.show != null ? C.show !== false : p.data.options?.captions !== false,
@@ -351,7 +352,11 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     const pre = parts.length > 1 ? parts.map((x, i) => `[${i}:v]fps=30,trim=duration=${x.dur.toFixed(5)},setpts=PTS-STARTPTS,setsar=1[pv${i}];` +
         `[${i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=duration=${x.dur.toFixed(5)},asetpts=PTS-STARTPTS[pa${i}];`).join('') +
       `${parts.map((_, i) => `[pv${i}][pa${i}]`).join('')}concat=n=${parts.length}:v=1:a=1[cv][ca];` : '';
-    if (layout === 'gaming') {
+    if (layout === 'split') {
+      // Pantalla dividida: dos recuadros del original, uno arriba y otro abajo
+      const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
+      vf = splitFilter({ vin: '[0:v]', W, H, a: E?.facecam || { x: 0, y: 0, w: 0.5, h: 1 }, b: E?.split2 || { x: 0.5, y: 0, w: 0.5, h: 1 }, OW, OH, ass, top: Number(E?.splitTop) || 0.5 });
+    } else if (layout === 'gaming') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       vf = gamingFilter({ vin: '[0:v]', W, H, cam, OW, OH, ass });
     } else if (E && layout !== 'blur') {
@@ -383,8 +388,16 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       `[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${ass}[base]`;
     // Multi Edit: filtro de color de la versión (se aplica a la imagen antes del encuadre y los subtítulos)
     const GRADES = { vivo: 'eq=saturation=1.28:contrast=1.06', calido: 'colorbalance=rs=0.07:gs=0.02:bs=-0.06,eq=saturation=1.1', frio: 'colorbalance=rs=-0.05:bs=0.08,eq=contrast=1.04',
-      cine: 'eq=contrast=1.12:saturation=0.88:brightness=-0.02', brillo: 'eq=brightness=0.04:contrast=1.04:saturation=1.12' };
-    const grade = GRADES[E?.grade] ? GRADES[E.grade] + ',' : '';
+      cine: 'eq=contrast=1.12:saturation=0.88:brightness=-0.02', brillo: 'eq=brightness=0.04:contrast=1.04:saturation=1.12', bn: 'hue=s=0,eq=contrast=1.1' };
+    // Ajustes del editor: brillo, contraste y saturación (-50…50)
+    const A = E?.adjust || {}, ab = Number(A.b) || 0, ac = Number(A.c) || 0, as = Number(A.s) || 0;
+    const adj = ab || ac || as ? `eq=brightness=${(ab / 100 * 0.3).toFixed(3)}:contrast=${(1 + ac / 100).toFixed(3)}:saturation=${Math.max(0, 1 + as / 100).toFixed(3)},` : '';
+    const grade = (GRADES[E?.grade] ? GRADES[E.grade] + ',' : '') + adj;
+    // Espejo y zoom suave cada N s: sobre la imagen ya encuadrada, antes de los textos (que no se voltean)
+    const every = Math.max(0, Math.min(30, Number(E?.motion) || 0));
+    const Z = every ? `if(eq(mod(floor(t/${every})\\,2)\\,1)\\,1.12\\,1)` : null;
+    const post = (E?.mirror ? 'hflip,' : '') + (Z ? `scale=w='trunc(${OW}*${Z}/2)*2':h='trunc(${OH}*${Z}/2)*2':eval=frame,crop=${OW}:${OH},setsar=1,` : '');
+    if (post) vf = vf.replace(ass, post + ass);
     // Un solo trozo: se pasa a 30 fps al principio (como con varios trozos), para que los cambios de encuadre caigan en su fotograma
     vf = pre + vf.replace('[0:v]', vin + (parts.length > 1 ? '' : 'fps=30,') + grade);
 
@@ -410,6 +423,17 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       vf += `;[${i}:v]format=rgba,scale=170:170,fade=in:st=${t0}:d=0.12:alpha=1,fade=out:st=${(w.start + 1.1).toFixed(2)}:d=0.2:alpha=1[e${i}];` +
         `[${last}][e${i}]overlay=x=(W-w)/2:y=${ey}-20*sin(min(1\\,(t-${t0})*6)*PI):enable='between(t,${t0},${t1})':shortest=1[o${i}]`;
       last = `o${i}`;
+    }
+    // Fotos y logos colocados en el editor (posición y tamaño normalizados; desde/hasta en segundos del clip)
+    for (const ov of (E?.overlays || []).slice(0, 10)) {
+      if (!ov?.ref) continue;
+      const i = parts.length + extra.filter(x => x === '-i').length;
+      extra.push('-loop', '1', '-i', inputPath(ov.ref));
+      const w = Math.max(20, Math.round(OW * Math.max(0.05, Math.min(1, Number(ov.w) || 0.3)) / 2) * 2);
+      const x = Math.round((Number(ov.x) || 0.5) * OW - w / 2), y = `${Math.round((Number(ov.y) || 0.3) * OH)}-h/2`;
+      const a = Math.max(0, Number(ov.from) || 0), b = Number(ov.to) > a ? Number(ov.to) : dur + 1;
+      vf += `;[${i}:v]format=rgba,scale=${w}:-2[ov${i}];[${last}][ov${i}]overlay=x=${x}:y=${y}:enable='between(t,${a.toFixed(2)},${b.toFixed(2)})':shortest=1[ovo${i}]`;
+      last = `ovo${i}`;
     }
     // Mi marca: marco y logo encima de todo (si el proyecto o el clip lo piden)
     if (E?.brand ?? p.data.options?.brand) {
@@ -455,13 +479,22 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       }
       if (a && a !== '[0:a]' && a !== '[ca]') amap = a;
     }
+    // Velocidad de la voz y del vídeo (1,1x…1,5x): se acelera el resultado ya montado (textos incluidos, que van a su ritmo)
+    const speed = lang ? 1 : Math.max(1, Math.min(1.5, Number(E?.speed) || 1));
+    let outDur = dur;
+    if (speed > 1.001) {
+      vf = vf.replace(/;\[(\w+)\](scale=[^;\[]*|null)\[v\]/, (m, l, f) => `;[${l}]setpts=PTS/${speed.toFixed(3)},${f}[v]`);
+      const hasA = amap !== '0:a?' || (await probe(inputs[0]).catch(() => ({ hasAudio: true }))).hasAudio;
+      if (hasA) { const src = amap === '0:a?' ? '[0:a]' : amap; vf += `;${src}atempo=${speed.toFixed(3)}[asp]`; amap = '[asp]'; }
+      outDur = dur / speed;
+    }
     await prog('Renderizando', 0, true);
     const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', (x.dur + 0.5).toFixed(3)] : []), '-i', inputs[i]]);
-    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', dur.toFixed(3),
+    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', outDur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', amap,
       '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
-      onProgress: sec => prog('Renderizando', (sec / dur) * 95),
+      onProgress: sec => prog('Renderizando', (sec / outDur) * 95),
       timeoutMs: ctx.remaining() - 15000, // parar antes de que el servidor corte la función
     });
     await prog('Guardando', 97, true);

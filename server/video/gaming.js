@@ -139,3 +139,15 @@ export function gamingFilter({ vin = '[0:v]', W, H, cam, OW = 1080, OH = 1920, a
     `[tbg][cam]overlay=(W-w)/2:(H-h)/2[top];` +
     `[top][game]vstack=inputs=2,setsar=1${ass ? ',' + ass : ''}[base]`;
 }
+
+/**
+ * Pantalla dividida: el recuadro `a` del original arriba y el `b` abajo (cada uno llena su mitad, recortado al centro).
+ * top = fracción de la altura para la parte de arriba (0.5 = mitad y mitad).
+ */
+export function splitFilter({ vin = '[0:v]', W, H, a, b, OW = 1080, OH = 1920, ass, top = 0.5 }) {
+  const ev = v => Math.max(2, Math.round(v / 2) * 2);
+  const TH = ev(OH * top), BH = OH - TH;
+  const crop = r => { const cw = ev(r.w * W), ch = ev(r.h * H); return `crop=${Math.min(W, cw)}:${Math.min(H, ch)}:${Math.min(W - cw, ev(r.x * W))}:${Math.min(H - ch, ev(r.y * H))}`; };
+  const fill = (w, h) => `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
+  return `${vin}split=2[sa][sb];[sa]${crop(a)},${fill(OW, TH)}[st];[sb]${crop(b)},${fill(OW, BH)}[sbm];[st][sbm]vstack=inputs=2,setsar=1${ass ? ',' + ass : ''}[base]`;
+}

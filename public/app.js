@@ -4,7 +4,7 @@ const main = $('#main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const mmss = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; };
 const LANGS = { es: 'Español', en: 'Inglés', pt: 'Portugués', fr: 'Francés', de: 'Alemán', it: 'Italiano' };
-const LAYOUTS = { face: 'Recorte centrado en quien habla (automático)', crop: 'Recorte centrado fijo', blur: 'Fondo difuminado' };
+const LAYOUTS = { face: 'Recorte centrado en quien habla (automático)', crop: 'Recorte centrado fijo', blur: 'Fondo difuminado', gaming: '🎮 Gaming', split: '◫ Pantalla dividida' };
 const CAP_STYLES = { clasico: 'Clásico (palabra resaltada)', marcador: 'Marcador (palabra con fondo)', impacto: 'Impacto (grande, con pop)', minimal: 'Minimalista (discreto)' };
 const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v}</option>`).join('');
 const emojisToText = list => (list || []).map(e => `${e.emoji} ${e.word}`).join(', ');
@@ -1234,7 +1234,7 @@ function shortsGrid(p, chs) {
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b>${c.variant_label ? `<span class="pill" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}<span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : 'fondo difuminado'}</span>
+        <div class="row" style="gap:5px"><b>#${c.idx}</b>${c.variant_label ? `<span class="pill" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}<span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : c.layout === 'split' ? '◫ dividida' : 'fondo difuminado'}</span>
           ${!p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>

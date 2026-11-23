@@ -13,6 +13,12 @@ function ts(t) {
 const esc = s => String(s).replace(/\\/g, '').replace(/[{}]/g, '').replace(/\n/g, '\\N');
 
 /** Estilos de subtítulos disponibles. */
+// Letras disponibles (carpeta fonts/): nombre de familia → etiqueta
+export const FONTS = {
+  'DejaVu Sans': 'Clásica (DejaVu)', 'Anton': 'Anton (alta y estrecha)', 'Bebas Neue': 'Bebas Neue (titulares)',
+  'Poppins Black': 'Poppins Black (moderna)', 'Archivo Black': 'Archivo Black (impacto)', 'Lilita One': 'Lilita One (redondeada)',
+  'Bangers': 'Bangers (cómic)', 'DM Serif Display': 'DM Serif (elegante)',
+};
 export const CAPTION_STYLES = {
   clasico: { label: 'Clásico (palabra resaltada)', wpg: 3, size: 80, upper: true, mode: 'color' },
   marcador: { label: 'Marcador (palabra con fondo de color)', wpg: 3, size: 80, upper: true, mode: 'box' },
@@ -21,6 +27,10 @@ export const CAPTION_STYLES = {
 };
 const norm = w => String(w).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
 export { norm as normWord };
+
+const TITLE_TOP = 110;
+const titleSize = tb => Math.round(64 * (Number(tb?.size) || 1));
+const titleBarBottom = (tb, height) => TITLE_TOP + Math.ceil(String(tb.text).length / 24) * titleSize(tb) * 1.25 + 30;
 
 /** Divide un texto largo en 2 líneas equilibradas. */
 function wrap(text, max = 22) {
@@ -39,7 +49,9 @@ function wrap(text, max = 22) {
  * @param words  [{word,start,end}] con tiempos RELATIVOS al inicio del clip
  * @param opts   { hook, hookSeconds, duration, highlight, captionY, wordsPerGroup }
  */
-export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg, hookMarginV = 190, layout = null } = {}) {
+export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg, hookMarginV = 190, layout = null, font = null, textColor = null, titleBar = null } = {}) {
+  const F = FONTS[font] ? font : FONT;
+  const base = textColor && /^#[0-9a-f]{6}$/i.test(textColor) ? assColor(textColor) : '&H00FFFFFF', baseC = base;
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -49,14 +61,17 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,${FONT},${hookSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,7,3,8,60,60,${hookMarginV},1
-Style: Big,${FONT},${Math.round(hookSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&HA0000000,1,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
-Style: Cap,${FONT},${capSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,4,2,60,60,${captionMarginV},1
+Style: Hook,${F},${hookSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,7,3,8,60,60,${titleBar?.text ? Math.max(hookMarginV, titleBarBottom(titleBar, height) + 30) : hookMarginV},1
+Style: Big,${F},${Math.round(hookSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&HA0000000,1,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
+Style: Cap,${F},${capSize},${baseC},${baseC},&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,4,2,60,60,${captionMarginV},1
+Style: Title,${F},${titleSize(titleBar)},${titleBar?.color ? assColor(titleBar.color) : '&H00FFFFFF'},&H00FFFFFF,${titleBar?.bg && titleBar.bg !== 'none' ? assColor(titleBar.bg) : '&H00000000'},&H00000000,1,0,0,0,100,100,0,0,${titleBar?.bg && titleBar.bg !== 'none' ? 3 : 1},${titleBar?.bg && titleBar.bg !== 'none' ? 16 : 7},0,8,70,70,${TITLE_TOP},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
   const lines = [];
+  // Título fijo durante todo el clip, arriba, con caja de color opcional
+  if (titleBar?.text) lines.push(`Dialogue: 3,${ts(0)},${ts(duration)},Title,,0,0,0,,${wrap(esc(titleBar.upper === false ? titleBar.text : titleBar.text.toUpperCase()), 24)}`);
   if (hook) {
     // Línea 1 en color de resalte, línea 2 en blanco (estilo gancho viral)
     const [l1, l2] = wrap(esc(hook.toUpperCase()), 18).split('\\N');
@@ -101,8 +116,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           const active = xi === wi && st.mode !== 'none';
           const color = isKw(x.word) ? kw : active ? hl : null;
           if (active && st.mode === 'box') return `{\\3c${hl}\\bord16\\shad0}${t}{\\3c&H00000000&\\bord${st.outline ?? 8}\\shad4}`;
-          if (active) return `{${color ? `\\c${color}` : ''}\\fscx110\\fscy110}${t}{\\c&H00FFFFFF&\\fscx100\\fscy100}`;
-          if (color) return `{\\c${color}}${t}{\\c&H00FFFFFF&}`;
+          if (active) return `{${color ? `\\c${color}` : ''}\\fscx110\\fscy110}${t}{\\c${base}\\fscx100\\fscy100}`;
+          if (color) return `{\\c${color}}${t}{\\c${base}}`;
           return t;
         }).join(' ');
         // "impacto": cada grupo entra con un pequeño "pop"
