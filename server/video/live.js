@@ -83,7 +83,10 @@ register('live.capture', async ({ id, seg }, ctx) => {
 
   // Duración del segmento: lo configurado, sin pasarse del tiempo que queda en esta ejecución
   // El primer segmento es corto (máx. 60 s) para que los primeros clips lleguen antes
-  const want = seg === 0 ? Math.min(60, Math.max(30, Number(o.segmentSec) || 120)) : Math.max(30, Number(o.segmentSec) || 120);
+  const manual = o.clipMode === 'manual';
+  // Modo "Hacer clips" a mano: se graba en trozos internos de 5 min (se transcriben mientras tanto) y los clips
+  // se buscan solo cuando el usuario pulsa el botón. Modo automático: el primer segmento es corto para ver clips antes.
+  const want = manual ? 300 : seg === 0 ? Math.min(60, Math.max(30, Number(o.segmentSec) || 120)) : Math.max(30, Number(o.segmentSec) || 120);
   const segSec = Math.floor(Math.min(want, maxSec - st.secs, (ctx.remaining() - 45000) / 1000));
   if (segSec < 20) { await enqueue('live.capture', { id, seg }); return; } // sin tiempo: a una ejecución nueva
 
@@ -93,7 +96,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
   await setLive(id, { recWall: Date.now(), recPos: st.secs }); // para "✂ Clip ahora": posición del directo en cada momento
   const out = path.join(WORK_DIR, `live_${id}_${seg}_${Date.now()}.mp4`);
   const tmp = [];
-  let rec = null;
+  let rec = null, wasCut = false;
   try {
     if (/\.m3u8(\?|$)/i.test(url) || /mpegurl/i.test(url)) {
       // HLS: grabador propio en Node (continúa donde terminó el segmento anterior, sin huecos)
@@ -109,6 +112,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
         pl.audio ? recordMedia(pl.audio, afile, { seconds: segSec, fromSeq: live.aSeq ?? null, deadline, stop: () => liveCuts.has(id) }) : null,
       ]);
       rec = v;
+      wasCut = liveCuts.has(id);
       liveCuts.delete(id);
       await setLive(id, { vSeq: v.lastSeq, ...(a ? { aSeq: a.lastSeq } : {}), ...(v.gap ? { gaps: (live.gaps || 0) + 1 } : {}) });
       if (v.seconds > 0) await ffmpeg([...(a ? await syncInputs(vfile, afile) : ['-i', vfile, '-map', '0:v:0', '-map', '0:a:0?']),
@@ -123,6 +127,13 @@ register('live.capture', async ({ id, seg }, ctx) => {
     const info = await probe(out).catch(() => ({ duration: 0 }));
     if (info.duration < 5) {
       if (seg === 0) throw new Error('No se pudo grabar el directo. Comprueba que está emitiendo y que el enlace es correcto.');
+      // Se pulsó "Hacer clips" / "Clip ahora" justo después de otro corte: el trozo es diminuto, no es el final del directo
+      if (wasCut && !(await getProject(id)).data.live?.stopRequested) {
+        const l2 = (await getProject(id)).data.live || {};
+        if (manual && l2.batchAt) { await setLive(id, { batchAt: null }); await enqueue('live.analyze', { id, seg: seg - 1, batch: true }); }
+        await enqueue('live.capture', { id, seg });
+        return;
+      }
       return finish(id, 'el directo terminó');
     }
     if (seg === 0) await q(`UPDATE projects SET data = data || $2::jsonb, duration = 0 WHERE id = $1`, [id, JSON.stringify({ width: info.width, height: info.height })]);
@@ -137,7 +148,10 @@ register('live.capture', async ({ id, seg }, ctx) => {
     // Primero se encadena la grabación (para no dejar huecos) y después el análisis de este segmento
     if (!stop) await enqueue('live.capture', { id, seg: seg + 1 });
     else await setLive(id, { stopping: true, reason: endedNow ? 'el directo terminó' : fresh.data.live?.stopRequested ? 'detenido' : 'duración máxima alcanzada' });
-    await enqueue('live.analyze', { id, seg, last: stop });
+    // Modo manual: la tanda se cierra si se pulsó "Hacer clips" (o si el directo termina)
+    const batch = manual && (stop || !!fresh.data.live?.batchAt);
+    if (batch && fresh.data.live?.batchAt) await setLive(id, { batchAt: null });
+    await enqueue('live.analyze', { id, seg, last: stop, ...(batch ? { batch: true } : {}) });
   } finally { for (const f of [out, ...tmp]) fs.rmSync(f, { force: true }); }
 }, async ({ id }, msg) => {
   await setLive(id, { ended: true });
@@ -205,8 +219,88 @@ async function finish(id, reason) {
   if (p.status === 'processing' && !st.clips) await updateProject(id, { status: 'ready', percent: 100, ready_at: new Date().toISOString(), progress: `Directo finalizado (${reason}) · no hubo momentos virales suficientes` });
 }
 
+// Transcribe un trozo grabado (si aún no lo está) con tiempos absolutos del directo
+async function transcribeRow(id, row, o, stage = async () => {}) {
+  if (row.analyzed && row.words) return row;
+  await stage('transcribiendo…');
+  const info = await probe(inputPath(row.ref)).catch(() => ({ hasAudio: true }));
+  if (!info.hasAudio) {
+    await setLive(id, { warning: 'La grabación del directo no tiene sonido, así que no se puede transcribir ni buscar momentos. Detén el directo y vuelve a empezarlo; si sigue pasando, avísanos.' });
+    throw new Error('El segmento grabado no tiene audio. (400)');
+  }
+  const r = await transcribeChunk(inputPath(row.ref), { offset: 0, len: row.dur + 1, language: o.language });
+  const shift = x => ({ ...x, start: x.start + row.start, end: x.end + row.start });
+  const words = r.words.filter(w => w.start < row.dur).map(shift);
+  const segments = r.segments.filter(s => s.start < row.dur).map(shift);
+  const energy = (r.energy || []).map(e => ({ ...e, t: e.t + Math.round(row.start) }));
+  await q('UPDATE live_segments SET words = $3, segments = $4, energy = $5, analyzed = true WHERE project_id = $1 AND seg = $2',
+    [id, row.seg, JSON.stringify(words), JSON.stringify(segments), JSON.stringify(energy)]);
+  Object.assign(row, { words, segments, energy, analyzed: true });
+  await setLive(id, { warning: null }); // se transcribió bien: se quita cualquier aviso anterior
+  return row;
+}
+
+// Trozos de vídeo de un momento [start, end] que puede abarcar varios trozos grabados
+function partsFor(rows, start, end) {
+  return rows.filter(r => r.ref && r.start < end && r.start + r.dur > start).map(r => {
+    const a = Math.max(start, r.start), b = Math.min(end, r.start + r.dur);
+    return { ref: r.ref, ss: +(a - r.start).toFixed(3), dur: +(b - a).toFixed(3) };
+  }).filter(x => x.dur > 0.05);
+}
+
+/**
+ * Modo "Hacer clips": analiza todo lo grabado desde la última tanda hasta el trozo `seg` (incluido) y crea los clips.
+ */
+async function batchClips(id, seg, o, last) {
+  const live = (await getProject(id)).data.live || {};
+  const fromSeg = Number(live.batchFromSeg) || 0, n = (Number(live.batches) || 0) + 1;
+  const stage = t => setLive(id, { stage: t ? `Tanda ${n}: ${t}` : null }).catch(() => {});
+  const rows = await q('SELECT * FROM live_segments WHERE project_id = $1 AND seg >= $2 AND seg <= $3 ORDER BY seg', [id, fromSeg, seg]);
+  if (!rows.length) return;
+  for (const [i, r] of rows.entries()) await transcribeRow(id, r, o, t => stage(`${t} (${i + 1}/${rows.length})`));
+  const winStart = rows[0].start, winEnd = rows[rows.length - 1].start + rows[rows.length - 1].dur;
+  const transcript = { segments: rows.flatMap(r => r.segments || []), words: rows.flatMap(r => r.words || []), energy: rows.flatMap(r => r.energy || []) };
+  let made = 0;
+  if (transcript.segments.length) {
+    await stage(`la IA busca los mejores momentos de ${fmtMin(winEnd - winStart)} grabados…`);
+    const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
+    const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;
+    const picked = await pickClips(transcript, sig, { count: Math.min(10, Number(o.perSegment) || 3), minSec, maxSec, language: o.titleLanguage });
+    const existing = await q('SELECT start, "end" FROM clips WHERE project_id = $1', [id]);
+    let idx = (await one('SELECT COALESCE(MAX(idx), 0)::int AS n FROM clips WHERE project_id = $1', [id])).n;
+    const minScore = Number(o.minScore) || 7;
+    for (const c of picked) {
+      let { start, end } = snap(transcript.words, Number(c.start), Number(c.end));
+      start = Math.max(winStart, start); end = Math.min(winEnd, end);
+      if (!(end - start >= Math.min(minSec, 8))) continue;
+      if (existing.some(x => Math.min(end, x.end) - Math.max(start, x.start) > 3)) continue;
+      const llm = Math.max(1, Math.min(10, Number(c.score) || 5));
+      const measured = sig.score(start, end);
+      const final = sig.hasAudioData ? Math.round(llm * 0.75 + measured.score * 0.25) : Math.round(llm);
+      if (final < minScore) continue;
+      const parts = partsFor(rows, start, end);
+      if (!parts.length) continue;
+      const clipWords = new Set(sliceWords(transcript.words, start, end).map(w => normWord(w.word)));
+      const keywords = (c.keywords || []).map(String).filter(k => clipWords.has(normWord(k))).slice(0, 6);
+      const emojis = o.emojis === false ? [] : (c.emojis || []).filter(e => e?.emoji && clipWords.has(normWord(e.word))).slice(0, 4);
+      const clip = await one(`INSERT INTO clips (project_id, idx, start, "end", title, hook, score, reason, layout, status, style, keywords, emojis, signals, src)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13,$14) RETURNING id`,
+        [id, ++idx, start, end, String(c.title || '').slice(0, 100), String(c.hook || '').slice(0, 80), final, c.reason || '',
+          o.layout || 'face', o.captionStyle || 'clasico', JSON.stringify(keywords), JSON.stringify(emojis),
+          JSON.stringify({ llm, measured: measured.score, scores: c.scores || {}, peaks: measured.peaks, rate: +measured.rate.toFixed(2), laugh: measured.laugh }),
+          JSON.stringify(parts)]);
+      existing.push({ start, end }); made++;
+      await enqueue('clip.render', { clipId: clip.id, fast: true });
+      console.log(`[directo ${id}] tanda ${n}: clip #${idx} (${final}/10) ${start.toFixed(0)}–${end.toFixed(0)} s: ${c.title}`);
+    }
+  }
+  const hist = [...(live.batchLog || []), { n, from: winStart, to: winEnd, clips: made, at: Date.now() }].slice(-30);
+  await setLive(id, { batchFromSeg: seg + 1, batchFromT: winEnd, batches: n, batchLog: hist, stage: null,
+    ...(made ? {} : { warning: `Tanda ${n}: no hubo momentos con nota ${Number(o.minScore) || 7}/10 o más en esos ${fmtMin(winEnd - winStart)}. Puedes bajar la nota mínima.` }) });
+}
+
 // ---------- Analizar un segmento y cortar los momentos virales ----------
-register('live.analyze', async ({ id, seg, last }, ctx) => {
+register('live.analyze', async ({ id, seg, last, batch }, ctx) => {
   const p = await getProject(id);
   if (!p || p.deleted_at) return;
   const o = p.data.options || {};
@@ -214,24 +308,9 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
   if (!row) return;
 
   // 1) Transcribir el segmento (tiempos absolutos del directo)
-  const stage = t => setLive(id, { stage: t ? `Segmento ${seg + 1}: ${t}` : null }).catch(() => {});
-  if (!row.analyzed || !row.words) {
-    await stage('transcribiendo…');
-    const info = await probe(inputPath(row.ref)).catch(() => ({ hasAudio: true }));
-    if (!info.hasAudio) {
-      await setLive(id, { warning: 'La grabación del directo no tiene sonido, así que no se puede transcribir ni buscar momentos. Detén el directo y vuelve a empezarlo; si sigue pasando, avísanos.' });
-      throw new Error('El segmento grabado no tiene audio. (400)');
-    }
-    const r = await transcribeChunk(inputPath(row.ref), { offset: 0, len: row.dur + 1, language: o.language });
-    const shift = x => ({ ...x, start: x.start + row.start, end: x.end + row.start });
-    const words = r.words.filter(w => w.start < row.dur).map(shift);
-    const segments = r.segments.filter(s => s.start < row.dur).map(shift);
-    const energy = (r.energy || []).map(e => ({ ...e, t: e.t + Math.round(row.start) }));
-    await q('UPDATE live_segments SET words = $3, segments = $4, energy = $5, analyzed = true WHERE project_id = $1 AND seg = $2',
-      [id, seg, JSON.stringify(words), JSON.stringify(segments), JSON.stringify(energy)]);
-    Object.assign(row, { words, segments, energy });
-    await setLive(id, { warning: null }); // se transcribió bien: se quita cualquier aviso anterior
-  }
+  const manual = o.clipMode === 'manual';
+  const stage = t => setLive(id, { stage: t ? (manual ? `Trozo ${seg + 1}: ${t}` : `Segmento ${seg + 1}: ${t}`) : null }).catch(() => {});
+  await transcribeRow(id, row, o, stage);
 
   // 2) Ventana: final del segmento anterior + este (para no perder momentos que cruzan el corte)
   const prev = seg > 0 ? await one('SELECT * FROM live_segments WHERE project_id = $1 AND seg = $2 AND analyzed', [id, seg - 1]) : null;
@@ -244,7 +323,9 @@ register('live.analyze', async ({ id, seg, last }, ctx) => {
   };
   // 3) Primero los clips marcados a mano (✂ Clip ahora): salen sin esperar a la IA
   await manualClips(id, row, prev, winStart, transcript, o, last);
-  if (transcript.segments.length) {
+  if (manual) {
+    if (batch) await batchClips(id, seg, o, last);
+  } else if (transcript.segments.length) {
     await stage('la IA busca los mejores momentos…');
     const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
     const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;

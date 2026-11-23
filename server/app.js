@@ -459,7 +459,7 @@ app.post('/api/live', h(async (req, res) => {
     emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '', brand: b.brand === true, ...autoEditOptions(b),
     minScore: Math.min(10, Math.max(1, Number(b.minScore) || 7)), minSec: Number(b.minSec) || 15, maxSec: Number(b.maxSec) || 60,
     segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
-    perSegment: Math.min(5, Math.max(1, Number(b.perSegment) || 3)),
+    perSegment: Math.min(10, Math.max(1, Number(b.perSegment) || 3)), clipMode: b.clipMode === 'auto' ? 'auto' : 'manual',
   };
   const p = await insert('projects', { type: 'live', title: b.title || `Directo${platform ? ' de ' + platform : ''} ${url.split('/').filter(Boolean).pop()?.split('?')[0] || ''} · ${new Date().toLocaleDateString('es')}`, channel_id: Number(b.channel_id) || null,
     source_url: url, status: 'processing', data: { options, live: {} }, progress: '🔴 Conectando con el directo…' });
@@ -501,10 +501,20 @@ app.post('/api/projects/:id/mark', h(async (req, res) => {
   liveCuts.add(p.id); // corta el segmento en curso ya: el clip sale en cuanto se transcriba ese trozo
   res.json({ t, len });
 }));
+// "✂ Hacer clips": corta lo grabado ahora y busca los clips de todo el tramo desde la tanda anterior; la grabación sigue
+app.post('/api/projects/:id/make-clips', h(async (req, res) => {
+  const p = await getProject(req.params.id);
+  const l = p.data.live;
+  if (!l || l.ended || l.stopRequested) throw new Error('El directo no está grabando.');
+  if (l.batchAt) return res.json({ ok: true, already: true });
+  await setLive(p.id, { batchAt: Date.now() });
+  liveCuts.add(p.id);
+  res.json({ ok: true });
+}));
 app.patch('/api/projects/:id/live-options', h(async (req, res) => {
   const b = req.body || {}, patch = {};
   if (b.minScore != null) patch.minScore = Math.min(10, Math.max(1, Number(b.minScore) || 7));
-  if (b.perSegment != null) patch.perSegment = Math.min(5, Math.max(1, Number(b.perSegment) || 3));
+  if (b.perSegment != null) patch.perSegment = Math.min(10, Math.max(1, Number(b.perSegment) || 3));
   await q(`UPDATE projects SET data = jsonb_set(data, '{options}', COALESCE(data->'options', '{}'::jsonb) || $2::jsonb, true) WHERE id = $1`, [req.params.id, JSON.stringify(patch)]);
   res.json({ ok: true, ...patch });
 }));
