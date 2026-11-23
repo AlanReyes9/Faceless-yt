@@ -1238,7 +1238,7 @@ function shortsGrid(p, chs) {
           ${!p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
         ${c.status === 'rendering' ? pill('rendering') : ''}
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
-        <div><label>Frase de gancho (sale 4 s arriba)</label><input data-f="hook" value="${esc(c.hook)}"></div>
+        <div><label>Texto fijo arriba (gancho, todo el clip)</label><input data-f="hook" value="${esc(c.hook)}"></div>
         <div class="muted" data-time>${mmss(c.start)} → ${mmss(c.end)} · ${Math.round(dur)} s</div>
         <div class="nudge"><span class="muted">Inicio</span><button class="btn" data-n="start:-1">−1 s</button><button class="btn" data-n="start:1">+1 s</button>
           <span class="muted">Fin</span><button class="btn" data-n="end:-1">−1 s</button><button class="btn" data-n="end:1">+1 s</button></div>

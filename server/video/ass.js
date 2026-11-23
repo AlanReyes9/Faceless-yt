@@ -64,7 +64,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Hook,${F},${hookSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,7,3,8,60,60,${titleBar?.text ? Math.max(hookMarginV, titleBarBottom(titleBar, height) + 30) : hookMarginV},1
 Style: Big,${F},${Math.round(hookSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&HA0000000,1,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
 Style: Cap,${F},${capSize},${baseC},${baseC},&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,4,2,60,60,${captionMarginV},1
-Style: Title,${F},${titleSize(titleBar)},${titleBar?.color ? assColor(titleBar.color) : '&H00FFFFFF'},&H00FFFFFF,${titleBar?.bg && titleBar.bg !== 'none' ? assColor(titleBar.bg) : '&H00000000'},&H00000000,1,0,0,0,100,100,0,0,${titleBar?.bg && titleBar.bg !== 'none' ? 3 : 1},${titleBar?.bg && titleBar.bg !== 'none' ? 16 : 7},0,8,70,70,${TITLE_TOP},1
+Style: Title,${F},${titleSize(titleBar)},${titleBar?.color ? assColor(titleBar.color) : '&H00FFFFFF'},&H00FFFFFF,${titleBar?.bg && titleBar.bg !== 'none' ? assColor(titleBar.bg) : '&H00000000'},&H00000000,1,0,0,0,100,100,0,0,${titleBar?.bg && titleBar.bg !== 'none' ? 3 : 1},${titleBar?.bg && titleBar.bg !== 'none' ? 16 : 7},0,8,70,70,${titleBar?.top || TITLE_TOP},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

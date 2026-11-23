@@ -842,7 +842,7 @@ function editLook(b, prev, num) {
   pick('speed', v => num(v, 1, 1.5, 1));
   pick('split2', v => rectOk(v, num));
   pick('overlays', v => Array.isArray(v) ? v.slice(0, 10).filter(o => o && typeof o.ref === 'string' && o.ref.length < 400 && !/[\s"']/.test(o.ref)).map(o => ({
-    ref: o.ref, url: String(o.url || '').slice(0, 500), x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
+    ref: o.ref, url: String(o.url || '').slice(0, 500), kind: o.kind === 'logo' ? 'logo' : 'photo', opacity: num(o.opacity, 0.1, 1, 1), pos: ['tl', 'tr', 'tc', 'bl', 'br', 'bc', 'free'].includes(o.pos) ? o.pos : undefined, x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
   if (b.grade === '' || b.grade === null) delete out.grade;
   return out;
 }

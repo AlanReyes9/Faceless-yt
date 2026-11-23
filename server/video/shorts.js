@@ -264,8 +264,10 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   try {
     const capLayout = []; // líneas que ocupa cada subtítulo (para colocar los emojis encima sin taparlo)
     fs.writeFileSync(assFile, buildASS(words, { layout: capLayout, font: E?.font, textColor: C.textColor,
-      titleBar: E?.titleBar?.show && (E.titleBar.text || clip.title) ? { ...E.titleBar, text: (lang ? (clip.variants[lang]?.title || '') : '') || E.titleBar.text || clip.title } : null,
-      hook, duration: dur, highlight: C.color || await getSetting('caption_color'),
+      // El gancho se muestra como texto fijo arriba durante todo el clip, con el estilo elegido en el editor
+      titleBar: hook ? { color: E?.titleBar?.color || '#FFFFFF', bg: E?.titleBar?.bg || 'none', size: E?.titleBar?.size || 1, text: hook,
+        top: (E?.layout || clip.layout) === 'gaming' ? Math.round(OH * 0.355) + 40 : undefined } : null,
+      hook: '', duration: dur, highlight: C.color || await getSetting('caption_color'),
       captionMarginV: Math.round(capMargin), width: OW, height: OH,
       captions: C.show != null ? C.show !== false : p.data.options?.captions !== false,
       style: C.style || clip.style || p.data.options?.captionStyle || 'clasico', keywords: lang ? [] : (clip.keywords || []),
@@ -432,7 +434,9 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       const w = Math.max(20, Math.round(OW * Math.max(0.05, Math.min(1, Number(ov.w) || 0.3)) / 2) * 2);
       const x = Math.round((Number(ov.x) || 0.5) * OW - w / 2), y = `${Math.round((Number(ov.y) || 0.3) * OH)}-h/2`;
       const a = Math.max(0, Number(ov.from) || 0), b = Number(ov.to) > a ? Number(ov.to) : dur + 1;
-      vf += `;[${i}:v]format=rgba,scale=${w}:-2[ov${i}];[${last}][ov${i}]overlay=x=${x}:y=${y}:enable='between(t,${a.toFixed(2)},${b.toFixed(2)})':shortest=1[ovo${i}]`;
+      const op = ov.kind === 'logo' ? Math.max(0.1, Math.min(1, Number(ov.opacity) || 1)) : 1;
+      const when = ov.kind === 'logo' ? '' : `:enable='between(t,${a.toFixed(2)},${b.toFixed(2)})'`;
+      vf += `;[${i}:v]format=rgba,scale=${w}:-2${op < 1 ? `,colorchannelmixer=aa=${op.toFixed(2)}` : ''}[ov${i}];[${last}][ov${i}]overlay=x=${x}:y=${y}${when}:shortest=1[ovo${i}]`;
       last = `ovo${i}`;
     }
     // Mi marca: marco y logo encima de todo (si el proyecto o el clip lo piden)

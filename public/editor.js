@@ -22,7 +22,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     // Pantalla dividida: segundo recuadro (el de abajo)
     split2: d.split2 ? { ...d.split2 } : { x: 0.5, y: 0, w: 0.5, h: 1 },
     font: E.font || 'DejaVu Sans',
-    titleBar: { show: !!E.titleBar?.show, text: E.titleBar?.text || '', color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || '#E11D48', size: E.titleBar?.size || 1 },
+    // Estilo del texto fijo de arriba (el gancho, durante todo el clip)
+    titleBar: { color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || 'none', size: E.titleBar?.size || 1 },
     grade: E.grade || '', adjust: { b: E.adjust?.b || 0, c: E.adjust?.c || 0, s: E.adjust?.s || 0 }, mirror: !!E.mirror, motion: E.motion || 0, speed: E.speed || 1,
     overlays: (E.overlays || []).map(o => ({ ...o })),
   };
@@ -165,27 +166,17 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     }
     ctx.restore(); ctx.filter = 'none';
     // Título fijo arriba con caja de color (todo el clip)
-    const tbText = (S.titleBar.text || S.title || '').trim();
-    let hookTop = (S.layout === 'gaming' ? Math.round(1920 * 0.355) + 40 + 40 : 190 + 40);
-    if (S.titleBar.show && tbText) {
+    const tbText = S.hookOn ? (S.hook || '').trim() : '';
+    if (tbText) {
       const size = 64 * S.titleBar.size * k; ctx.font = `800 ${size}px ${fontCss()}`;
       const words = tbText.toUpperCase().split(/\s+/), lines = []; let cur = '';
       for (const w of words) { const tryL = cur ? cur + ' ' + w : w; if (ctx.measureText(tryL).width > cwid * 0.82 && cur) { lines.push(cur); cur = w; } else cur = tryL; }
       if (cur) lines.push(cur);
       lines.forEach((line, i) => {
-        const w = ctx.measureText(line).width, x = (cwid - w) / 2, y = 110 * k + size * 0.62 + i * size * 1.2;
+        const w = ctx.measureText(line).width, x = (cwid - w) / 2, y = (S.layout === 'gaming' ? Math.round(oh * 0.355) + 40 : 110) * k + size * 0.62 + i * size * 1.2;
         if (S.titleBar.bg !== 'none') { ctx.fillStyle = S.titleBar.bg; ctx.fillRect(x - 16 * k, y - size * 0.62 - 8 * k, w + 32 * k, size * 1.24 + 16 * k); }
         else { ctx.lineWidth = size * 0.14; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round'; ctx.strokeText(line, x, y); }
         ctx.textBaseline = 'middle'; ctx.fillStyle = S.titleBar.color; ctx.fillText(line, x, y);
-      });
-      hookTop = Math.max(hookTop, 110 + lines.length * 64 * S.titleBar.size * 1.25 + 60);
-    }
-    // gancho (4 s)
-    if (S.hookOn && S.hook && t >= S.start && t < S.start + 4) {
-      const size = 80 * k; ctx.font = `800 ${size}px ${fontCss()}`;
-      const words = S.hook.toUpperCase().split(' '); const half = Math.ceil(words.length / 2);
-      [words.slice(0, half).join(' '), words.slice(half).join(' ')].filter(Boolean).forEach((line, i) => {
-        const w = ctx.measureText(line).width; drawText(line, (cwid - w) / 2, hookTop * k + i * size * 1.15, size, i ? '#fff' : S.captions.color);
       });
     }
     // subtítulos
@@ -211,9 +202,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const tc = t - S.start;
     S.overlays.forEach(o => {
       const im = ovImage(o); if (!im?.complete || !im.naturalWidth) return;
-      if (tc < (o.from || 0) || (o.to > (o.from || 0) && tc > o.to)) return;
+      if (o.kind !== 'logo' && (tc < (o.from || 0) || (o.to > (o.from || 0) && tc > o.to))) return;
       const w = cwid * o.w, h = w * im.naturalHeight / im.naturalWidth;
-      ctx.drawImage(im, o.x * cwid - w / 2, o.y * chei - h / 2, w, h);
+      ctx.globalAlpha = o.kind === 'logo' ? (o.opacity ?? 1) : 1; ctx.drawImage(im, o.x * cwid - w / 2, o.y * chei - h / 2, w, h); ctx.globalAlpha = 1;
     });
     // Mi marca: marco y logo encima de todo, como en el vídeo final
     if (S.brand) {
@@ -341,13 +332,21 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
   };
 
+  // Logo en una esquina: centro calculado con su tamaño (márgenes como los de "Mi marca")
+  const placeLogo = lg => {
+    if (!lg.pos || lg.pos === 'free') return;
+    const im = ovImage(lg), ar = im?.naturalWidth ? im.naturalHeight / im.naturalWidth : 0.5;
+    const [, ow, oh] = FORMATS[S.format], hN = lg.w * ar * ow / oh;
+    lg.x = lg.pos.endsWith('l') ? 0.045 + lg.w / 2 : lg.pos.endsWith('r') ? 1 - 0.045 - lg.w / 2 : 0.5;
+    lg.y = lg.pos.startsWith('t') ? 0.035 + hN / 2 : 1 - 0.045 - hN / 2;
+  };
   // ---------- Arrastrar fotos y logos sobre el resultado ----------
   out.onpointerdown = e => {
     const b = out.getBoundingClientRect(), px = (e.clientX - b.left) / b.width, py = (e.clientY - b.top) / b.height, tc = vid.currentTime - S.start;
-    const hit = [...S.overlays].reverse().find(o => { const im = ovImage(o); if (!im?.naturalWidth) return false; if (tc < (o.from || 0) || (o.to > (o.from || 0) && tc > o.to)) return false;
+    const hit = [...S.overlays].reverse().find(o => { const im = ovImage(o); if (!im?.naturalWidth) return false; if (o.kind !== 'logo' && (tc < (o.from || 0) || (o.to > (o.from || 0) && tc > o.to))) return false;
       const hw = o.w / 2, hh = o.w * im.naturalHeight / im.naturalWidth * (out.width / out.height) / 2; return Math.abs(px - o.x) < hw && Math.abs(py - o.y) < hh; });
     if (!hit) return;
-    e.preventDefault(); const x0 = hit.x, y0 = hit.y;
+    e.preventDefault(); const x0 = hit.x, y0 = hit.y; if (hit.kind === 'logo') hit.pos = 'free';
     const move = ev => { hit.x = Math.max(0, Math.min(1, x0 + (ev.clientX - e.clientX) / b.width)); hit.y = Math.max(0, Math.min(1, y0 + (ev.clientY - e.clientY) / b.height)); render(); };
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); changed(); };
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
@@ -377,10 +376,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       P2.innerHTML = `
       <h4>▾ Letra</h4>
       <select data-s="font" style="font-family:${esc(fontCss())}">${opt(d.fonts || { 'DejaVu Sans': 'Clásica' }, S.font)}</select>
-      <h4>▾ Título fijo arriba <span class="small muted">(todo el clip)</span></h4>
-      <label class="check"><input type="checkbox" data-s="tbshow" ${S.titleBar.show ? 'checked' : ''}> Mostrar título encima del vídeo</label>
-      ${S.titleBar.show ? `<input data-s="tbtext" value="${esc(S.titleBar.text)}" placeholder="${esc(S.title || 'Título del clip')}">
-      <div class="row"><span class="small" style="width:70px">Texto</span><input type="color" data-s="tbcolor" value="${S.titleBar.color}" style="width:50px;height:34px;padding:2px">
+      <h4>▾ Texto fijo arriba <span class="small muted">(el gancho, todo el clip)</span></h4>
+      <div class="row"><input data-s="hook" value="${esc(S.hook)}" style="flex:1" placeholder="Escribe el gancho"><label class="check" style="margin:0"><input type="checkbox" data-s="hookOn" ${S.hookOn ? 'checked' : ''}> Mostrar</label></div>
+      ${S.hookOn ? `<div class="row"><span class="small" style="width:70px">Texto</span><input type="color" data-s="tbcolor" value="${S.titleBar.color}" style="width:50px;height:34px;padding:2px">
         <span class="small">Caja</span><input type="color" data-s="tbbg" value="${S.titleBar.bg === 'none' ? '#E11D48' : S.titleBar.bg}" style="width:50px;height:34px;padding:2px" ${S.titleBar.bg === 'none' ? 'disabled' : ''}>
         <label class="check" style="margin:0"><input type="checkbox" data-s="tbnobg" ${S.titleBar.bg === 'none' ? 'checked' : ''}> Sin caja</label></div>
       <div class="row"><span class="small" style="width:70px">Tamaño</span><input type="range" data-s="tbsize" min="0.6" max="1.6" step="0.05" value="${S.titleBar.size}" style="flex:1"></div>` : ''}
@@ -393,8 +391,6 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <div class="row"><span class="small" style="width:70px">Activa</span><input type="color" data-s="ccolor" value="${S.captions.color}" style="width:50px;height:34px;padding:2px">
         <label class="check" style="margin:0"><input type="checkbox" data-s="cupper" ${S.captions.upper ? 'checked' : ''}> MAYÚSCULAS</label></div>
       <div class="row"><span class="small" style="width:70px">Palabras</span><input type="number" data-s="cwpg" min="1" max="8" value="${S.captions.wpg}" style="width:70px"><span class="small muted">por subtítulo</span></div>
-      <h4>▾ Gancho (4 s arriba)</h4>
-      <div class="row"><input data-s="hook" value="${esc(S.hook)}" style="flex:1"><label class="check" style="margin:0"><input type="checkbox" data-s="hookOn" ${S.hookOn ? 'checked' : ''}> Mostrar</label></div>
       <label class="check"><input type="checkbox" data-s="emojis" ${S.emojis ? 'checked' : ''}> Emojis animados</label>
       <h4>▾ Mi marca</h4>
       ${BR.logoUrl || BR.frameUrl ? `<label class="check"><input type="checkbox" data-s="brand" ${S.brand ? 'checked' : ''}> Poner mi logo y marco</label>` : '<div class="small muted">Sube tu logo o marco en Convertir a Clips, Clips de directos o Multi Edit (recuadro 🎨 Mi marca).</div>'}
@@ -428,14 +424,20 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <div class="ed-speed">${[1, 1.1, 1.2, 1.25, 1.5].map(v => `<button class="btn sm ${S.speed === v ? 'gold' : ''}" data-speed="${v}">${v === 1 ? 'Normal' : v + 'x'}</button>`).join('')}</div>
       <div class="small muted">Más rápido = más ritmo y retención. El clip dura ${((S.end - S.start) / S.speed).toFixed(1)} s.</div>`;
     else if (tab === 5) P2.innerHTML = `
-      <h4>▾ Fotos y logos <span class="small muted">(arrástralos sobre el resultado)</span></h4>
-      <button class="btn sm" id="addPhoto">🖼 Añadir foto o logo</button><input type="file" id="photoFile" accept="image/png,image/jpeg,image/webp" hidden>
-      <div class="small muted">Mejor PNG con fondo transparente. Se colocan encima del vídeo, por debajo de tu marca.</div>
-      ${S.overlays.map((o, i) => `<div class="ed-ov"><img src="${esc(o.url || '')}"><div class="stack" style="gap:4px;flex:1">
+      <h4>▾ 🏷 Logo <span class="small muted">(todo el clip)</span></h4>
+      ${(() => { const li = S.overlays.findIndex(o => o.kind === 'logo'), lg = S.overlays[li]; return lg ? `<div class="ed-ov"><img src="${esc(lg.url || '')}"><div class="stack" style="gap:4px;flex:1">
+        <div class="row"><span class="small" style="width:64px">Posición</span><select data-lpos="${li}" style="flex:1">${opt({ tl: '↖ Arriba izquierda', tr: '↗ Arriba derecha', bl: '↙ Abajo izquierda', br: '↘ Abajo derecha', tc: '⬆ Arriba centro', bc: '⬇ Abajo centro', free: '✋ Donde lo arrastre' }, lg.pos || 'free')}</select></div>
+        <div class="row"><span class="small" style="width:64px">Tamaño</span><input type="range" data-ov="${li}" data-ok="w" min="0.05" max="0.6" step="0.01" value="${lg.w}" style="flex:1"></div>
+        <div class="row"><span class="small" style="width:64px">Opacidad</span><input type="range" data-ov="${li}" data-ok="opacity" min="0.1" max="1" step="0.05" value="${lg.opacity ?? 1}" style="flex:1"></div>
+        <div class="row"><button class="btn sm" id="changeLogo">Cambiar logo</button><button class="btn sm red" data-ovx="${li}">✕ Quitar</button></div></div></div>` : '<button class="btn sm" id="addLogo">🏷 Añadir logo</button>'; })()}
+      <div class="small muted">Mejor PNG con fondo transparente.</div>
+      <h4>▾ 🖼 Fotos <span class="small muted">(arrástralas sobre el resultado)</span></h4>
+      <button class="btn sm" id="addPhoto">🖼 Añadir foto</button><input type="file" id="photoFile" accept="image/png,image/jpeg,image/webp" hidden>
+      ${S.overlays.map((o, i) => o.kind === 'logo' ? '' : `<div class="ed-ov"><img src="${esc(o.url || '')}"><div class="stack" style="gap:4px;flex:1">
         <div class="row"><span class="small" style="width:56px">Tamaño</span><input type="range" data-ov="${i}" data-ok="w" min="0.05" max="1" step="0.01" value="${o.w}" style="flex:1"></div>
         <div class="row small"><span>Desde ${(o.from || 0).toFixed(1)} s</span><button class="btn sm" data-ovt="${i}:from">⏱ desde aquí</button><span>Hasta ${o.to > (o.from || 0) ? o.to.toFixed(1) + ' s' : 'el final'}</span><button class="btn sm" data-ovt="${i}:to">⏱ hasta aquí</button></div>
         <div class="row"><button class="btn sm" data-ovc="${i}">Centrar</button><button class="btn sm red" data-ovx="${i}">✕ Quitar</button></div></div></div>`).join('')}
-      ${S.overlays.length ? '<button class="btn sm gold" id="ovAll">📌 Poner estas fotos en TODOS los clips</button>' : ''}`;
+      ${S.overlays.length ? '<button class="btn sm gold" id="ovAll">📌 Poner el logo y las fotos en TODOS los clips</button>' : ''}`;
     else P2.innerHTML = `<h4>▾ Plantillas de subtítulos</h4><div class="ed-tpl">${Object.entries(d.styles).map(([k, v]) => `<button class="ed-tplc ${S.captions.style === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(v.label.split(' (')[0])}</b><span class="small muted">${esc((v.label.match(/\((.*)\)/) || [])[1] || '')}</span></button>`).join('')}</div>
       <h4>▾ Mi plantilla</h4><div class="row"><button class="btn sm" id="saveTpl">💾 Guardar estos ajustes</button><button class="btn sm" id="applyTpl">Aplicar mi plantilla</button></div>
       <div class="small muted">Guarda formato, encuadre, estilo, tamaño, posición y color de subtítulos para aplicarlos a otros clips.</div>
@@ -463,12 +465,10 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'cupper') S.captions.upper = v;
       else if (k === 'cwpg') S.captions.wpg = Math.max(1, Math.min(8, Number(v) || 1));
       else if (k === 'hook') S.hook = v;
-      else if (k === 'hookOn') S.hookOn = v;
+      else if (k === 'hookOn') { S.hookOn = v; pane(); }
       else if (k === 'emojis') S.emojis = v;
       else if (k === 'brand') S.brand = v;
       else if (k === 'font') { S.font = v; loadFont(v); el.style.fontFamily = fontCss(); }
-      else if (k === 'tbshow') { S.titleBar.show = v; pane(); }
-      else if (k === 'tbtext') S.titleBar.text = v;
       else if (k === 'tbcolor') S.titleBar.color = v;
       else if (k === 'tbbg') S.titleBar.bg = v;
       else if (k === 'tbnobg') { S.titleBar.bg = v ? 'none' : '#E11D48'; pane(); }
@@ -506,15 +506,24 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => { S.speed = Number(b.dataset.speed); vid.playbackRate = S.speed; changed(); pane(); });
     // Fotos y logos
     const ap2 = P2.querySelector('#addPhoto'), pf = P2.querySelector('#photoFile');
-    if (ap2) ap2.onclick = () => { pf.value = ''; pf.click(); };
+    let upKind = 'photo';
+    const pickFile = kind => { upKind = kind; pf.value = ''; pf.click(); };
+    if (ap2) ap2.onclick = () => pickFile('photo');
+    P2.querySelectorAll('#addLogo, #changeLogo').forEach(b => b.onclick = () => pickFile('logo'));
     if (pf) pf.onchange = () => busy(ap2, async () => {
       const f = pf.files[0]; if (!f) return;
       const fd = new FormData(); fd.append('file', f, f.name);
       const r = await fetch('/api/upload', { method: 'POST', body: fd }).then(x => x.json());
       if (!r.ref) throw new Error(r.error || 'No se pudo subir la imagen.');
-      S.overlays.push({ ref: r.ref, url: r.url, x: 0.5, y: 0.3, w: 0.35, from: 0, to: 0 }); changed(); pane(); render();
+      if (upKind === 'logo') {
+        const old = S.overlays.find(o => o.kind === 'logo');
+        if (old) Object.assign(old, { ref: r.ref, url: r.url });
+        else { const lg = { kind: 'logo', ref: r.ref, url: r.url, w: 0.2, opacity: 0.9, pos: 'tr', from: 0, to: 0 }; placeLogo(lg); S.overlays.push(lg); }
+      } else S.overlays.push({ kind: 'photo', ref: r.ref, url: r.url, x: 0.5, y: 0.4, w: 0.35, from: 0, to: 0 });
+      changed(); pane(); render();
     });
-    P2.querySelectorAll('[data-ok]').forEach(inp => inp.oninput = () => { S.overlays[inp.dataset.ov][inp.dataset.ok] = Number(inp.value); changed(); render(); });
+    P2.querySelectorAll('[data-lpos]').forEach(sel => sel.onchange = () => { const lg = S.overlays[sel.dataset.lpos]; lg.pos = sel.value; placeLogo(lg); changed(); render(); });
+    P2.querySelectorAll('[data-ok]').forEach(inp => inp.oninput = () => { const o = S.overlays[inp.dataset.ov]; o[inp.dataset.ok] = Number(inp.value); if (o.kind === 'logo') placeLogo(o); changed(); render(); });
     P2.querySelectorAll('[data-ovt]').forEach(b => b.onclick = () => { const [i, k] = b.dataset.ovt.split(':'); S.overlays[i][k] = Math.max(0, +(vid.currentTime - S.start).toFixed(2)); changed(); pane(); render(); });
     P2.querySelectorAll('[data-ovc]').forEach(b => b.onclick = () => { Object.assign(S.overlays[b.dataset.ovc], { x: 0.5, y: 0.5 }); changed(); render(); });
     P2.querySelectorAll('[data-ovx]').forEach(b => b.onclick = () => { S.overlays.splice(Number(b.dataset.ovx), 1); changed(); pane(); render(); });
