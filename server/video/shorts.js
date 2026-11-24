@@ -510,13 +510,37 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       if (hasA) { const src = amap === '0:a?' ? '[0:a]' : amap; vf += `;${src}atempo=${speed.toFixed(3)}[asp]`; amap = '[asp]'; }
       outDur = dur / speed;
     }
+    // Vídeo final (outro): se pega detrás del clip, ajustado al formato (sin recortar) y con su sonido
+    let totalDur = outDur;
+    if (!lang && E?.outro?.ref) {
+      const oi = parts.length + extra.filter(x => x === '-i').length;
+      const oinfo = await probe(inputPath(E.outro.ref)).catch(() => null);
+      if (oinfo?.hasVideo && oinfo.duration > 0.3) {
+        extra.push('-i', inputPath(E.outro.ref));
+        const ow = Q.W, oh = Math.round(Q.W * OH / OW / 2) * 2, od = Math.min(60, oinfo.duration);
+        const hasA = amap !== '0:a?' || (await probe(inputs[0]).catch(() => ({ hasAudio: true }))).hasAudio;
+        const am = amap === '0:a?' ? (hasA ? '[0:a]' : null) : amap;
+        vf = vf.replace(/\[v\]$/, '[vmain]').replace(/\[v\](?=;)/, '[vmain]');
+        vf += `;[vmain]trim=0:${outDur.toFixed(3)},setpts=PTS-STARTPTS,fps=30,format=yuv420p,setsar=1[vm2]`;
+        vf += am ? `;${am}atrim=0:${outDur.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[am2]`
+          : `;anullsrc=r=48000:cl=stereo,atrim=0:${outDur.toFixed(3)},aformat=sample_fmts=fltp:channel_layouts=stereo[am2]`;
+        // si el final no es vertical, el hueco se rellena con el propio final difuminado (sin barras negras)
+        vf += `;[${oi}:v]trim=0:${od.toFixed(3)},setpts=PTS-STARTPTS,fps=30,split=2[obg][ofg]`;
+        vf += `;[obg]scale=${ow / 4}:${oh / 4}:force_original_aspect_ratio=increase,crop=${ow / 4}:${oh / 4},boxblur=10:2,scale=${ow}:${oh},eq=brightness=-0.06[obgb]`;
+        vf += `;[ofg]scale=${ow}:${oh}:force_original_aspect_ratio=decrease[ofgs];[obgb][ofgs]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setsar=1[ov2]`;
+        vf += oinfo.hasAudio ? `;[${oi}:a]atrim=0:${od.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[oa2]`
+          : `;anullsrc=r=48000:cl=stereo,atrim=0:${od.toFixed(3)},aformat=sample_fmts=fltp:channel_layouts=stereo[oa2]`;
+        vf += `;[vm2][am2][ov2][oa2]concat=n=2:v=1:a=1[v][afin]`;
+        amap = '[afin]'; totalDur = outDur + od;
+      }
+    }
     await prog('Renderizando', 0, true);
     const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', (x.dur + 0.5).toFixed(3)] : []), '-i', inputs[i]]);
-    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', outDur.toFixed(3),
+    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', totalDur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', amap,
       '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
-      onProgress: sec => prog('Renderizando', (sec / outDur) * 95),
+      onProgress: sec => prog('Renderizando', (sec / totalDur) * 95),
       timeoutMs: ctx.remaining() - 15000, // parar antes de que el servidor corte la función
     });
     await prog('Guardando', 97, true);

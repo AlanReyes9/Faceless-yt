@@ -811,7 +811,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
-    fonts: FONTS, split2: E.split2 || null,
+    fonts: FONTS, split2: E.split2 || null, outros: outroOut(await getOutros()),
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
@@ -858,6 +858,8 @@ function editLook(b, prev, num) {
   pick('mirror', v => !!v);
   pick('motion', v => num(v, 0, 30, 0));
   pick('speed', v => num(v, 1, 1.5, 1));
+  pick('outro', v => v && typeof v === 'object' && typeof v.ref === 'string' && v.ref.length < 400 && !/[\s"']/.test(v.ref) ? { ref: v.ref, name: String(v.name || '').slice(0, 60), dur: num(v.dur, 0, 60, 0) } : null);
+  if (b.outro === null) delete out.outro;
   pick('split2', v => rectOk(v, num));
   pick('overlays', v => Array.isArray(v) ? v.slice(0, 10).filter(o => o && typeof o.ref === 'string' && o.ref.length < 400 && !/[\s"']/.test(o.ref)).map(o => ({
     ref: o.ref, url: String(o.url || '').slice(0, 500), kind: o.kind === 'logo' ? 'logo' : 'photo', opacity: num(o.opacity, 0.1, 1, 1), nobg: !!o.nobg, ...(typeof o.orig === 'object' && o.orig?.ref && !/[\s"']/.test(o.orig.ref) ? { orig: { ref: String(o.orig.ref).slice(0, 400), url: String(o.orig.url || '').slice(0, 500) } } : {}), pos: ['tl', 'tr', 'tc', 'bl', 'br', 'bc', 'free'].includes(o.pos) ? o.pos : undefined, x: num(o.x, 0, 1, 0.5), y: num(o.y, 0, 1, 0.3), w: num(o.w, 0.05, 1, 0.3), from: num(o.from, 0, 1e5, 0), to: num(o.to, 0, 1e5, 0) })) : null);
@@ -870,7 +872,7 @@ app.post('/api/projects/:id/apply-style', h(async (req, res) => {
   if (!src || String(src.project_id) !== String(req.params.id)) throw new Error('Clip no encontrado.');
   const what = new Set(Array.isArray(req.body?.what) ? req.body.what : ['text', 'look', 'photos']);
   const E = src.edit || {};
-  const KEYS = { text: ['captions', 'font', 'titleBar', 'hookOn', 'emojis', 'brand'], look: ['grade', 'adjust', 'mirror', 'motion', 'speed', 'format'], photos: ['overlays'] };
+  const KEYS = { text: ['captions', 'font', 'titleBar', 'hookOn', 'emojis', 'brand'], look: ['grade', 'adjust', 'mirror', 'motion', 'speed', 'format', 'outro'], photos: ['overlays'] };
   const keys = [...what].flatMap(w => KEYS[w] || []);
   const others = await q('SELECT * FROM clips WHERE project_id = $1 AND id <> $2', [src.project_id, src.id]);
   for (const c of others) {
@@ -958,6 +960,38 @@ app.delete('/api/clips/:id', h(async (req, res) => {
   await q('DELETE FROM clips WHERE id = $1', [c.id]);
   res.json({ ok: true });
 }));
+// ---------- Vídeos finales (outros): hasta 10, guardados para todos los clips ----------
+async function getOutros() { try { const v = JSON.parse(await getSetting('outros') || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } }
+const outroOut = list => list.map((o, i) => ({ n: i + 1, ref: o.ref, name: o.name, dur: o.dur, url: publicUrl(o.ref) }));
+app.get('/api/outros', h(async (req, res) => res.json(outroOut(await getOutros()))));
+app.post('/api/outros', h(async (req, res) => {
+  const ref = String(req.body?.ref || '');
+  if (!ref || ref.length > 400 || /[\s"']/.test(ref)) throw new Error('Vídeo no válido.');
+  const list = await getOutros();
+  if (list.length >= 10) throw new Error('Ya tienes 10 finales: borra uno para añadir otro.');
+  const info = await probe(inputPath(ref)).catch(() => null);
+  if (!info?.hasVideo || !(info.duration > 0.3)) throw new Error('No se pudo leer el vídeo final.');
+  if (info.duration > 60) throw new Error('El final puede durar como máximo 60 segundos.');
+  list.push({ ref, name: String(req.body?.name || `Final ${list.length + 1}`).replace(/\.[^.]+$/, '').slice(0, 60), dur: +info.duration.toFixed(2) });
+  await setSettings({ outros: JSON.stringify(list) });
+  res.json(outroOut(list));
+}));
+app.put('/api/outros/:n', h(async (req, res) => {
+  const list = await getOutros(), i = Number(req.params.n) - 1;
+  if (!list[i]) throw new Error('Ese final no existe.');
+  list[i].name = String(req.body?.name || list[i].name).slice(0, 60);
+  await setSettings({ outros: JSON.stringify(list) });
+  res.json(outroOut(list));
+}));
+app.delete('/api/outros/:n', h(async (req, res) => {
+  const list = await getOutros(), i = Number(req.params.n) - 1;
+  if (!list[i]) throw new Error('Ese final no existe.');
+  list.splice(i, 1);
+  // los clips guardan el final por su archivo, así que borrar uno no cambia los demás
+  await setSettings({ outros: JSON.stringify(list) });
+  res.json(outroOut(list));
+}));
+
 // ---------- Mi marca (logo y marco) ----------
 app.get('/api/brand', h(async (req, res) => { const { getBrand } = await import('./brand.js'); const b = await getBrand(); res.json({ ...b, logo: undefined, frame: undefined, hasLogo: !!b.logo, hasFrame: !!b.frame }); }));
 app.put('/api/brand', h(async (req, res) => {

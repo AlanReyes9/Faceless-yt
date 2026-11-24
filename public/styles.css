@@ -372,3 +372,8 @@ kbd { border: 1px solid var(--line, #444); border-bottom-width: 2px; border-radi
 .ed-ov { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border: 1px solid var(--line, #2a2d35); border-radius: 10px; margin-top: 8px; }
 .ed-ov img { width: 56px; height: 56px; object-fit: contain; background: repeating-conic-gradient(#333 0 25%, #222 0 50%) 0 0/12px 12px; border-radius: 6px; }
 .ed-speed { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+
+/* Editor: vídeos finales */
+.ed-outros { margin-top: 6px; }
+.ed-outro { gap: 6px; margin-top: 6px; }
+.ed-outro video { width: 34px; height: 60px; object-fit: cover; border-radius: 4px; background: #000; }

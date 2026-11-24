@@ -68,6 +68,7 @@ export const FIELDS = {
   brand_pos: { secret: false, default: 'tr', label: 'Posición del logo', group: 'Marca' },
   brand_size: { secret: false, default: '0.2', label: 'Tamaño del logo', group: 'Marca' },
   brand_opacity: { secret: false, default: '0.9', label: 'Opacidad del logo', group: 'Marca' },
+  outros: { secret: false, default: '[]', label: 'Vídeos finales', group: 'Marca' },
   whisper_model: { secret: false, default: 'small', label: 'Modelo de transcripción local', options: ['base', 'small', 'small-q5_1', 'large-v3-turbo', 'medium'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },

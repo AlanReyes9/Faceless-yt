@@ -26,7 +26,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     titleBar: { color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || 'none', size: E.titleBar?.size || 1 },
     grade: E.grade || '', adjust: { b: E.adjust?.b || 0, c: E.adjust?.c || 0, s: E.adjust?.s || 0 }, mirror: !!E.mirror, motion: E.motion || 0, speed: E.speed || 1,
     overlays: (E.overlays || []).map(o => ({ ...o })),
+    outro: E.outro || null,
   };
+  let OUTROS = d.outros || [];
   S.captions.textColor = E.captions?.textColor || '#FFFFFF';
   // Letras: se cargan en el navegador para que la vista previa sea igual que el vídeo final
   const FONT_FILES = { 'DejaVu Sans': 'DejaVuSans-Bold.ttf', 'Anton': 'Anton-Regular.ttf', 'Bebas Neue': 'BebasNeue-Regular.ttf', 'Poppins Black': 'Poppins-Black.ttf',
@@ -412,6 +414,13 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <div class="row"><span class="small" style="width:50px">Fin</span><input data-s="tend" value="${fmtT(S.end)}" style="flex:1"><button class="btn sm" data-nudge="end:-0.5">-0,5</button><button class="btn sm" data-nudge="end:0.5">+0,5</button></div>
       <div class="row"><button class="btn sm" id="setin">⟦ Inicio en el cabezal</button><button class="btn sm" id="setout">Fin en el cabezal ⟧</button></div>
       <div class="small muted">También puedes arrastrar los bordes verdes de la línea de tiempo.</div>
+      <h4>▾ 🎬 Vídeo final <span class="small muted">(se añade al acabar el clip)</span></h4>
+      <select data-s="outro">${opt({ '': 'Sin final', ...Object.fromEntries(OUTROS.map(o => [o.ref, `Final ${o.n} · ${o.name} (${o.dur.toFixed(1)} s)`])) }, S.outro?.ref || '')}</select>
+      ${S.outro && !OUTROS.some(o => o.ref === S.outro.ref) ? `<div class="small warn-txt">Este clip usa un final que ya no está en tu lista (${esc(S.outro.name || '')}).</div>` : ''}
+      <details class="ed-outros"><summary class="small">Mis finales (${OUTROS.length}/10)</summary>
+        ${OUTROS.map(o => `<div class="row ed-outro"><video src="${esc(o.url)}" muted preload="metadata"></video><input value="${esc(o.name)}" data-oname="${o.n}" style="flex:1"><span class="small muted">${o.dur.toFixed(1)} s</span><button class="btn sm red" data-odel="${o.n}" title="Borrar este final">✕</button></div>`).join('') || '<div class="small muted">Aún no has subido ningún final.</div>'}
+        ${OUTROS.length < 10 ? '<button class="btn sm" id="addOutro">➕ Subir un vídeo final</button><input type="file" id="outroFile" accept="video/*" hidden>' : '<div class="small muted">Tienes 10 finales (el máximo): borra uno para subir otro.</div>'}
+        <div class="small muted">Se guardan para todos tus clips. Vídeos de hasta 60 s; se ajustan al formato sin recortarse.</div></details>
       <h4>▾ Edición automática</h4>
       <label class="check"><input type="checkbox" data-s="acRetakes" ${S.autocut.retakes ? 'checked' : ''}> ✂️ Cortar retomas y falsos comienzos (IA)</label>
       <label class="check" style="margin-left:22px"><input type="checkbox" data-s="acCondense" ${S.autocut.condense ? 'checked' : ''} ${S.autocut.retakes ? '' : 'disabled'}> Condensar ideas redundantes</label>
@@ -455,7 +464,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <div class="small muted">Guarda formato, encuadre, estilo, tamaño, posición y color de subtítulos para aplicarlos a otros clips.</div>
       <h4>▾ Aplicar a TODOS los clips de este proyecto</h4>
       <label class="check"><input type="checkbox" id="allText" checked> Letra, título fijo y subtítulos</label>
-      <label class="check"><input type="checkbox" id="allLook" checked> Imagen: color, ajustes, espejo, movimiento y velocidad</label>
+      <label class="check"><input type="checkbox" id="allLook" checked> Imagen: color, ajustes, espejo, movimiento, velocidad y vídeo final</label>
       <label class="check"><input type="checkbox" id="allPhotos"> Fotos y logos</label>
       <button class="btn sm gold" id="applyAll">✨ Aplicar a todos los clips</button>
       <div class="small muted">Se guardan los cambios de este clip y los demás clips se vuelven a renderizar con ese estilo.</div>`;
@@ -489,6 +498,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'grade') S.grade = v;
       else if (k === 'adjb' || k === 'adjc' || k === 'adjs') { S.adjust[k.slice(3)] = Number(v); el.nextElementSibling.textContent = v; }
       else if (k === 'mirror') S.mirror = v;
+      else if (k === 'outro') { const o = OUTROS.find(x => x.ref === v); S.outro = o ? { ref: o.ref, name: o.name, dur: o.dur } : null; }
       else if (k === 'motion') S.motion = Number(v);
       else if (k === 'acRetakes') { S.autocut.retakes = v; if (!v) S.autocut.condense = false; pane(); }
       else if (k === 'acCondense') S.autocut.condense = v;
@@ -514,6 +524,21 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const ap = P2.querySelector('#applyTpl'); if (ap) ap.onclick = () => { try { const t = JSON.parse(localStorage.getItem('clipTemplate') || 'null'); if (!t) return toast('Aún no has guardado una plantilla', 'bad');
       Object.assign(S, { format: t.format, layout: t.layout }); Object.assign(S.crop, t.crop); S.captions = { ...S.captions, ...t.captions }; sizeOut(); changed(); pane(); render(); } catch {} };
     P2.querySelectorAll('[data-nudge]').forEach(nudgeBtn);
+    // Vídeos finales: subir, renombrar y borrar
+    const ao = P2.querySelector('#addOutro'), of = P2.querySelector('#outroFile');
+    if (ao) ao.onclick = () => { of.value = ''; of.click(); };
+    if (of) of.onchange = () => busy(ao, async () => {
+      const f = of.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f, f.name);
+      const r = await fetch('/api/upload', { method: 'POST', body: fd }).then(x => x.json());
+      if (!r.ref) throw new Error(r.error || 'No se pudo subir el vídeo.');
+      OUTROS = await api('/api/outros', { method: 'POST', body: { ref: r.ref, name: f.name } });
+      const last = OUTROS[OUTROS.length - 1]; S.outro = { ref: last.ref, name: last.name, dur: last.dur };
+      toast(`🎬 Final ${last.n} guardado y añadido a este clip`, 'good'); changed(); pane(); P2.querySelector('.ed-outros').open = true;
+    });
+    P2.querySelectorAll('[data-oname]').forEach(inp => inp.onchange = async () => { try { OUTROS = await api('/api/outros/' + inp.dataset.oname, { method: 'PUT', body: { name: inp.value } }); } catch (e) { toast(e.message, 'bad'); } });
+    P2.querySelectorAll('[data-odel]').forEach(b => b.onclick = () => { if (!confirm('¿Borrar este final de tu lista? Los clips ya exportados no cambian.')) return; busy(b, async () => {
+      OUTROS = await api('/api/outros/' + b.dataset.odel, { method: 'DELETE' }); pane(); P2.querySelector('.ed-outros').open = true; }); });
     const ar = P2.querySelector('#adjReset'); if (ar) ar.onclick = () => { S.adjust = { b: 0, c: 0, s: 0 }; changed(); pane(); render(); };
     P2.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => { S.speed = Number(b.dataset.speed); vid.playbackRate = S.speed; changed(); pane(); });
     // Fotos y logos
@@ -571,13 +596,13 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   let saveT = null;
   const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, autocut: S.autocut, format: S.format,
     layout: ['blur', 'gaming', 'split'].includes(S.layout) ? S.layout : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
-    font: S.font, titleBar: S.titleBar, grade: S.grade, adjust: S.adjust, mirror: S.mirror, motion: S.motion, speed: S.speed, overlays: S.overlays,
+    font: S.font, titleBar: S.titleBar, outro: S.outro, grade: S.grade, adjust: S.adjust, mirror: S.mirror, motion: S.motion, speed: S.speed, overlays: S.overlays,
     ...(S.layout === 'split' ? { facecam: S.facecam, split2: S.split2 } : {}),
     ...(S.layout === 'gaming' && S.facecamSet ? { facecam: S.facecam } : {}),
     ...(wordsDirty ? { words: S.words, wordsFrom: WIN.from, wordsTo: WIN.to } : {}), render });
   const changed = (save = true) => {
     if (save) $e('#saved').textContent = 'Guardando…';
-    $e('#exportInfo').textContent = `Duración ${((S.end - S.start) / S.speed).toFixed(1)} s · ${FORMATS[S.format][0].split(' (')[0]} ${FORMATS[S.format][1]}×${FORMATS[S.format][2]}`;
+    $e('#exportInfo').textContent = `Duración ${((S.end - S.start) / S.speed + (S.outro?.dur || 0)).toFixed(1)} s${S.outro ? ' (con final)' : ''} · ${FORMATS[S.format][0].split(' (')[0]} ${FORMATS[S.format][1]}×${FORMATS[S.format][2]}`;
     if (!save) return drawTimeline();
     clearTimeout(saveT);
     saveT = setTimeout(async () => { try { await api(`/api/clips/${clipId}/edit`, { method: 'PUT', body: body(false) }); $e('#saved').textContent = '✓ Guardado'; } catch (e) { $e('#saved').textContent = '⚠ ' + e.message; } }, 1200);
