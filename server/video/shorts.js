@@ -111,22 +111,40 @@ register('shorts.transcribe', async ({ id, chunk }) => {
 // ---------- Paso 3: la IA elige los clips ----------
 export async function pickClips(transcript, sig, opts) {
   const { count } = opts;
-  // IA local (contexto limitado): los vídeos largos se analizan por partes y se juntan los mejores momentos
   const all = transcript.segments.map(s => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}${sig.tags(s.start, s.end)}`);
-  const LIMIT = 55000;
-  if ((await getSetting('llm_provider')) === 'local' && all.join('\n').length > LIMIT) {
+  // Analiza el texto por partes de como mucho `limit` caracteres y junta los mejores momentos.
+  // waitMs: pausa entre partes (límites de tokens por minuto de los planes gratuitos, p. ej. Groq).
+  const inParts = async (limit, waitMs = 0, label = 'La IA') => {
     const parts = []; let cur = [], len = 0;
-    transcript.segments.forEach((s, i) => { cur.push(s); len += all[i].length + 1; if (len > LIMIT) { parts.push(cur); cur = []; len = 0; } });
+    transcript.segments.forEach((s, i) => { if (len + all[i].length > limit && cur.length) { parts.push(cur); cur = []; len = 0; } cur.push(s); len += all[i].length + 1; });
     if (cur.length) parts.push(cur);
+    if (parts.length === 1) return pickClipsOnce(transcript, sig, opts);
     const per = Math.max(2, Math.ceil(count * 1.5 / parts.length));
-    const found = [];
+    const found = []; let failed = 0, lastErr;
     for (const [i, segs] of parts.entries()) {
-      opts.onProgress?.(`La IA local analiza la parte ${i + 1} de ${parts.length}…`);
-      found.push(...await pickClipsOnce({ ...transcript, segments: segs }, sig, { ...opts, count: per, onProgress: t => opts.onProgress?.(`Parte ${i + 1} de ${parts.length} · ${t}`) }).catch(e => { console.warn('parte', i, e.message); return []; }));
+      if (i && waitMs) { opts.onProgress?.(`Esperando ${Math.round(waitMs / 1000)} s por el límite por minuto de la IA (parte ${i + 1} de ${parts.length})…`); await new Promise(r => setTimeout(r, waitMs)); }
+      opts.onProgress?.(`${label} analiza la parte ${i + 1} de ${parts.length}…`);
+      found.push(...await pickClipsOnce({ ...transcript, segments: segs }, sig, { ...opts, count: per, onProgress: t => opts.onProgress?.(`Parte ${i + 1} de ${parts.length} · ${t}`) })
+        .catch(e => { console.warn('parte', i, e.message); failed++; lastErr = e; return []; }));
     }
+    if (failed === parts.length) throw lastErr;
     return found.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)).slice(0, count + 3);
+  };
+  // IA local (contexto limitado): los vídeos largos se analizan por partes
+  if ((await getSetting('llm_provider')) === 'local' && all.join('\n').length > 55000) return inParts(55000, 0, 'La IA local');
+  try {
+    return await pickClipsOnce(transcript, sig, opts);
+  } catch (e) {
+    // «Request too large» / límite de tokens (por minuto o de contexto): se repite en trozos que quepan
+    const msg = String(e.message || '');
+    if (!/\(413\)|too large|tokens per minute|TPM|ITPM|context length|maximum context|too many tokens|reduce your message/i.test(msg)) throw e;
+    const lim = Number((msg.match(/Limit[:\s]+(\d{3,7})/i) || [])[1]) || 6000;
+    // ~3,2 caracteres por token en español con marcas de tiempo; se reservan ~1.800 tokens para las instrucciones
+    const chars = Math.max(3000, Math.floor((lim * 0.85 - 1800) * 3.2));
+    const perMinute = /per minute|TPM|ITPM/i.test(msg);
+    console.warn(`[IA] texto demasiado grande para el límite (${lim} tokens${perMinute ? '/min' : ''}): se analiza por partes de ${chars} caracteres`);
+    return inParts(chars, perMinute ? (Number(process.env.LLM_TPM_WAIT_MS) || 62000) : 0);
   }
-  return pickClipsOnce(transcript, sig, opts);
 }
 
 async function pickClipsOnce(transcript, sig, { count, minSec, maxSec, language, onProgress, strict }) {

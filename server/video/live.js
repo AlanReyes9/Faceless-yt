@@ -268,7 +268,7 @@ async function batchClips(id, seg, o, last) {
     await stage(`la IA busca los mejores momentos de ${fmtMin(winEnd - winStart)} grabados…`);
     const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
     const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;
-    const picked = await pickClips(transcript, sig, { count: Math.min(10, Number(o.perSegment) || 3), minSec, maxSec, language: o.titleLanguage, strict: true });
+    const picked = await pickClips(transcript, sig, { count: Math.min(10, Number(o.perSegment) || 3), minSec, maxSec, language: o.titleLanguage, strict: true, onProgress: t => stage(String(t).slice(0, 160)) });
     const existing = await q('SELECT start, "end" FROM clips WHERE project_id = $1', [id]);
     let idx = (await one('SELECT COALESCE(MAX(idx), 0)::int AS n FROM clips WHERE project_id = $1', [id])).n;
     const minScore = Number(o.minScore) || 7;
@@ -333,7 +333,7 @@ register('live.analyze', async ({ id, seg, last, batch }, ctx) => {
     await stage('la IA busca los mejores momentos…');
     const sig = buildSignals({ energy: transcript.energy, words: transcript.words, cuts: [] });
     const minSec = Number(o.minSec) || 15, maxSec = Number(o.maxSec) || 60;
-    const picked = await pickClips(transcript, sig, { count: Number(o.perSegment) || 3, minSec, maxSec, language: o.titleLanguage });
+    const picked = await pickClips(transcript, sig, { count: Number(o.perSegment) || 3, minSec, maxSec, language: o.titleLanguage, onProgress: t => stage(String(t).slice(0, 160)) });
     const existing = await q('SELECT start, "end" FROM clips WHERE project_id = $1', [id]);
     let idx = (await one('SELECT COALESCE(MAX(idx), 0)::int AS n FROM clips WHERE project_id = $1', [id])).n;
     const minScore = Number(o.minScore) || 7;
