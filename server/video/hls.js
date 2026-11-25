@@ -6,14 +6,25 @@ import crypto from 'node:crypto';
 
 const UA = { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' };
 
+// Descarga con tiempo límite garantizado: además de abortar la conexión, la espera se corta con un temporizador propio
+// (en la app de escritorio una descarga podía quedarse colgada para siempre y parar la grabación sin avisar)
+async function fetchOnce(url, type, timeoutMs) {
+  const ac = new AbortController();
+  let timer;
+  const limit = new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(new Error(`El directo no respondió en ${Math.round(timeoutMs / 1000)} s`)); }, timeoutMs); });
+  try {
+    return await Promise.race([limit, (async () => {
+      const r = await fetch(url, { headers: UA, signal: ac.signal });
+      if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status} al leer el directo`), { status: r.status });
+      return type === 'text' ? { text: await r.text(), url: r.url || url } : Buffer.from(await r.arrayBuffer());
+    })()]);
+  } finally { clearTimeout(timer); }
+}
 async function get(url, type = 'text', timeoutMs = 20000) {
   let last;
   for (let i = 0; i < 3; i++) {
-    try {
-      const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeoutMs) });
-      if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status} al leer el directo`), { status: r.status });
-      return type === 'text' ? { text: await r.text(), url: r.url || url } : Buffer.from(await r.arrayBuffer());
-    } catch (e) { last = e; if (e.status === 404 || e.status === 403) break; await new Promise(r => setTimeout(r, 1000 * (i + 1))); }
+    try { return await fetchOnce(url, type, timeoutMs); }
+    catch (e) { last = e; if (e.status === 404 || e.status === 403) break; await new Promise(r => setTimeout(r, 1000 * (i + 1))); }
   }
   throw last;
 }
@@ -79,10 +90,16 @@ async function decrypt(buf, key, seq) {
  */
 export async function recordMedia(url, out, { seconds, fromSeq = null, deadline = Infinity, startBack = 3, onProgress = () => {}, stop = () => false }) {
   const fd = fs.openSync(out, 'w');
-  let got = 0, lastSeq = fromSeq, ended = false, gap = false, mapDone = null, idle = 0;
+  let got = 0, lastSeq = fromSeq, ended = false, gap = false, mapDone = null, idle = 0, expired = false, fails = 0;
   try {
     while (got < seconds && Date.now() < deadline && !stop()) {
-      const pl = await readMedia(url);
+      let pl;
+      try { pl = await readMedia(url); fails = 0; }
+      catch (e) {
+        // enlace caducado (403/404): se corta aquí y el siguiente trozo pide un enlace nuevo; otros fallos: se reintenta
+        if (e.status === 403 || e.status === 404 || ++fails >= 6) { expired = true; console.warn('[directo] lista no disponible:', e.message); break; }
+        await new Promise(r => setTimeout(r, 3000)); continue;
+      }
       let todo;
       if (lastSeq == null) todo = pl.ended ? pl.segs : pl.segs.slice(-startBack);
       else {
@@ -92,7 +109,14 @@ export async function recordMedia(url, out, { seconds, fromSeq = null, deadline 
       for (const s of todo) {
         if (got >= seconds || Date.now() >= deadline || (stop() && got > 0)) break;
         if (s.map && s.map !== mapDone) { fs.writeSync(fd, await get(s.map, 'buf')); mapDone = s.map; }
-        const buf = await decrypt(await get(s.url, 'buf', 30000), s.key, s.seq);
+        let buf;
+        try { buf = await decrypt(await get(s.url, 'buf', 30000), s.key, s.seq); }
+        catch (e) {
+          if (/DRM|cifrado/.test(e.message)) throw e;
+          // un trozo que no se puede descargar se salta (falta un instante) y la grabación sigue
+          console.warn(`[directo] se salta el segmento ${s.seq}: ${e.message}`);
+          gap = true; lastSeq = s.seq; continue;
+        }
         fs.writeSync(fd, buf);
         got += s.dur; lastSeq = s.seq; idle = 0;
         onProgress(got);
@@ -103,5 +127,5 @@ export async function recordMedia(url, out, { seconds, fromSeq = null, deadline 
       await new Promise(r => setTimeout(r, Math.max(1000, pl.target * 500)));
     }
   } finally { fs.closeSync(fd); }
-  return { seconds: got, lastSeq, ended, gap };
+  return { seconds: got, lastSeq, ended, gap, expired };
 }

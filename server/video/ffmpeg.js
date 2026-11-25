@@ -65,7 +65,7 @@ export function ffmpeg(args, { onProgress, ...opts } = {}) {
 
 /** Duración, tamaño y audio leyendo la salida de "ffmpeg -i" (no necesita ffprobe). Acepta URLs. */
 export async function probe(input) {
-  const { err } = await run(FFMPEG, ['-hide_banner', '-i', input], { allowFail: true });
+  const { err } = await run(FFMPEG, ['-hide_banner', '-i', input], { allowFail: true, timeoutMs: 120000 }).catch(e => ({ err: '' }));
   const d = err.match(/Duration: (\d+):(\d+):([\d.]+)/);
   const v = err.match(/Stream #.*Video:.*?,\s*(\d{2,5})x(\d{2,5})[\s,]/);
   if (!d && !v) throw new Error('No se pudo leer el archivo de vídeo/audio. ' + (err.split('\n').find(l => /error|Invalid|No such/i.test(l)) || ''));

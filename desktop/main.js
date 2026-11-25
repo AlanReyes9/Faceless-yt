@@ -109,6 +109,7 @@ async function startServer() {
   });
   if (!port) process.env.PUBLIC_URL = `http://localhost:${real}`;
   startLocalWorker();
+  import(pathToFileURL(path.join(ROOT, 'server', 'video', 'live.js')).href).then(m => m.startLiveWatchdog()).catch(e => console.warn('vigilante:', e.message));
   (await import(pathToFileURL(path.join(ROOT, 'server', 'social.js')).href)).startSocialScheduler(); // publicaciones programadas en redes
   const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
   setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);

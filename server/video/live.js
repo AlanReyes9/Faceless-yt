@@ -106,15 +106,26 @@ register('live.capture', async ({ id, seg }, ctx) => {
       const vfile = path.join(WORK_DIR, `live_${id}_${seg}_v.ts`), afile = path.join(WORK_DIR, `live_${id}_${seg}_a.ts`);
       tmp.push(vfile, afile);
       const tick = got => updateProject(id, { progress: `🔴 Grabando el directo · ${fmtMin(st.secs + got)} grabados · ${st.clips} clips` }).catch(() => {});
-      let last = 0;
-      const [v, a] = await Promise.all([
-        recordMedia(pl.video, vfile, { seconds: segSec, fromSeq: live.vSeq ?? null, deadline, stop: () => liveCuts.has(id), onProgress: g => { if (g - last >= 15) { last = g; tick(g); } } }),
-        pl.audio ? recordMedia(pl.audio, afile, { seconds: segSec, fromSeq: live.aSeq ?? null, deadline, stop: () => liveCuts.has(id) }) : null,
+      let last = 0, forced = false;
+      const stopNow = () => forced || liveCuts.has(id);
+      const recs = Promise.all([
+        recordMedia(pl.video, vfile, { seconds: segSec, fromSeq: live.vSeq ?? null, deadline, stop: stopNow, onProgress: g => { if (g - last >= 15) { last = g; tick(g); } } }),
+        pl.audio ? recordMedia(pl.audio, afile, { seconds: segSec, fromSeq: live.aSeq ?? null, deadline, stop: stopNow }) : null,
       ]);
+      // Freno de emergencia: si el trozo pasa de su tiempo máximo, se cierra con lo grabado y la grabación sigue
+      const hard = (ms, val) => new Promise(r => setTimeout(() => r(val), ms));
+      let res = await Promise.race([recs, hard(Math.max(0, deadline - Date.now()) + 90000, null)]);
+      if (!res) {
+        forced = true;
+        console.warn(`[directo ${id}] el trozo ${seg} no terminaba: se cierra con lo grabado`);
+        res = await Promise.race([recs, hard(45000, null)]);
+      }
+      const [v, a] = res || [{ seconds: 1, lastSeq: null, ended: false, gap: true }, pl.audio ? { seconds: 1, lastSeq: null } : null];
+      if (!res) await setLive(id, { warning: 'La conexión con el directo se quedó colgada un momento: se cerró ese trozo y la grabación siguió (puede faltar algún segundo).' });
       rec = v;
       wasCut = liveCuts.has(id);
       liveCuts.delete(id);
-      await setLive(id, { vSeq: v.lastSeq, ...(a ? { aSeq: a.lastSeq } : {}), ...(v.gap ? { gaps: (live.gaps || 0) + 1 } : {}) });
+      await setLive(id, { vSeq: v.lastSeq ?? null, ...(a ? { aSeq: a.lastSeq ?? null } : {}), ...(v.gap ? { gaps: (live.gaps || 0) + 1 } : {}) });
       if (v.seconds > 0) await ffmpeg([...(a ? await syncInputs(vfile, afile) : ['-i', vfile, '-map', '0:v:0', '-map', '0:a:0?']),
         '-c', 'copy', '-movflags', '+faststart', out], { timeoutMs: 120000 });
     } else {
@@ -127,6 +138,14 @@ register('live.capture', async ({ id, seg }, ctx) => {
     const info = await probe(out).catch(() => ({ duration: 0 }));
     if (info.duration < 5) {
       if (seg === 0) throw new Error('No se pudo grabar el directo. Comprueba que está emitiendo y que el enlace es correcto.');
+      // Enlace del directo caducado o caído un momento: se vuelve a pedir y se sigue (hasta 5 veces seguidas)
+      if (rec?.expired && !(await getProject(id)).data.live?.stopRequested && (live.retries || 0) < 5) {
+        await setLive(id, { retries: (live.retries || 0) + 1, vSeq: null, aSeq: null });
+        console.warn(`[directo ${id}] enlace no disponible: se vuelve a conectar (${(live.retries || 0) + 1}/5)`);
+        await new Promise(r => setTimeout(r, 5000));
+        await enqueue('live.capture', { id, seg });
+        return;
+      }
       // Se pulsó "Hacer clips" / "Clip ahora" justo después de otro corte: el trozo es diminuto, no es el final del directo
       if (wasCut && !(await getProject(id)).data.live?.stopRequested) {
         const l2 = (await getProject(id)).data.live || {};
@@ -142,7 +161,8 @@ register('live.capture', async ({ id, seg }, ctx) => {
     await q(`INSERT INTO live_segments (project_id, seg, ref, start, dur) VALUES ($1,$2,$3,$4,$5)
       ON CONFLICT (project_id, seg) DO UPDATE SET ref = EXCLUDED.ref, start = EXCLUDED.start, dur = EXCLUDED.dur`, [id, seg, ref, start, info.duration]);
     await updateProject(id, { duration: start + info.duration });
-    const endedNow = rec ? rec.ended : info.duration < segSec * 0.5; // (un corte por "Clip ahora" no cuenta como final) // se grabó mucho menos de lo pedido: el directo terminó
+    if (live.retries) await setLive(id, { retries: 0 });
+    const endedNow = rec ? rec.ended && !rec.expired : info.duration < segSec * 0.5; // (un corte por "Clip ahora" no cuenta como final) // se grabó mucho menos de lo pedido: el directo terminó
     const fresh = await getProject(id);
     const stop = endedNow || fresh.data.live?.stopRequested || start + info.duration >= maxSec;
     // Primero se encadena la grabación (para no dejar huecos) y después el análisis de este segmento
@@ -211,6 +231,34 @@ Escribe en ${o.titleLanguage || 'el idioma del texto'} JSON {"title":"título co
   const done = new Set(pending.map(m => m.at));
   const marks = ((await getProject(id)).data.live?.marks || []).map(m => done.has(m.at) ? { ...m, done: true } : m);
   await setLive(id, { marks });
+}
+
+// ---------- Vigilante: si un directo activo deja de grabar (trabajo perdido o colgado), se reanuda solo ----------
+const lastCapture = new Map(); // proyecto → { at, seg } de la última grabación vista
+export function startLiveWatchdog() {
+  const check = async () => {
+    const lives = await q(`SELECT id, data FROM projects WHERE type = 'live' AND deleted_at IS NULL AND status IN ('processing', 'pending')`);
+    for (const p of lives) {
+      const l = p.data?.live || {}, o = p.data?.options || {};
+      if (l.ended || l.stopRequested || l.stopping) continue;
+      const job = await one(`SELECT id, status, EXTRACT(EPOCH FROM now() - COALESCE(locked_at, created_at))::int AS age FROM jobs
+        WHERE type = 'live.capture' AND status IN ('queued', 'running') AND (payload->>'id')::int = $1 ORDER BY id DESC LIMIT 1`, [p.id]);
+      const segSec = o.clipMode === 'manual' || o.clipMode === 'smart' ? 300 : Math.max(30, Number(o.segmentSec) || 120);
+      const busyFor = l.recWall ? (Date.now() - l.recWall) / 1000 : 0;
+      const stuck = !job || (job.status === 'running' && busyFor > segSec + 300);
+      if (!stuck) { lastCapture.delete(p.id); continue; }
+      // se espera a verlo parado dos veces seguidas (entre un trozo y el siguiente puede no haber trabajo un instante)
+      const prev = lastCapture.get(p.id);
+      if (!prev) { lastCapture.set(p.id, { at: Date.now() }); continue; }
+      lastCapture.delete(p.id);
+      const next = (await one('SELECT COALESCE(MAX(seg), -1)::int + 1 AS n FROM live_segments WHERE project_id = $1', [p.id])).n;
+      if (job) await q(`UPDATE jobs SET status = 'failed', error = 'colgado: reanudado por el vigilante' WHERE id = $1`, [job.id]).catch(() => {});
+      console.warn(`[directo ${p.id}] la grabación estaba parada (${Math.round(busyFor)} s): se reanuda en el trozo ${next}`);
+      await setLive(p.id, { vSeq: null, aSeq: null, warning: 'La grabación se había quedado parada y se reanudó sola (puede faltar un trozo del directo).' });
+      await enqueue('live.capture', { id: p.id, seg: next });
+    }
+  };
+  setInterval(() => check().catch(e => console.warn('vigilante directos:', e.message)), Number(process.env.LIVE_WATCHDOG_MS) || 60000).unref?.();
 }
 
 async function finish(id, reason) {
