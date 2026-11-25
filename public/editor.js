@@ -475,7 +475,12 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-s]').forEach(el => el.oninput = el.onchange = () => {
       const v = el.type === 'checkbox' ? el.checked : el.value, k = el.dataset.s;
       if (k === 'format') { S.format = v; sizeOut(); }
-      else if (k === 'layout') { S.layout = ['blur', 'gaming', 'split'].includes(v) ? v : (S.crop.mode === 'face' ? 'face' : 'crop'); if (v === 'split' && !S.facecamSet) S.facecam = { x: 0, y: 0, w: 0.5, h: 1 }; pane(); }
+      else if (k === 'layout') {
+        // al volver a «Normal» desde fondo difuminado / gaming / dividida se sigue a quien habla (salvo fotogramas manuales)
+        if (v === 'crop' && ['blur', 'gaming', 'split'].includes(S.layout) && S.crop.mode === 'fixed') S.crop.mode = 'face';
+        S.layout = ['blur', 'gaming', 'split'].includes(v) ? v : (S.crop.mode === 'face' ? 'face' : 'crop');
+        if (v === 'split' && !S.facecamSet) S.facecam = { x: 0, y: 0, w: 0.5, h: 1 }; pane();
+      }
       else if (k === 'zoom') { S.crop.zoom = Number(v); el.nextElementSibling.textContent = Math.round(v * 100) + ' %'; }
       else if (k === 'mode') { S.crop.mode = v; if (v === 'manual' && !S.crop.keys.length) S.crop.keys = autoKeys.map(k => ({ ...k })); if (S.layout !== 'blur') S.layout = v === 'face' ? 'face' : 'crop'; pane(); }
       else if (k === 'cshow') S.captions.show = v;

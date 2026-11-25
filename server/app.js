@@ -740,6 +740,19 @@ app.patch('/api/clips/:id', h(async (req, res) => {
   for (const k of ['start', 'end']) if (k in req.body) f[k] = Math.max(0, Number(req.body[k]));
   if ('include_zip' in req.body) f.include_zip = !!req.body.include_zip;
   if ((f.end ?? c.end) - (f.start ?? c.start) < 2) throw new Error('El clip debe durar al menos 2 segundos.');
+  // Si el clip tiene ajustes del editor, el encuadre y el estilo elegidos aquí también se aplican allí
+  // (si no, al renderizar mandaban los del editor y el cambio no se veía)
+  if (c.edit && (f.layout || f.style)) {
+    const edit = { ...c.edit };
+    if (f.layout && f.layout !== edit.layout) {
+      edit.layout = f.layout;
+      // «quien habla» = seguir la cara (se descartan fotogramas manuales y encuadre fijo); «recorte fijo» = centrado
+      if (f.layout === 'face') edit.crop = { ...(edit.crop || {}), mode: 'face', keys: [] };
+      if (f.layout === 'crop') edit.crop = { ...(edit.crop || {}), mode: 'fixed', cx: 0.5 };
+    }
+    if (f.style) edit.captions = { ...(edit.captions || {}), style: f.style };
+    f.edit = edit;
+  }
   await updateClip(c.id, f);
   res.json({ ok: true });
 }));
