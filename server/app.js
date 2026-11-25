@@ -193,17 +193,26 @@ app.post('/api/admin/s3-cors', h(async (req, res) => {
 }));
 
 // ---------- Sistema ----------
-const has = (cmd, flag = '--version') => run(cmd, [flag], { timeoutMs: 30000 }).then(() => true, () => false);
+// Sin tiempo límite corto: en Mac, la primera vez que se abre yt-dlp tras arrancar puede tardar bastante (macOS lo
+// revisa y se descomprime); cortarlo hacía creer que no estaba instalado.
+const has = (cmd, flag = '--version') => run(cmd, [flag], { timeoutMs: 180000 }).then(() => true, () => false);
 // Las herramientas se comprueban una vez y se recuerda el resultado 10 min (antes se ejecutaba yt-dlp en cada carga
 // de la interfaz: en Mac tarda varios segundos en arrancar). La primera comprobación empieza al arrancar el servidor.
 let toolsCache = null;
 const tools = () => {
-  if (!toolsCache || Date.now() - toolsCache.at > 600000) toolsCache = { at: Date.now(), p: Promise.all([has(FFMPEG, '-version'), IS_VERCEL ? false : has('yt-dlp')]) };
+  // un resultado negativo no se recuerda: se vuelve a comprobar en la siguiente carga
+  if (!toolsCache || Date.now() - toolsCache.at > 600000 || toolsCache.bad) {
+    const c = { at: Date.now(), p: Promise.all([has(FFMPEG, '-version'), IS_VERCEL ? false : has(process.env.YTDLP_PATH || 'yt-dlp')]) };
+    c.p.then(r => { if (!r[0] || (!IS_VERCEL && !r[1])) c.bad = true; });
+    toolsCache = c;
+  }
   return toolsCache.p;
 };
 if (!IS_VERCEL) setTimeout(() => { tools(); import('./ai/localwhisper.js').catch(() => {}); import('./ai/localmodels.js').catch(() => {}); queueStatus().catch(() => {}); }, 300);
 app.get('/api/system', h(async (req, res) => res.json({
-  ...(([ffmpeg, ytdlp]) => ({ ffmpeg, ytdlp }))(await tools()),
+  // si la comprobación aún no terminó (yt-dlp tarda en abrirse la primera vez), no se hace esperar a la interfaz:
+  // se da por disponible y la comprobación sigue en segundo plano
+  ...(([ffmpeg, ytdlp]) => ({ ffmpeg, ytdlp }))(await Promise.race([tools(), new Promise(r => setTimeout(() => r([true, !IS_VERCEL]), 1500))])),
   queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL, desktop: !!globalThis.__desktop,
   ...(await (async () => { const lw = await import('./ai/localwhisper.js'), lm = await import('./ai/localmodels.js');
     const avail = lw.localAvailable() || lm.localLLMAvailable();
