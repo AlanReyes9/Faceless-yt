@@ -21,6 +21,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     facecam: d.facecam ? { ...d.facecam } : { x: 0.02, y: 0.04, w: 0.25, h: 0.38 }, facecamSet: !!E.facecam,
     // Pantalla dividida: segundo recuadro (el de abajo)
     split2: d.split2 ? { ...d.split2 } : { x: 0.5, y: 0, w: 0.5, h: 1 },
+    ...(d.splitTop ? { facecam: { ...d.splitTop } } : {}),
     font: E.font || 'DejaVu Sans',
     // Estilo del texto fijo de arriba (el gancho, durante todo el clip)
     titleBar: { color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || 'none', size: E.titleBar?.size || 1 },

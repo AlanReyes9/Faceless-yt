@@ -7,7 +7,7 @@ import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
 import { emojiImage } from './emoji.js';
-import { detectFacecam, gamingFilter, splitFilter } from './gaming.js';
+import { detectFacecam, gamingFilter, splitFilter, detectSplit } from './gaming.js';
 import { transcribeChunk, CHUNK_SECONDS } from '../ai/transcribe.js';
 import { chatJSON } from '../ai/llm.js';
 import { computeKeep, cutParts, remapWords, timeMapper } from './autocut.js';
@@ -375,7 +375,18 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     if (layout === 'split') {
       // Pantalla dividida: dos recuadros del original, uno arriba y otro abajo
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
-      vf = splitFilter({ vin: '[0:v]', W, H, a: E?.facecam || { x: 0, y: 0, w: 0.5, h: 1 }, b: E?.split2 || { x: 0.5, y: 0, w: 0.5, h: 1 }, OW, OH, ass, top: Number(E?.splitTop) || 0.5 });
+      let a = E?.facecam, b = E?.split2;
+      if (!a || !b) {
+        // recuadros automáticos (una vez por proyecto): las dos personas que más aparecen
+        let auto = p.data.split?.rects;
+        if (!auto) {
+          await prog('Buscando a las dos personas', 5, true);
+          auto = await detectSplit(input, { from: parts[0].ss, dur: Math.min(parts[0].dur, 60) }).catch(() => null) || { a: { x: 0, y: 0, w: 0.5, h: 1 }, b: { x: 0.5, y: 0, w: 0.5, h: 1 } };
+          await q(`UPDATE projects SET data = jsonb_set(data, '{split}', $2::jsonb, true) WHERE id = $1`, [p.id, JSON.stringify({ rects: auto, at: new Date().toISOString() })]);
+        }
+        a = a || auto.a; b = b || auto.b;
+      }
+      vf = splitFilter({ vin: '[0:v]', W, H, a, b, OW, OH, ass, top: Number(E?.splitTop) || 0.5 });
     } else if (layout === 'gaming') {
       const W = p.data.width || (await probe(input)).width, H = p.data.height || (await probe(input)).height;
       vf = gamingFilter({ vin: '[0:v]', W, H, cam, OW, OH, ass });

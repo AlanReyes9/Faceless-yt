@@ -455,7 +455,7 @@ app.post('/api/shorts', h(async (req, res) => {
     download: b.url ? { height: Math.min(2160, Math.max(144, Number(dl.height) || 1080)), from: Number(dl.from) > 0 ? Number(dl.from) : 0,
       to: Number(dl.to) > Number(dl.from || 0) ? Number(dl.to) : 0, estMB: Number(dl.estMB) || 0 } : undefined,
     count: Math.min(30, Number(b.count) || 10), minSec: Number(b.minSec) || 20, maxSec: Number(b.maxSec) || 60,
-    layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
+    layout: ['crop', 'blur', 'face', 'gaming', 'split'].includes(b.layout) ? b.layout : 'face', language: b.language || '', titleLanguage: b.titleLanguage || '',
     captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'clasico', emojis: b.emojis !== false, brand: b.brand === true, ...autoEditOptions(b),
   };
   const p = await insert('projects', { type: 'shorts', title: b.title || b.filename?.replace(/\.[^.]+$/, '') || b.url, channel_id: Number(b.channel_id) || null,
@@ -473,7 +473,7 @@ app.post('/api/live', h(async (req, res) => {
   const platform = /twitch\.tv/i.test(url) ? 'Twitch' : /kick\.com/i.test(url) ? 'Kick' : /youtube\.com|youtu\.be/i.test(url) ? 'YouTube' : null;
   if (IS_VERCEL && !/\.m3u8(\?|$)/i.test(url)) throw new Error('En la versión de Vercel solo se pueden usar enlaces directos .m3u8. Para YouTube, Twitch o Kick instala la app en tu PC (ver Ayuda).');
   const options = {
-    layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
+    layout: ['crop', 'blur', 'face', 'gaming', 'split'].includes(b.layout) ? b.layout : 'face', captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto',
     emojis: b.emojis !== false, captions: b.captions !== false, language: b.language || '', titleLanguage: b.titleLanguage || '', brand: b.brand === true, ...autoEditOptions(b),
     minScore: Math.min(10, Math.max(1, Number(b.minScore) || 7)), minSec: Number(b.minSec) || 15, maxSec: Number(b.maxSec) || 60,
     segmentSec: Math.min(240, Math.max(Number(process.env.LIVE_MIN_SEGMENT) || 60, Number(b.segmentSec) || 180)), maxMinutes: Math.min(600, Math.max(5, Number(b.maxMinutes) || 120)),
@@ -824,7 +824,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
-    fonts: FONTS, split2: E.split2 || null, outros: outroOut(await getOutros()),
+    fonts: FONTS, split2: E.split2 || p.data.split?.rects?.b || null, splitTop: !E.facecam && (E.layout || c.layout) === 'split' ? p.data.split?.rects?.a || null : null, outros: outroOut(await getOutros()),
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
@@ -1036,7 +1036,7 @@ app.post('/api/multiedit', h(async (req, res) => {
   if (!b.source) throw new Error('Sube un vídeo.');
   const options = {
     multi: { count: Math.max(2, Math.min(20, Number(b.count) || 5)), vary: b.vary || {} },
-    layout: ['crop', 'blur', 'face', 'gaming'].includes(b.layout) ? b.layout : 'crop', language: b.language || '', titleLanguage: b.titleLanguage || '',
+    layout: ['crop', 'blur', 'face', 'gaming', 'split'].includes(b.layout) ? b.layout : 'crop', language: b.language || '', titleLanguage: b.titleLanguage || '',
     captions: b.captions !== false, captionStyle: CAPTION_STYLES[b.captionStyle] ? b.captionStyle : 'impacto', emojis: false, brand: b.brand === true, ...autoEditOptions(b),
   };
   const p = await insert('projects', { type: 'shorts', title: '🧬 ' + (b.title || b.filename?.replace(/\.[^.]+$/, '') || 'Multi Edit'), channel_id: Number(b.channel_id) || null,

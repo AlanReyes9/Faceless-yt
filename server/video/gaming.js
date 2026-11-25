@@ -151,3 +151,33 @@ export function splitFilter({ vin = '[0:v]', W, H, a, b, OW = 1080, OH = 1920, a
   const fill = (w, h) => `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
   return `${vin}split=2[sa][sb];[sa]${crop(a)},${fill(OW, TH)}[st];[sb]${crop(b)},${fill(OW, BH)}[sbm];[st][sbm]vstack=inputs=2,setsar=1${ass ? ',' + ass : ''}[base]`;
 }
+
+/**
+ * Pantalla dividida automática: busca a las dos personas que más aparecen y devuelve dos recuadros verticales
+ * (mitad del ancho, todo el alto) centrados en cada una: { a: izquierda → arriba, b: derecha → abajo }.
+ * Si no hay dos personas claras, mitad izquierda y mitad derecha.
+ */
+export async function detectSplit(input, { from = 0, dur = 60, samples = 10 } = {}) {
+  input = await localUrl(input);
+  const xs = [];
+  for (let i = 0; i < samples; i++) {
+    try {
+      const rgb = await grab(input, from + dur * (i + 0.5) / samples);
+      for (const f of await detectFaces(rgb, 0.6)) if (f.x2 - f.x1 > 0.03) xs.push({ cx: (f.x1 + f.x2) / 2, fi: i });
+    } catch {}
+  }
+  const half = { a: { x: 0, y: 0, w: 0.5, h: 1 }, b: { x: 0.5, y: 0, w: 0.5, h: 1 } };
+  if (xs.length < 4) return half;
+  // dos grupos por posición horizontal (k-medias sencillo)
+  let c1 = Math.min(...xs.map(x => x.cx)), c2 = Math.max(...xs.map(x => x.cx));
+  if (c2 - c1 < 0.2) return half;
+  for (let it = 0; it < 10; it++) {
+    const g1 = xs.filter(x => Math.abs(x.cx - c1) <= Math.abs(x.cx - c2)), g2 = xs.filter(x => Math.abs(x.cx - c1) > Math.abs(x.cx - c2));
+    if (!g1.length || !g2.length) return half;
+    c1 = median(g1.map(x => x.cx)); c2 = median(g2.map(x => x.cx));
+  }
+  const g1 = new Set(xs.filter(x => Math.abs(x.cx - c1) <= Math.abs(x.cx - c2)).map(x => x.fi)), g2 = new Set(xs.filter(x => Math.abs(x.cx - c1) > Math.abs(x.cx - c2)).map(x => x.fi));
+  if (g1.size < 2 || g2.size < 2 || c2 - c1 < 0.2) return half;
+  const box = cx => ({ x: Math.max(0, Math.min(0.5, cx - 0.25)), y: 0, w: 0.5, h: 1 });
+  return { a: box(Math.min(c1, c2)), b: box(Math.max(c1, c2)) };
+}

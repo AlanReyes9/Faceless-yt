@@ -377,3 +377,9 @@ kbd { border: 1px solid var(--line, #444); border-bottom-width: 2px; border-radi
 .ed-outros { margin-top: 6px; }
 .ed-outro { gap: 6px; margin-top: 6px; }
 .ed-outro video { width: 34px; height: 60px; object-fit: cover; border-radius: 4px; background: #000; }
+
+/* Plantilla: pantalla dividida */
+.tp-split { position: absolute; inset: 0; display: grid; grid-template-rows: 1fr 1fr; gap: 2px; background: #111; }
+.tp-split > div { position: relative; background: linear-gradient(160deg, #334155, #1e293b); display: grid; place-items: center; }
+.tp-split i { width: 26%; aspect-ratio: 1; border-radius: 50%; background: #f4c7a1; box-shadow: 0 14px 0 6px #2563eb; }
+.tp-split > div:last-child i { box-shadow: 0 14px 0 6px #db2777; }

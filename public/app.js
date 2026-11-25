@@ -644,6 +644,7 @@ const TEMPLATES = {
   gaming: { name: '🎮 Gaming', desc: 'La cámara del jugador arriba (se detecta sola) y la partida abajo, recortada al centro con todo el alto. Directos de Kick, Twitch o YouTube.', art: '<div class="tp-gaming"><div class="tp-cam"><i></i></div><div class="tp-game"></div></div>' },
   crop: { name: 'Recorte centrado', desc: 'Recorte vertical fijo del centro de la imagen.', art: '<div class="tp-crop"></div>' },
   blur: { name: 'Fondo difuminado', desc: 'El vídeo entero en el centro con el fondo difuminado.', art: '<div class="tp-blur"><div></div></div>' },
+  split: { name: '◫ Pantalla dividida', desc: 'Dos personas: una arriba y otra abajo (se detectan solas). Podcasts y entrevistas a dos. Se ajusta en el editor.', art: '<div class="tp-split"><div><i></i></div><div><i></i></div></div>' },
 };
 /** Pregunta qué plantilla usar. Devuelve la clave elegida o null si se cancela. */
 function pickTemplate() {
@@ -762,7 +763,7 @@ routes.multiedit = async () => {
         ${MULTI_OPTS.map(([k, l, on]) => `<label class="check" style="font-size:14px"><input type="checkbox" data-v="${k}" ${on ? 'checked' : ''}> ${l}</label>`).join('')}</div>
       <div><label>Encuadre</label><select name="layout">
         <option value="crop">Recorte al centro (o el vídeo ya es vertical)</option><option value="face">Seguir a quien habla</option>
-        <option value="blur">Vídeo entero con fondo difuminado</option><option value="gaming">🎮 Gaming (cámara arriba, partida abajo)</option></select></div>
+        <option value="blur">Vídeo entero con fondo difuminado</option><option value="gaming">🎮 Gaming (cámara arriba, partida abajo)</option><option value="split">◫ Pantalla dividida (dos personas)</option></select></div>
       <div class="row"><div style="flex:1"><label>Subtítulos (estilo base)</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div>
         <div style="flex:1"><label>Idioma del audio</label><select name="language"><option value="">Detectar</option>${Object.entries(LANGS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" name="captions" checked> Añadir subtítulos palabra a palabra (si el vídeo ya los tiene, desmárcalo)</label>
