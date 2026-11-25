@@ -193,9 +193,17 @@ app.post('/api/admin/s3-cors', h(async (req, res) => {
 }));
 
 // ---------- Sistema ----------
-const has = (cmd, flag = '--version') => run(cmd, [flag]).then(() => true, () => false);
+const has = (cmd, flag = '--version') => run(cmd, [flag], { timeoutMs: 30000 }).then(() => true, () => false);
+// Las herramientas se comprueban una vez y se recuerda el resultado 10 min (antes se ejecutaba yt-dlp en cada carga
+// de la interfaz: en Mac tarda varios segundos en arrancar). La primera comprobación empieza al arrancar el servidor.
+let toolsCache = null;
+const tools = () => {
+  if (!toolsCache || Date.now() - toolsCache.at > 600000) toolsCache = { at: Date.now(), p: Promise.all([has(FFMPEG, '-version'), IS_VERCEL ? false : has('yt-dlp')]) };
+  return toolsCache.p;
+};
+if (!IS_VERCEL) setTimeout(() => { tools(); import('./ai/localwhisper.js').catch(() => {}); import('./ai/localmodels.js').catch(() => {}); queueStatus().catch(() => {}); }, 300);
 app.get('/api/system', h(async (req, res) => res.json({
-  ffmpeg: await has(FFMPEG, '-version'), ytdlp: IS_VERCEL ? false : await has('yt-dlp'),
+  ...(([ffmpeg, ytdlp]) => ({ ffmpeg, ytdlp }))(await tools()),
   queue: await queueStatus(), youtube: await youtubeConfigured(), storage: STORAGE_MODE, db: DB_MODE, vercel: IS_VERCEL, desktop: !!globalThis.__desktop,
   ...(await (async () => { const lw = await import('./ai/localwhisper.js'), lm = await import('./ai/localmodels.js');
     const avail = lw.localAvailable() || lm.localLLMAvailable();

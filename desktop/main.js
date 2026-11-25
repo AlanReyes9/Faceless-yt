@@ -114,12 +114,19 @@ async function startServer() {
   const clean = () => runCleanup().catch(e => console.error('limpieza:', e.message));
   setTimeout(clean, 60000); setInterval(clean, 6 * 3600e3);
   // Precarga de la IA local de texto: la primera respuesta llega sin esperar a que se cargue el modelo
-  setTimeout(() => import(pathToFileURL(path.join(ROOT, 'server', 'ai', 'localmodels.js')).href).then(m => m.warmUp()).catch(() => {}), 8000);
+  setTimeout(() => import(pathToFileURL(path.join(ROOT, 'server', 'ai', 'localmodels.js')).href).then(m => m.warmUp()).catch(() => {}), 45000);
   console.log('Clippers Pro (escritorio) en', process.env.PUBLIC_URL, '· datos:', process.env.DATA_DIR);
   return `http://localhost:${real}`;
 }
 
-function createWindow() {
+// Pantalla de carga: se ve al momento mientras arranca el servidor
+const SPLASH = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0f1013;color:#e5e7eb;font:15px -apple-system,Segoe UI,sans-serif">
+  <div style="text-align:center"><div style="width:54px;height:54px;margin:0 auto 18px;border-radius:14px;background:#22c55e;display:grid;place-items:center;color:#0f1013;font-size:26px">▶</div>
+  <b style="font-size:18px">Clippers Pro</b><div style="margin-top:10px;color:#9ca3af">Cargando…</div>
+  <div style="margin:18px auto 0;width:160px;height:4px;border-radius:4px;background:#1f2937;overflow:hidden"><div style="width:40%;height:100%;background:#22c55e;animation:m 1.1s ease-in-out infinite alternate"></div></div></div>
+  <style>@keyframes m{from{margin-left:0}to{margin-left:60%}}</style></body></html>`);
+
+function createWindow(url = baseUrl) {
   win = new BrowserWindow({
     width: 1360, height: 880, minWidth: 900, minHeight: 600, backgroundColor: '#0f1013', title: 'Clippers Pro',
     autoHideMenuBar: process.platform !== 'darwin',
@@ -137,7 +144,8 @@ function createWindow() {
   // Las redirecciones del servidor (p. ej. Conectar YouTube → accounts.google.com) también van al navegador del sistema:
   // dentro de la app el inicio de sesión de Google no funciona y la ventana se quedaba atrapada sin poder volver.
   win.webContents.on('will-redirect', (e, url) => { if (!isApp(url)) { e.preventDefault(); shell.openExternal(url); } });
-  win.loadURL(baseUrl);
+  win.__splash = !url || url === SPLASH;
+  win.loadURL(url || SPLASH);
   win.on('closed', () => { win = null; });
 }
 
@@ -212,19 +220,23 @@ async function ensureLicense() {
   if (NO_LICENSE) { licensed = true; return; }
   const local = lic.localLicense();
   if (local) {
-    const r = await lic.refresh();
-    if (r.ok || r.offline) { licensed = true; return; }
-    return askLogin(r.message);
+    // con una licencia local válida se entra al momento; la renovación por internet va en segundo plano
+    licensed = true;
+    lic.refresh().then(r => { if (!(r.ok || r.offline)) lock(r.message || 'Tu acceso ya no está autorizado.'); }).catch(() => {});
+    return;
   }
   return askLogin(lic.licenseInfo().username ? 'Tu sesión caducó. Vuelve a iniciar sesión.' : '');
 }
 
 /** Pierde la licencia (revocada, vencida o cierre de sesión): se cierra la ventana y se pide iniciar sesión otra vez. */
+let locking = false, serverReady = null;
 async function lock(message) {
-  licensed = false;
+  licensed = false; locking = true;
   const waiting = askLogin(message); // primero la ventana de inicio de sesión (si no, al cerrar la otra se saldría de la app)
   const w = win; win = null; w?.destroy();
   await waiting;
+  await serverReady?.catch(() => {}); // por si el servidor aún está arrancando
+  locking = false;
   createWindow();
   closeLogin();
 }
@@ -240,15 +252,20 @@ setInterval(async () => {
 
 app.whenReady().then(async () => {
   const logFile = setupEnv();
+  // El servidor arranca a la vez que se comprueba la licencia, y la ventana sale al momento con «Cargando…»
+  const serverP = serverReady = startServer();
+  serverP.catch(() => {});
+  if (NO_LICENSE || lic.localLicense()) createWindow(SPLASH);
   await ensureLicense();
   try {
-    baseUrl = await startServer();
+    baseUrl = await serverP;
   } catch (e) {
     console.error('arranque:', e);
     dialog.showErrorBox('Clippers Pro no pudo arrancar', `${e.message}\n\nRegistro: ${logFile}`);
     return app.quit();
   }
   buildMenu(logFile);
-  createWindow();
-  closeLogin();
+  if (win && !win.isDestroyed()) { if (win.__splash) { win.__splash = false; win.loadURL(baseUrl); } }
+  else if (licensed && !locking) createWindow();
+  if (!locking) closeLogin();
 });
