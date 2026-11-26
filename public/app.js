@@ -1880,7 +1880,7 @@ routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['local_llm', 'meta_app_id', 'meta_app_secret', 'meta_config_id', 'tiktok_client_key', 'tiktok_client_secret', 'whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['ytdlp_cookies', 'local_llm', 'meta_app_id', 'meta_app_secret', 'meta_config_id', 'tiktok_client_key', 'tiktok_client_secret', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;

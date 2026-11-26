@@ -4,7 +4,22 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { FFMPEG, probe } from './ffmpeg.js';
+import { getSetting, setSettings } from '../settings.js';
+
+// ---------- Cookies del navegador (YouTube a veces pide «verificar que no eres un bot») ----------
+const HOME = os.homedir(), LAD = process.env.LOCALAPPDATA || '', AD = process.env.APPDATA || '';
+const BROWSER_DIRS = process.platform === 'darwin' ? {
+  chrome: `${HOME}/Library/Application Support/Google/Chrome`, safari: `${HOME}/Library/Containers/com.apple.Safari`,
+  firefox: `${HOME}/Library/Application Support/Firefox`, edge: `${HOME}/Library/Application Support/Microsoft Edge`, brave: `${HOME}/Library/Application Support/BraveSoftware/Brave-Browser`,
+} : process.platform === 'win32' ? {
+  firefox: `${AD}\\Mozilla\\Firefox`, chrome: `${LAD}\\Google\\Chrome\\User Data`, edge: `${LAD}\\Microsoft\\Edge\\User Data`, brave: `${LAD}\\BraveSoftware\\Brave-Browser\\User Data`,
+} : { chrome: `${HOME}/.config/google-chrome`, firefox: `${HOME}/.mozilla/firefox`, brave: `${HOME}/.config/BraveSoftware/Brave-Browser` };
+const installedBrowsers = () => Object.entries(BROWSER_DIRS).filter(([, d]) => d && fs.existsSync(d)).map(([b]) => b);
+const needsCookies = msg => /not a bot|Sign in to confirm|--cookies|cookies-from-browser|confirm your age|members-only|This video is private|login required/i.test(msg);
+const BROWSER_NAMES = { chrome: 'Chrome', safari: 'Safari', firefox: 'Firefox', edge: 'Edge', brave: 'Brave' };
+
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 
@@ -20,7 +35,38 @@ export function baseArgs() {
  * Ejecuta yt-dlp. Si pasa `stallMs` sin ninguna salida nueva, lo detiene con un error claro.
  * onLine recibe cada línea (stdout y stderr).
  */
-export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3, signal, fullOutput = false } = {}) {
+export async function ytdlp(args, opts = {}) {
+  const mode = (process.env.YTDLP_NO_COOKIES ? 'no' : await getSetting('ytdlp_cookies').catch(() => 'auto')) || 'auto';
+  const learned = mode === 'auto' ? await getSetting('ytdlp_cookies_learned').catch(() => '') : '';
+  const first = mode !== 'auto' && mode !== 'no' ? mode : learned || null;
+  try {
+    return await ytdlpOnce(first ? ['--cookies-from-browser', first, ...args] : args, opts);
+  } catch (e) {
+    if (e.cancelled || mode !== 'auto' || !needsCookies(e.raw || e.message)) throw cookieHelp(e, mode, first);
+    // Automático: se prueba con las cookies de cada navegador instalado (donde tengas la sesión de YouTube iniciada)
+    for (const b of installedBrowsers().filter(b => b !== first)) {
+      opts.onLine?.(`YouTube pide verificación: probando con las cookies de ${BROWSER_NAMES[b]}…`);
+      try {
+        const r = await ytdlpOnce(['--cookies-from-browser', b, ...args], opts);
+        await setSettings({ ytdlp_cookies_learned: b }).catch(() => {});
+        console.log(`[yt-dlp] funcionó con las cookies de ${b}: se usarán a partir de ahora`);
+        return r;
+      } catch (e2) { if (e2.cancelled) throw e2; console.warn(`[yt-dlp] cookies de ${b}: ${String(e2.raw || e2.message).slice(0, 160)}`); }
+    }
+    if (learned) await setSettings({ ytdlp_cookies_learned: '' }).catch(() => {});
+    throw cookieHelp(e, mode, first);
+  }
+}
+/** Mensaje claro cuando YouTube exige iniciar sesión / verificar que no eres un bot. */
+function cookieHelp(e, mode, used) {
+  if (!needsCookies(e.raw || e.message)) return e;
+  const list = installedBrowsers().map(b => BROWSER_NAMES[b]).join(', ') || 'ninguno encontrado';
+  return Object.assign(new Error(`YouTube pide verificar que no eres un bot. Abre YouTube en tu navegador (${list}) con tu sesión iniciada y vuelve a intentarlo` +
+    `${mode === 'no' ? '; activa también «Cookies del navegador para YouTube» en Ajustes' : used ? ` (se usaron las cookies de ${BROWSER_NAMES[used] || used})` : ''}.` +
+    `${process.platform === 'darwin' ? ' Con Chrome, macOS puede pedir tu contraseña para leer sus cookies: acéptalo. Safari necesita dar «Acceso total al disco» a Clippers Pro.' : process.platform === 'win32' ? ' En Windows, Chrome debe estar cerrado para leer sus cookies (Firefox funciona aunque esté abierto).' : ''}`), { raw: e.raw || e.message });
+}
+
+function ytdlpOnce(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4 * 3600e3, signal, fullOutput = false } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(YTDLP, [...baseArgs(), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '', last = Date.now(), reason = null;
@@ -45,8 +91,8 @@ export function ytdlp(args, { onLine = () => {}, stallMs = 180000, timeoutMs = 4
       if (code === 0 && !reason) return resolve({ out, err });
       if (reason === 'cancelado') return reject(Object.assign(new Error('Descarga cancelada.'), { cancelled: true }));
       const msg = (err.match(/ERROR:.*$/m)?.[0] || err.trim().split('\n').slice(-3).join(' ') || '').slice(0, 400);
-      if (/not a bot|Sign in to confirm/i.test(msg)) return reject(new Error('YouTube pide verificar que no eres un bot. Prueba de nuevo más tarde o sube el archivo de vídeo. (' + msg + ')'));
-      reject(new Error(reason ? `${reason}. ${msg}` : `yt-dlp falló: ${msg || 'código ' + code}`));
+      if (/not a bot|Sign in to confirm/i.test(msg)) return reject(Object.assign(new Error('YouTube pide verificar que no eres un bot. (' + msg + ')'), { raw: msg }));
+      reject(Object.assign(new Error(reason ? `${reason}. ${msg}` : `yt-dlp falló: ${msg || 'código ' + code}`), { raw: msg }));
     });
   });
 }

@@ -69,6 +69,8 @@ export const FIELDS = {
   brand_size: { secret: false, default: '0.2', label: 'Tamaño del logo', group: 'Marca' },
   brand_opacity: { secret: false, default: '0.9', label: 'Opacidad del logo', group: 'Marca' },
   outros: { secret: false, default: '[]', label: 'Vídeos finales', group: 'Marca' },
+  ytdlp_cookies: { secret: false, default: 'auto', label: 'Cookies del navegador para YouTube (si pide verificar que no eres un bot)', options: ['auto', 'chrome', 'safari', 'firefox', 'edge', 'brave', 'no'], group: 'Preferencias' },
+  ytdlp_cookies_learned: { secret: false, default: '', label: 'Navegador de cookies que funcionó', group: 'Marca' },
   whisper_model: { secret: false, default: 'small', label: 'Modelo de transcripción local', options: ['base', 'small', 'small-q5_1', 'large-v3-turbo', 'medium'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS)', options: ['openai', 'elevenlabs'], group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
