@@ -1432,7 +1432,7 @@ function storyEditor(p) {
         <div class="stack sed-lines">${sc.lines.map(l => `<div class="row sed-line" style="flex-wrap:nowrap;gap:6px"><input data-k="speaker" value="${esc(l.speaker)}" style="width:110px;flex:none"><textarea data-k="text" rows="2" style="flex:1">${esc(l.text)}</textarea><button type="button" class="btn sm red" data-delline title="Quitar frase">✕</button></div>`).join('')}</div>
         <div class="row" style="gap:6px"><button type="button" class="btn sm" data-addline>＋ Frase</button><input data-k="overlay" value="${esc(sc.overlay || '')}" placeholder="Texto en pantalla (opcional)" style="flex:1"></div>
         <div class="row" style="flex-wrap:nowrap;gap:6px"><input data-k="image_prompt" value="${esc(sc.image_prompt || '')}" placeholder="Descripción de la imagen (inglés)" style="flex:1">
-          <select data-k="src" style="width:auto"><option value="free">Gratis</option>${window.__localImage ? '<option value="local">IA local</option>' : ''}<option value="settings">Ajustes</option></select>
+          <select data-k="src" style="width:auto">${[['local', 'IA local'], ['free', 'Gratis nube'], ['settings', 'Ajustes']].filter(([k]) => k !== 'local' || window.__localImage !== false).map(([k, l]) => `<option value="${k}" ${(p.data.options?.imageMode || 'free') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           <button type="button" class="btn sm" data-newimg>🎨 Otra imagen</button><button type="button" class="btn sm" data-upimg>📷 Subir</button><input type="file" accept="image/*" hidden data-file></div>
         <div class="row" style="gap:6px"><button type="button" class="btn sm" data-up ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-down ${i < s.scenes.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm red" data-delsc>🗑 Quitar escena</button></div>
       </div></div>`).join('')}</div>
@@ -1518,7 +1518,6 @@ routes.historias = async (_, params) => {
   const o = await api('/api/story-options');
   const sys = o.system || [];
   const esVoices = sys.filter(v => /^es/i.test(v.lang));
-  const freeOk = o.hasGemini || sys.length;
   main.innerHTML = `<h1>📖 Historias IA</h1><p class="sub">Cuéntale una historia (o una idea) y la IA escribe el guion, dibuja cada escena, pone las voces de cada personaje, subtítulos y movimiento. También <b>frutinovelas</b>: telenovelas de frutas con mucho drama.</p>
   <div class="grid g2">
     <form class="card stack" id="f">
@@ -1528,6 +1527,7 @@ routes.historias = async (_, params) => {
         <div style="flex:1"><label>Duración</label><select name="seconds"><option value="30">30 s</option><option value="60" selected>1 min</option><option value="90">1,5 min</option><option value="180">3 min</option></select></div></div>
       <div class="row"><div style="flex:1"><label>Narración</label><select name="narration"><option value="tercera">Narrador (tercera persona)</option><option value="primera">El protagonista lo cuenta (primera persona)</option></select></div>
         <div style="flex:1"><label>Idioma</label><select name="language">${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
+      <div class="small sty-mode" id="aiModeNote"></div>
       <div><label>¿Qué voces uso?</label><input type="hidden" name="voiceMode">
         <div class="vm-pick" id="vmPick">
           <button type="button" data-vm="piper"><b>🧠 IA de voz local</b><small>Gratis y sin internet · voces neuronales</small></button>
@@ -1537,10 +1537,15 @@ routes.historias = async (_, params) => {
         </div>
         <div class="small muted" id="vmInfo"></div></div>
       <div><label>Voz del narrador</label><div class="row" style="flex-wrap:nowrap"><select name="narratorVoice" style="flex:1"><option value="">Automática</option></select><button type="button" class="btn" id="vPrev" title="Escuchar esta voz">▶ Escuchar</button></div></div>
-      <div class="row"><div style="flex:1"><label>Imágenes</label><select name="imageMode"><option value="free">Gratis en la nube (Pollinations)</option>${o.localImage ? '<option value="local">IA local ligera (en tu equipo, sin internet)</option>' : ''}<option value="settings">Las de Ajustes (OpenAI / Gemini)</option></select></div>
+      <div><label>¿Con qué IA dibujo las imágenes?</label><input type="hidden" name="imageMode">
+        <div class="vm-pick" id="imPick">
+          <button type="button" data-im="local" ${o.localImage ? '' : 'disabled'}><b>🖼 IA de imágenes local</b><small>${o.localImage ? 'Gratis y sin internet · en tu equipo (SD-Turbo)' : 'Solo en la app de escritorio'}</small></button>
+          <button type="button" data-im="free"><b>☁ Gratis en la nube</b><small>Pollinations · sin clave</small></button>
+          <button type="button" data-im="settings"><b>⚙ Las de Ajustes</b><small>OpenAI / Gemini (mejor calidad, de pago)</small></button>
+        </div></div>
+      <div class="row">
         <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
-      ${freeOk ? '' : '<div class="small warn-txt">Para voces gratis: añade tu clave de Gemini en Ajustes (gratis en Google AI Studio) o usa la app de escritorio (voces de tu equipo).</div>'}
-      <div class="small muted">Las imágenes gratis tardan un poco (hay un límite de 1 imagen cada pocos segundos): una historia de 1 min suele tardar 3-6 min.</div>
+      <div class="small muted">Las imágenes gratis en la nube tienen un límite (1 imagen cada ~40 s): una historia de 1 min tarda 3-6 min. Con la IA local depende de tu equipo (la primera vez se descarga el modelo, 2 GB).</div>
       <div class="row"><button type="button" class="btn" id="draft">✎ Ver el guion primero</button><button class="btn gold" id="go">🎬 Crear vídeo</button></div>
     </form>
     <div class="card" id="script"><h2>Guion</h2><p class="muted">Puedes revisar y cambiar el guion (lo que dice cada personaje) antes de crear el vídeo.</p></div>
@@ -1583,6 +1588,18 @@ routes.historias = async (_, params) => {
     const a = new Audio(URL.createObjectURL(await r.blob())); await a.play();
     if (v.startsWith('piper:')) { const pv = (o.piper || []).find(x => 'piper:' + x.id === v); if (pv && !pv.ready) { pv.ready = true; fillVoices(); sel.value = v; } }
   });
+  // Imágenes: local / nube / Ajustes (se recuerda la elección)
+  const pickIM = im => {
+    f.imageMode.value = im;
+    $('#imPick').querySelectorAll('[data-im]').forEach(b => b.classList.toggle('on', b.dataset.im === im));
+    try { localStorage.setItem('storyImages', im); } catch {}
+  };
+  $('#imPick').querySelectorAll('[data-im]').forEach(b => b.onclick = () => pickIM(b.dataset.im));
+  { let si = null; try { si = localStorage.getItem('storyImages'); } catch {} pickIM(si && (si !== 'local' || o.localImage) ? si : (o.localImage ? 'local' : 'free')); }
+  // Aviso del modo de IA: el guion sigue el interruptor; la voz y las imágenes se eligen aquí
+  api('/api/ai-mode').then(m => { $('#aiModeNote').innerHTML = m.mode === 'cloud'
+    ? '☁ Estás en <b>IA en la nube</b>: el guion lo escribe la nube, pero aquí puedes usar igualmente la <b>voz</b> y las <b>imágenes</b> de tu equipo (IA local).'
+    : '💻 Estás en <b>IA local</b>: el guion se escribe en tu equipo. La voz y las imágenes las eliges aquí.'; }).catch(() => {});
   { let saved = null; try { saved = localStorage.getItem('storyVoice'); } catch {} pickVM(saved && (saved !== 'system' || sys.length) ? saved : 'piper'); }
   const opts2 = () => { const d = Object.fromEntries(new FormData(f)); d.type = 'story'; d.mode = mode; d.format = 'vertical'; d.seconds = Number(d.seconds); if (mode === 'fruit') d.style = d.style || 'fruta'; return d; };
   let script = null;
