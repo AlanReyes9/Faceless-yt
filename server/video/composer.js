@@ -208,8 +208,9 @@ register('compose.scene', async ({ id, i }, ctx) => {
       let ipShort = String(s.image_prompt || '');
       for (const c of chars) ipShort = ipShort.split(c.name).join(short(c.look));
       const compact = `${ipShort.slice(0, 260)}, ${st.short}${fruitRule ? ', fruit characters, no humans' : ''}, vertical, no text`;
-      const free = o.imageMode === 'free' || (o.imageMode !== 'settings' && (await getSetting('image_provider')) === 'pollinations');
-      const buf = await generateImage(free ? compact : prompt, { size: vertical ? '1024x1536' : '1536x1024', provider: o.imageMode === 'free' ? 'pollinations' : undefined, seed: p.data.script.seed });
+      const free = o.imageMode === 'free' || o.imageMode === 'local' || (o.imageMode !== 'settings' && (await getSetting('image_provider')) === 'pollinations');
+      const buf = await generateImage(free ? compact : prompt, { size: vertical ? '1024x1536' : '1536x1024', provider: o.imageMode === 'free' ? 'pollinations' : o.imageMode === 'local' ? 'local' : undefined, seed: p.data.script.seed,
+        onProgress: t => updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: ${String(t?.stage || t)}` }).catch(() => {}) });
       media = await saveBuffer(buf, `scene_${tag}.png`, 'image/png');
       s.media = media;
       const fresh = await getProject(id);
@@ -310,3 +311,28 @@ register('compose.concat', async ({ id }) => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }, ({ id }, msg) => updateProject(id, { status: 'error', error: msg, progress: null }));
+
+/** Editor de historias: nueva imagen para una escena (con la descripción dada) y se guarda en el guion. */
+export async function regenerateSceneImage(id, i, { prompt, source } = {}) {
+  const p = await getProject(id);
+  const o = p.data.options || {}, sc = p.data.script?.scenes?.[i];
+  if (!sc) throw new Error('Esa escena no existe.');
+  if (prompt != null) sc.image_prompt = String(prompt).slice(0, 1200);
+  const st = STORY_STYLES[o.style] || STORY_STYLES.caricatura;
+  const chars = (p.data.script.characters || []).filter(c => c.look && c.name && String(sc.image_prompt).toLowerCase().includes(String(c.name).toLowerCase()));
+  const short = w => String(w || '').split(/\s+/).slice(0, 14).join(' ').replace(/[,.;]+$/, '');
+  let ip = String(sc.image_prompt || '');
+  for (const c of chars) ip = ip.split(c.name).join(short(c.look));
+  const fruit = o.style === 'fruta' || o.mode === 'fruit';
+  const src = source || o.imageMode || 'free';
+  const prompt2 = src === 'settings' ? `${fruit ? 'Every character is an anthropomorphic fruit, not a human. ' : ''}${st.prompt}. ${ip}. Vertical 9:16 composition. No text.`
+    : `${ip.slice(0, 260)}, ${st.short}${fruit ? ', fruit characters, no humans' : ''}, vertical, no text`;
+  const buf = await generateImage(prompt2, { size: '1024x1536', provider: src === 'free' ? 'pollinations' : src === 'local' ? 'local' : undefined, seed: Math.floor(Math.random() * 1e9) });
+  const media = await saveBuffer(buf, `scene_p${id}_s${i}_${Date.now()}.png`, 'image/png');
+  const fresh = await getProject(id);
+  const old = fresh.data.script.scenes[i].media;
+  fresh.data.script.scenes[i] = { ...fresh.data.script.scenes[i], image_prompt: sc.image_prompt, media };
+  await updateProject(id, { data: fresh.data });
+  if (old && old !== media) await removeFile(old).catch(() => {});
+  return media;
+}

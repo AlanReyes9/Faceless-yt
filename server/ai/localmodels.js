@@ -21,6 +21,9 @@ export const LOCAL_MODELS = {
     url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf' },
   'qwen2.5-0.5b': { kind: 'llm', file: 'qwen2.5-0.5b-instruct-q4_k_m.gguf', mb: 400, label: 'Qwen 2.5 0.5B (solo pruebas)', hidden: true,
     url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf' },
+  // Ligera y rápida: 4 pasos en vez de 22 (unas 5 veces más rápida en equipos sin gráfica)
+  sdturbo: { kind: 'image', file: 'sd_turbo-f16-q8_0.gguf', mb: 2024, label: 'SD-Turbo (imágenes rápidas en tu equipo)', turbo: true,
+    url: 'https://huggingface.co/Green-Sky/SD-Turbo-GGUF/resolve/main/sd_turbo-f16-q8_0.gguf' },
   dreamshaper8: { kind: 'image', file: 'DreamShaper_8_pruned.safetensors', mb: 2130, label: 'DreamShaper 8 (imágenes de fondo para miniaturas)',
     url: 'https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors' },
 };
@@ -51,7 +54,13 @@ export function physicalCores() {
 }
 /** Hilos para llama.cpp / whisper.cpp / stable-diffusion.cpp: los núcleos físicos (medido: más rápido que la mitad o que todos los lógicos). */
 export const cpuThreads = (max = 12) => Math.max(2, Math.min(max, physicalCores()));
-export const DEFAULT_IMAGE_MODEL = 'dreamshaper8';
+export const DEFAULT_IMAGE_MODEL = 'sdturbo';
+/** Modelo de imágenes local elegido en Ajustes: «sdturbo» (ligero, por defecto) o «dreamshaper8» (más calidad, más lento). */
+export async function currentImageModel() {
+  const { getSetting } = await import('../settings.js');
+  const v = await getSetting('local_image_model').catch(() => '');
+  return LOCAL_MODELS[v]?.kind === 'image' ? v : DEFAULT_IMAGE_MODEL;
+}
 
 const bin = names => {
   const dirs = [process.env.LOCAL_BIN_DIR, ...(process.env.PATH || '').split(path.delimiter)].filter(Boolean);
@@ -227,18 +236,23 @@ export async function chatLocal(system, user, { json = false, maxTokens = 4000, 
 export async function imageLocal(prompt, opts = {}) {
   return imageRun(sdBinary(), prompt, opts);
 }
-async function imageRun(exe, prompt, { size = '1024x1536', steps = Number(process.env.LOCAL_IMAGE_STEPS || 22), onProgress } = {}) {
+async function imageRun(exe, prompt, { size = '1024x1536', steps, onProgress, model: wanted } = {}) {
   if (!exe) throw new Error('La generación de imágenes local solo está en la app de escritorio (falta stable-diffusion).');
-  const model = await ensureModel(DEFAULT_IMAGE_MODEL, pct => onProgress?.(`Descargando el modelo de imágenes (solo la primera vez)… ${pct}%`));
+  const id = LOCAL_MODELS[wanted]?.kind === 'image' ? wanted : await currentImageModel();
+  const turbo = !!LOCAL_MODELS[id].turbo;
+  steps = Number(steps || process.env.LOCAL_IMAGE_STEPS || (turbo ? 4 : 22));
+  const model = await ensureModel(id, pct => onProgress?.(`Descargando el modelo de imágenes (solo la primera vez)… ${pct}%`));
   const [w0, h0] = String(size).split('x').map(Number);
-  // SD 1.5: ~0,4 megapíxeles en múltiplos de 64 (después se escala al tamaño final)
-  const ratio = (w0 || 1) / (h0 || 1);
-  const w = Math.round(Math.sqrt(400000 * ratio) / 64) * 64, h = Math.round(Math.sqrt(400000 / ratio) / 64) * 64;
+  // SD 1.5 / SD-Turbo: ~0,4 / ~0,33 megapíxeles en múltiplos de 64 (después se escala al tamaño final)
+  const ratio = (w0 || 1) / (h0 || 1), px = turbo ? 330000 : 400000;
+  const w = Math.round(Math.sqrt(px * ratio) / 64) * 64, h = Math.round(Math.sqrt(px / ratio) / 64) * 64;
   const out = path.join(WORK_DIR, `sd_${crypto.randomBytes(5).toString('hex')}.png`);
   const neg = 'text, letters, words, watermark, logo, signature, blurry, lowres, deformed, extra fingers, bad anatomy, ugly';
   await new Promise((resolve, reject) => {
-    const p = spawn(exe, ['-m', model, '-p', prompt.slice(0, 900), '-n', neg, '-W', String(w), '-H', String(h), '--steps', String(steps), '--cfg-scale', '6.5',
-      '--sampling-method', 'dpm++2m', '-t', String(cpuThreads(16)), '-o', out], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    // SD-Turbo: sin guía (cfg 1) y muestreo euler_a; el texto negativo no se usa con cfg 1
+    const args = turbo ? ['-m', model, '-p', prompt.slice(0, 600), '-W', String(w), '-H', String(h), '--steps', String(steps), '--cfg-scale', '1', '--sampling-method', 'euler_a']
+      : ['-m', model, '-p', prompt.slice(0, 900), '-n', neg, '-W', String(w), '-H', String(h), '--steps', String(steps), '--cfg-scale', '6.5', '--sampling-method', 'dpm++2m'];
+    const p = spawn(exe, [...args, '-t', String(cpuThreads(16)), '-o', out], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let log = '';
     const on = d => { const s = String(d); log = (log + s).slice(-3000); const m = s.match(/(\d+)\/(\d+)\s*-/); if (m) onProgress?.(`Generando la imagen en tu equipo… ${Math.round(m[1] / m[2] * 100)}%`); };
     p.stdout.on('data', on); p.stderr.on('data', on);

@@ -1408,12 +1408,99 @@ function longView(p, chs) {
       <div><label>Programar (opcional)</label><input type="datetime-local" id="pat"></div>
       <button class="btn gold" id="pub" ${p.output ? '' : 'disabled'}>Publicar ahora</button></div>
     ${s?.hooks?.length ? `<div class="card" style="grid-column:1/-1"><h2>Ganchos alternativos</h2><ul>${s.hooks.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
-    ${s?.scenes ? `<div class="card" style="grid-column:1/-1"><h2>Escenas</h2>${s.scenes.map((x, i) => `<div class="row" style="align-items:flex-start;flex-wrap:nowrap;padding:6px 0">
+    ${p.type === 'story' && s?.scenes ? storyEditor(p) : ''}
+    ${p.type !== 'story' && s?.scenes ? `<div class="card" style="grid-column:1/-1"><h2>Escenas</h2>${s.scenes.map((x, i) => `<div class="row" style="align-items:flex-start;flex-wrap:nowrap;padding:6px 0">
       ${x.mediaUrl ? (/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(x.mediaUrl) ? `<img src="${x.mediaUrl}" style="width:64px;border-radius:6px" onerror="this.remove()">` : '<span class="pill">vídeo</span>') : ''}
       <div><b class="muted">${i + 1}.</b> ${esc(x.narration || '(sin voz)')}${x.overlay ? ` <span class="pill">${esc(x.overlay)}</span>` : ''}</div></div>`).join('')}</div>` : ''}
   </div>`;
 }
+// ---------- Editor de historias: textos, voces e imágenes de cada escena ----------
+function storyEditor(p) {
+  const s = p.data.script, cast = s.cast || {}, chars = cast.characters || [];
+  const busyNow = p.status === 'processing' || p.status === 'pending';
+  return `<div class="card stack" style="grid-column:1/-1" id="sted">
+    <div class="row between"><h2 style="margin:0">✏️ Editar la historia</h2><span class="small muted">Cambia lo que quieras y pulsa «Guardar y volver a crear»: las imágenes que no cambies se reutilizan.</span></div>
+    ${busyNow ? '<div class="small warn-txt">El vídeo se está creando: espera a que termine para editarlo.</div>' : ''}
+    <div class="row"><div style="flex:2"><label>Título</label><input id="sedTitle" value="${esc(s.title || p.title)}"></div>
+      <div style="flex:1"><label>Subtítulos</label><select id="sedCap">${opts(CAP_STYLES, p.data.options?.captionStyle || 'impacto')}</select></div></div>
+    ${cast.provider ? `<div><label>Voces (${{ piper: 'IA de voz local', system: 'voz del computador', gemini: 'Gemini' }[cast.provider] || cast.provider})</label>
+      <div class="sed-cast">${[['Narrador', cast.narrator], ...chars.map(c => [c.name, c.voice])].map(([n, v]) => `<div class="row" style="flex-wrap:nowrap;gap:6px"><b style="width:90px;flex:none">${esc(n)}</b><select data-cast="${esc(n)}" data-cur="${esc(v || '')}" style="flex:1"><option value="${esc(v || '')}">${esc(String(v || '').replace(/^\w+:/, '') || 'Automática')}</option></select><button type="button" class="btn sm" data-hear="${esc(n)}" title="Escuchar">▶</button></div>`).join('')}</div></div>` : ''}
+    <div class="sed-scenes">${s.scenes.map((sc, i) => `<div class="sed-scene" data-sc="${i}">
+      <div class="sed-img">${sc.mediaUrl ? `<img src="${sc.mediaUrl}" alt="">` : '<div class="empty small">Sin imagen</div>'}</div>
+      <div class="stack" style="flex:1;min-width:0">
+        <div class="small muted">Escena ${i + 1}</div>
+        <div class="stack sed-lines">${sc.lines.map(l => `<div class="row sed-line" style="flex-wrap:nowrap;gap:6px"><input data-k="speaker" value="${esc(l.speaker)}" style="width:110px;flex:none"><textarea data-k="text" rows="2" style="flex:1">${esc(l.text)}</textarea><button type="button" class="btn sm red" data-delline title="Quitar frase">✕</button></div>`).join('')}</div>
+        <div class="row" style="gap:6px"><button type="button" class="btn sm" data-addline>＋ Frase</button><input data-k="overlay" value="${esc(sc.overlay || '')}" placeholder="Texto en pantalla (opcional)" style="flex:1"></div>
+        <div class="row" style="flex-wrap:nowrap;gap:6px"><input data-k="image_prompt" value="${esc(sc.image_prompt || '')}" placeholder="Descripción de la imagen (inglés)" style="flex:1">
+          <select data-k="src" style="width:auto"><option value="free">Gratis</option>${window.__localImage ? '<option value="local">IA local</option>' : ''}<option value="settings">Ajustes</option></select>
+          <button type="button" class="btn sm" data-newimg>🎨 Otra imagen</button><button type="button" class="btn sm" data-upimg>📷 Subir</button><input type="file" accept="image/*" hidden data-file></div>
+        <div class="row" style="gap:6px"><button type="button" class="btn sm" data-up ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-down ${i < s.scenes.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm red" data-delsc>🗑 Quitar escena</button></div>
+      </div></div>`).join('')}</div>
+    <button class="btn gold" id="sedSave" ${busyNow ? 'disabled' : ''}>💾 Guardar y volver a crear el vídeo</button></div>`;
+}
+async function bindStoryEditor(p) {
+  const root = $('#sted'); if (!root) return;
+  const cast = p.data.script.cast || {};
+  // voces disponibles para elegir (del mismo tipo que se usó al crear la historia)
+  const o = await api('/api/story-options').catch(() => ({}));
+  window.__localImage = !!o.localImage;
+  const list = cast.provider === 'piper' ? (o.piper || []).map(v => ['piper:' + v.id, v.label])
+    : cast.provider === 'gemini' ? [...(o.gemini?.male || []).map(v => ['gemini:' + v, v + ' (hombre)']), ...(o.gemini?.female || []).map(v => ['gemini:' + v, v + ' (mujer)'])]
+    : (o.system || []).map(v => ['system:' + v.id, `${v.name} (${v.gender === 'female' ? 'mujer' : 'hombre'})`]);
+  root.querySelectorAll('[data-cast]').forEach(sel => {
+    const cur = sel.dataset.cur, base = cur.split('@')[0];
+    sel.innerHTML = list.map(([k, l]) => `<option value="${esc(k)}" ${k === base ? 'selected' : ''}>${esc(l)}</option>`).join('') + (cur.includes('@') ? `<option value="${esc(cur)}" selected>${esc(base.replace(/^\w+:/, ''))} (tono cambiado)</option>` : '');
+  });
+  root.querySelectorAll('[data-hear]').forEach(b => b.onclick = () => busy(b, async () => {
+    const v = root.querySelector(`[data-cast="${CSS.escape(b.dataset.hear)}"]`).value;
+    const r = await fetch('/api/voice-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voice: v }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'No se pudo generar la voz.');
+    await new Audio(URL.createObjectURL(await r.blob())).play();
+  }));
+  const scenesEl = root.querySelector('.sed-scenes');
+  const lineHTML = () => `<div class="row sed-line" style="flex-wrap:nowrap;gap:6px"><input data-k="speaker" value="Narrador" style="width:110px;flex:none"><textarea data-k="text" rows="2" style="flex:1"></textarea><button type="button" class="btn sm red" data-delline title="Quitar frase">✕</button></div>`;
+  const media = {}; // escena → imagen nueva
+  const bindScene = el => {
+    const i = Number(el.dataset.sc);
+    el.querySelector('[data-addline]').onclick = () => { el.querySelector('.sed-lines').insertAdjacentHTML('beforeend', lineHTML()); bindDel(el); };
+    const bindDel = e2 => e2.querySelectorAll('[data-delline]').forEach(b => b.onclick = () => b.closest('.sed-line').remove());
+    bindDel(el);
+    el.querySelector('[data-newimg]').onclick = e => busy(e.target, async () => {
+      toast('Dibujando la imagen… (puede tardar hasta un minuto)');
+      const r = await api(`/api/projects/${p.id}/scenes/${i}/image`, { method: 'POST', body: { prompt: el.querySelector('[data-k=image_prompt]').value, source: el.querySelector('[data-k=src]').value } });
+      media[i] = r.media; el.querySelector('.sed-img').innerHTML = `<img src="${r.url}" alt="">`;
+    });
+    const fi = el.querySelector('[data-file]');
+    el.querySelector('[data-upimg]').onclick = () => { fi.value = ''; fi.click(); };
+    fi.onchange = () => busy(el.querySelector('[data-upimg]'), async () => {
+      const f = fi.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f, f.name);
+      const up = await fetch('/api/upload', { method: 'POST', body: fd }).then(x => x.json());
+      if (!up.ref) throw new Error(up.error || 'No se pudo subir la imagen.');
+      const r = await api(`/api/projects/${p.id}/scenes/${i}/media`, { method: 'PUT', body: { ref: up.ref } });
+      media[i] = r.media; el.querySelector('.sed-img').innerHTML = `<img src="${r.url}" alt="">`;
+    });
+    el.querySelector('[data-delsc]').onclick = () => { if (scenesEl.children.length > 1) el.remove(); else toast('La historia necesita al menos una escena', 'bad'); };
+    el.querySelector('[data-up]').onclick = () => { const prev = el.previousElementSibling; if (prev) scenesEl.insertBefore(el, prev); };
+    el.querySelector('[data-down]').onclick = () => { const next = el.nextElementSibling; if (next) scenesEl.insertBefore(next, el); };
+  };
+  root.querySelectorAll('.sed-scene').forEach(bindScene);
+  $('#sedSave').onclick = e => busy(e.target, async () => {
+    const scenes = [...root.querySelectorAll('.sed-scene')].map(el => {
+      const i = Number(el.dataset.sc), old = p.data.script.scenes[i];
+      return { from: i, media: media[i] || old.media, image_prompt: el.querySelector('[data-k=image_prompt]').value, overlay: el.querySelector('[data-k=overlay]').value,
+        lines: [...el.querySelectorAll('.sed-line')].map(l => ({ speaker: l.querySelector('[data-k=speaker]').value, text: l.querySelector('[data-k=text]').value,
+          emotion: (old.lines || []).find(x => x.text === l.querySelector('[data-k=text]').value)?.emotion || '' })) };
+    });
+    const castOut = { narrator: root.querySelector('[data-cast="Narrador"]')?.value, characters: {} };
+    root.querySelectorAll('[data-cast]').forEach(sel => { if (sel.dataset.cast !== 'Narrador') castOut.characters[sel.dataset.cast] = sel.value; });
+    await api(`/api/projects/${p.id}/story`, { method: 'PUT', body: { title: $('#sedTitle').value, captionStyle: $('#sedCap').value, scenes, cast: castOut } });
+    toast('🎬 Volviendo a crear el vídeo con tus cambios…', 'good'); router();
+  });
+}
+
 function bindLong(p) {
+  if (p.type === 'story') bindStoryEditor(p);
   const ps = $('#psocial'); if (ps) ps.onclick = () => socialDialog({ project_id: p.id, caption: p.data.script?.title || p.title || '' });
   const b = $('#pub'); if (!b) return;
   b.onclick = () => busy(b, async () => {
@@ -1450,7 +1537,7 @@ routes.historias = async (_, params) => {
         </div>
         <div class="small muted" id="vmInfo"></div></div>
       <div><label>Voz del narrador</label><div class="row" style="flex-wrap:nowrap"><select name="narratorVoice" style="flex:1"><option value="">Automática</option></select><button type="button" class="btn" id="vPrev" title="Escuchar esta voz">▶ Escuchar</button></div></div>
-      <div class="row"><div style="flex:1"><label>Imágenes</label><select name="imageMode"><option value="free">Gratis (Pollinations)</option><option value="settings">Las de Ajustes (OpenAI / Gemini / IA local)</option></select></div>
+      <div class="row"><div style="flex:1"><label>Imágenes</label><select name="imageMode"><option value="free">Gratis en la nube (Pollinations)</option>${o.localImage ? '<option value="local">IA local ligera (en tu equipo, sin internet)</option>' : ''}<option value="settings">Las de Ajustes (OpenAI / Gemini)</option></select></div>
         <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       ${freeOk ? '' : '<div class="small warn-txt">Para voces gratis: añade tu clave de Gemini en Ajustes (gratis en Google AI Studio) o usa la app de escritorio (voces de tu equipo).</div>'}
       <div class="small muted">Las imágenes gratis tardan un poco (hay un límite de 1 imagen cada pocos segundos): una historia de 1 min suele tardar 3-6 min.</div>

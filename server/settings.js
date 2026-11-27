@@ -74,6 +74,7 @@ export const FIELDS = {
   groq_whisper_model: { secret: false, default: 'whisper-large-v3', label: 'Modelo de transcripción en Groq (large-v3 = más preciso; turbo = más barato)', options: ['whisper-large-v3', 'whisper-large-v3-turbo'], group: 'Preferencias' },
   whisper_model: { secret: false, default: 'small', label: 'Modelo de transcripción local', options: ['base', 'small', 'small-q5_1', 'large-v3-turbo', 'medium'], group: 'Preferencias' },
   tts_provider: { secret: false, default: 'openai', label: 'Voz (TTS) · system = voces de tu equipo · piper = IA de voz local · gemini = gratis con tu clave de Gemini', options: ['openai', 'elevenlabs', 'system', 'gemini', 'piper'], group: 'Preferencias' },
+  local_image_model: { secret: false, default: 'sdturbo', label: 'IA de imágenes local (sdturbo = ligera y rápida · dreamshaper8 = más calidad, más lenta)', options: ['sdturbo', 'dreamshaper8'], group: 'Preferencias' },
   piper_voice: { secret: false, default: 'es_MX-claude-high', label: 'Voz local Piper (IA de voz sin internet)', options: ['es_MX-claude-high', 'es_MX-ald-medium', 'es_AR-daniela-high', 'es_ES-davefx-medium', 'es_ES-sharvard-medium#M', 'es_ES-sharvard-medium#F'], group: 'Preferencias' },
   gemini_voice: { secret: false, default: 'Kore', label: 'Voz de Gemini (Kore, Puck, Charon, Aoede…)', group: 'Preferencias' },
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },

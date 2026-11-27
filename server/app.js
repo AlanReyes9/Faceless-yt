@@ -572,7 +572,7 @@ app.get('/api/local-models', h(async (req, res) => {
   const models = [];
   if (lw.localAvailable()) models.push({ kind: 'whisper', id: wm, label: `Whisper ${wm}`, use: 'Transcripción (voz → texto con tiempos por palabra)', mb: lw.WHISPER_MODELS[wm]?.mb || 466, ready: lw.modelReady(wm), download: lw.downloadStatus(wm) });
   if (lm.localLLMAvailable()) { const id = await lm.currentLLMModel(), m = lm.LOCAL_MODELS[id]; models.push({ kind: 'llm', id, label: m.label.split(' (')[0], use: 'IA de texto: momentos virales, títulos, descripciones, informe y preguntas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
-  if (lm.localImageAvailable()) { const id = lm.DEFAULT_IMAGE_MODEL, m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes de fondo para miniaturas', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
+  if (lm.localImageAvailable()) { const id = await lm.currentImageModel(), m = lm.LOCAL_MODELS[id]; models.push({ kind: 'image', id, label: m.label.split(' (')[0], use: 'Imágenes: miniaturas e Historias IA', mb: m.mb, ready: lm.modelReady(id), download: lm.downloadStatus(id) }); }
   res.json({ available, models });
 }));
 app.post('/api/local-models/download', h(async (req, res) => {
@@ -663,6 +663,46 @@ app.post('/api/story/script', h(async (req, res) => {
   const { generateStoryScript } = await import('./video/composer.js');
   res.json(await generateStoryScript(req.body));
 }));
+// ---------- Editor de historias (y frutinovelas) ----------
+const storyProject = async id => { const p = await getProject(id); if (p.type !== 'story') throw new Error('Solo para historias. (400)'); return p; };
+app.post('/api/projects/:id/scenes/:i/image', h(async (req, res) => {
+  await storyProject(req.params.id);
+  const { regenerateSceneImage } = await import('./video/composer.js');
+  const media = await regenerateSceneImage(Number(req.params.id), Number(req.params.i), { prompt: req.body.prompt, source: req.body.source });
+  res.json({ media, url: publicUrl(media) });
+}));
+app.put('/api/projects/:id/scenes/:i/media', h(async (req, res) => {
+  const p = await storyProject(req.params.id);
+  const i = Number(req.params.i), sc = p.data.script?.scenes?.[i];
+  if (!sc) throw new Error('Esa escena no existe.');
+  const ref = String(req.body.ref || '');
+  if (!ref) throw new Error('Falta la imagen.');
+  sc.media = ref;
+  await updateProject(p.id, { data: p.data });
+  res.json({ media: ref, url: publicUrl(ref) });
+}));
+// Guarda los cambios (textos, quién habla, voces, subtítulos) y vuelve a montar el vídeo con las imágenes que ya hay
+app.put('/api/projects/:id/story', h(async (req, res) => {
+  const p = await storyProject(req.params.id);
+  const old = p.data.script || {}, b = req.body || {};
+  const scenes = (b.scenes || []).map((s, i) => {
+    const prev = old.scenes?.[s.from ?? i] || {};
+    const lines = (s.lines || []).map(l => ({ speaker: String(l.speaker || 'Narrador').slice(0, 40), text: String(l.text || '').slice(0, 600), emotion: String(l.emotion || '').slice(0, 60) })).filter(l => l.text.trim());
+    return { ...prev, lines, narration: lines.map(l => l.text).join(' '), image_prompt: String(s.image_prompt ?? prev.image_prompt ?? '').slice(0, 1200), overlay: String(s.overlay ?? prev.overlay ?? '').slice(0, 40), media: s.media || prev.media };
+  }).filter(s => s.lines.length);
+  if (!scenes.length) throw new Error('La historia necesita al menos una escena con texto.');
+  const cast = old.cast ? { ...old.cast } : null;
+  if (cast && b.cast) {
+    const ok = v => /^(piper|system|gemini):/.test(String(v || ''));
+    if (ok(b.cast.narrator)) cast.narrator = b.cast.narrator;
+    cast.characters = (cast.characters || []).map(c => ok(b.cast.characters?.[c.name]) ? { ...c, voice: b.cast.characters[c.name] } : c);
+  }
+  const options = { ...p.data.options, ...(b.captionStyle ? { captionStyle: String(b.captionStyle) } : {}) };
+  await updateProject(p.id, { title: String(b.title || old.title || p.title).slice(0, 120), status: 'processing', error: null, progress: 'Volviendo a montar el vídeo…', percent: 5,
+    data: { ...p.data, options, parts: [], script: { ...old, title: b.title || old.title, scenes, ...(cast ? { cast } : {}) } } });
+  await enqueue('compose.scene', { id: p.id, i: 0 });
+  res.json({ ok: true });
+}));
 // Probar una voz antes de elegirla
 app.post('/api/voice-preview', h(async (req, res) => {
   const v = String(req.body.voice || '');
@@ -680,7 +720,8 @@ app.get('/api/story-options', h(async (req, res) => {
   const { systemVoices, GEMINI_VOICES } = await import('./ai/voices.js');
   const { PIPER_VOICES, piperReady } = await import('./ai/piper.js');
   res.json({ styles: Object.fromEntries(Object.entries(STORY_STYLES).map(([k, v]) => [k, v.label])), system: IS_VERCEL ? [] : await systemVoices(), gemini: GEMINI_VOICES, hasGemini: !!(await getSetting('gemini_key')),
-    piper: Object.entries(PIPER_VOICES).map(([id, v]) => ({ id, label: v.label, gender: v.gender, mb: v.mb, ready: piperReady(id) })) });
+    piper: Object.entries(PIPER_VOICES).map(([id, v]) => ({ id, label: v.label, gender: v.gender, mb: v.mb, ready: piperReady(id) })),
+    localImage: !IS_VERCEL && (await import('./ai/localmodels.js')).localImageAvailable() });
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
