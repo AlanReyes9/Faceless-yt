@@ -35,7 +35,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 // ---------- Navegación ----------
 const NAV = [
   ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
-  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'], ['multiedit', '🧬', 'Multi Edit'],
+  ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['historias', '📖', 'Historias IA'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'], ['multiedit', '🧬', 'Multi Edit'],
     ['ranking', '🏆', 'Rankings Top'], ['miniaturas', '🖼', 'Miniaturas IA'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
   ['ADMINISTRACIÓN', [['servidor', '⚙', 'Estado del servidor']]],
@@ -89,6 +89,8 @@ async function router() {
   $('#sidebar').classList.remove('open');
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const [route, arg] = path.split('/');
+  // el editor de vídeo se ve siempre en oscuro (como los editores profesionales); el resto, con el tema elegido
+  { let t = 'light'; try { t = localStorage.getItem('theme') || 'light'; } catch {} document.documentElement.dataset.theme = route === 'editor' ? 'dark' : t; }
   const params = new URLSearchParams(query || '');
   const me = ME = await api('/api/me').catch(() => ({ authed: false, setup: [] }));
   renderNav(route === 'proyecto' ? 'videos' : route);
@@ -167,7 +169,7 @@ async function uploadMany(files, el) {
   el.textContent = '';
   return refs;
 }
-const TYPE_LABEL = { shorts: '✂ Clips', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje', ranking: '🏆 Ranking' };
+const TYPE_LABEL = { shorts: '✂ Clips', live: '🔴 Directo', long: '▶ Completo', ad: '✦ Anuncio', montage: '⧉ Montaje', story: '📖 Historia', ranking: '🏆 Ranking' };
 
 const channelsCache = { list: null, async get() { return this.list ||= await api('/api/channels'); }, reset() { this.list = null; } };
 const channelOptions = (list, sel, empty = 'Sin canal') => `<option value="">${empty}</option>` + list.map(c => `<option value="${c.id}" ${c.id == sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -1225,30 +1227,50 @@ function bindLive(p) {
   });
 }
 
+// Tema claro / oscuro
+{
+  const tb = document.getElementById('themeBtn');
+  const paint = () => { if (tb) tb.textContent = document.documentElement.dataset.theme === 'light' ? '🌙 Tema oscuro' : '☀️ Tema claro'; };
+  if (tb) tb.onclick = () => { const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = t; try { localStorage.setItem('theme', t); } catch {} paint(); };
+  paint();
+}
+
 function shortsGrid(p, chs) {
   if (!p.clips?.length) return p.live && !p.live.ended ? '<div class="empty">Aún no hay clips: el primero aparece tras analizar el primer segmento.</div>' : p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
   return `<div class="shorts">${p.clips.map(c => {
     const dur = c.end - c.start;
     const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
-    return `<div class="clip" data-clip="${c.id}">
+    const sg = c.signals || {};
+    const viral = Math.max(1, Math.min(99, Math.round(sg.viral || (Number(c.score) || 5) * 10 - (c.score >= 10 ? 1 : 0))));
+    const tone = ['pink', 'blue', 'peach', 'lilac'][(c.idx - 1) % 4];
+    const cat = sg.category || (/marcado por ti/i.test(c.reason || '') ? '✂ Marcado por ti' : null);
+    return `<div class="clip cc ${tone}" data-clip="${c.id}">
       <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>`
         : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
-        : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}</div>
+        : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}
+        ${cat ? `<span class="cc-cat">${esc(cat)}</span>` : ''}${c.variant_label ? `<span class="cc-var" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}</div>
       <div class="body">
-        <div class="row" style="gap:5px"><b>#${c.idx}</b>${c.variant_label ? `<span class="pill" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}<span class="pill">${c.score}/10</span><span class="pill">${c.layout === 'face' ? 'quien habla' : c.layout === 'crop' ? 'recorte fijo' : c.layout === 'gaming' ? '🎮 gaming' : c.layout === 'split' ? '◫ dividida' : 'fondo difuminado'}</span>
-          ${!p.cleanup?.deletedAt ? `<a class="btn sm gold" href="#/editor/${c.id}" style="margin-left:auto">✏️ Editor</a>` : ''}</div>
+        <div class="cc-score"><b>${viral}%</b><span>potencial viral</span></div>
+        <div class="cc-bar"><i style="width:${viral}%"></i></div>
+        <div class="cc-time"><b>${mmss(dur)}</b><span data-time>${mmss(c.start)} – ${mmss(c.end)}</span></div>
+        <div class="cc-title"><b>${esc(c.title || 'Clip ' + c.idx)}</b>${c.reason ? ` <span>${esc(c.reason)}</span>` : ''}</div>
+        ${sg.quote ? `<div class="cc-quote">“${esc(sg.quote)}”</div>` : ''}
         ${c.status === 'rendering' ? pill('rendering') : ''}
+        <div class="cc-actions">
+          ${c.url && c.status !== 'rendering' ? `<button class="btn cc-dl" data-dl>⬇ Descargar</button>` : ''}
+          ${!p.cleanup?.deletedAt ? `<a class="btn cc-edit" href="#/editor/${c.id}">✎ Editar clip</a>` : ''}
+          <button class="btn cc-pub" data-publish>📤 Publicar${c.yt_video_id ? ' · YouTube ✓' : ''}</button>
+        </div>
+        <details class="cc-more"><summary>⚙ Ajustes rápidos</summary><div class="stack" style="margin-top:8px">
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
         <div><label>Texto fijo arriba (gancho, todo el clip)</label><input data-f="hook" value="${esc(c.hook)}"></div>
-        <div class="muted" data-time>${mmss(c.start)} → ${mmss(c.end)} · ${Math.round(dur)} s</div>
+        <div class="muted" data-time2>${mmss(c.start)} → ${mmss(c.end)} · ${Math.round(dur)} s</div>
         <div class="nudge"><span class="muted">Inicio</span><button class="btn" data-n="start:-1">−1 s</button><button class="btn" data-n="start:1">+1 s</button>
           <span class="muted">Fin</span><button class="btn" data-n="end:-1">−1 s</button><button class="btn" data-n="end:1">+1 s</button></div>
         <select data-f="layout" title="Encuadre">${opts(LAYOUTS, c.layout)}</select>
         <select data-f="style" title="Estilo de subtítulos">${opts(CAP_STYLES, c.style || 'clasico')}</select>
-        <details><summary>✨ Palabras clave y emojis</summary><div class="stack" style="margin-top:6px">
-          <div><label>Palabras resaltadas (separadas por comas)</label><input data-f="keywords" value="${esc((c.keywords || []).join(', '))}"></div>
-          <div><label>Emojis: "emoji palabra", separados por comas</label><input data-f="emojis" value="${esc(emojisToText(c.emojis))}" placeholder="💰 dinero, 🚨 policía"></div>
-          <div class="small muted">Se aplican al pulsar "Aplicar cambios".</div></div></details>
+        <div><label>Palabras resaltadas (separadas por comas)</label><input data-f="keywords" value="${esc((c.keywords || []).join(', '))}"></div>
+        <div><label>Emojis: "emoji palabra", separados por comas</label><input data-f="emojis" value="${esc(emojisToText(c.emojis))}" placeholder="💰 dinero, 🚨 policía"></div>
         <button class="btn gold" data-apply>Aplicar cambios</button>
         ${c.reason || c.signals ? `<details><summary>¿Por qué este momento?</summary><div class="muted">${esc(c.reason || '')}</div>${viralBreakdown(c.signals)}</details>` : ''}
         <details><summary>🌐 Sacarlo en otro idioma</summary><div class="stack" style="margin-top:6px">
@@ -1256,8 +1278,8 @@ function shortsGrid(p, chs) {
           <button class="btn sm" data-tr>Traducir subtítulos y gancho</button>
           ${langs.map(([l, v]) => `<a href="${v.url}" target="_blank" class="small">▶ Versión ${LANGS[l] || l}</a>`).join('<br>')}</div></details>
         <button class="btn" data-multi>🧬 Multi Edit: crear versiones</button>
-        <button class="btn gold" data-publish>📤 Publicar${c.yt_video_id ? ' <span class="small">· YouTube ✓</span>' : ''}</button>
         <label class="check"><input type="checkbox" data-zip ${c.include_zip ? 'checked' : ''}> Incluir en el .zip</label>
+        </div></details>
       </div></div>`;
   }).join('')}</div>`;
 }
@@ -1297,7 +1319,7 @@ function bindClips(p) {
   main.querySelectorAll('[data-clip]').forEach(el => {
     const c = p.clips.find(x => x.id == el.dataset.clip);
     const st = { start: c.start, end: c.end };
-    const upd = () => { $('[data-time]', el).textContent = `${mmss(st.start)} → ${mmss(st.end)} · ${Math.round(st.end - st.start)} s`; };
+    const upd = () => { $('[data-time2]', el).textContent = `${mmss(st.start)} → ${mmss(st.end)} · ${Math.round(st.end - st.start)} s`; $('[data-time]', el).textContent = `${mmss(st.start)} – ${mmss(st.end)}`; };
     el.querySelectorAll('[data-n]').forEach(b => b.onclick = () => {
       const [k, d] = b.dataset.n.split(':'); st[k] = Math.max(0, st[k] + Number(d));
       if (p.duration) st.end = Math.min(st.end, p.duration);
@@ -1317,6 +1339,15 @@ function bindClips(p) {
     $('[data-tr]', el).onclick = e => busy(e.target, async () => { await api(`/api/clips/${c.id}/translate`, { method: 'POST', body: { lang: $('[data-lang]', el).value } }); toast('Traduciendo y renderizando…'); router(); });
     $('[data-publish]', el).onclick = () => publishDialog(c, p);
     $('[data-multi]', el).onclick = () => multiEditDialog(c);
+    // Descargar: en la app de escritorio se guarda en Descargas; en la web, descarga normal
+    const dl = $('[data-dl]', el);
+    if (dl) dl.onclick = () => busy(dl, async () => {
+      const desk = window.clippersDesktop?.saveToDownloads ? window.clippersDesktop : null;
+      const f = desk && (await api(`/api/clips/${c.id}/localfile`).catch(() => ({}))).path;
+      if (f) { await desk.saveToDownloads(f, c.title || 'clip ' + c.idx); return toast('⬇ Guardado en Descargas', 'good'); }
+      const a = document.createElement('a'); a.href = c.url; a.download = (c.title || 'clip').replace(/[\\/:*?"<>|#%]+/g, ' ').trim().slice(0, 80) + '.mp4';
+      document.body.appendChild(a); a.click(); a.remove();
+    });
   });
 }
 
@@ -1394,6 +1425,76 @@ function bindLong(p) {
     toast('¡Publicado! ' + r.url, 'good'); router();
   });
 }
+
+// ---------- Historias IA y Frutinovelas ----------
+routes.historias = async (_, params) => {
+  const o = await api('/api/story-options');
+  const sys = o.system || [];
+  const esVoices = sys.filter(v => /^es/i.test(v.lang));
+  const freeOk = o.hasGemini || sys.length;
+  main.innerHTML = `<h1>📖 Historias IA</h1><p class="sub">Cuéntale una historia (o una idea) y la IA escribe el guion, dibuja cada escena, pone las voces de cada personaje, subtítulos y movimiento. También <b>frutinovelas</b>: telenovelas de frutas con mucho drama.</p>
+  <div class="grid g2">
+    <form class="card stack" id="f">
+      <div class="seg2" id="mode"><button type="button" data-m="story" class="on">📖 Historia</button><button type="button" data-m="fruit">🍓 Frutinovela</button></div>
+      <div><label id="storyLbl">Cuéntame la historia</label><textarea name="story" rows="6" required placeholder="Ej: Un chico pobre entra a un ascensor lleno de gente rica. Todos lo miran mal… hasta que se abre la puerta en el último piso y descubren quién es."></textarea></div>
+      <div class="row"><div style="flex:1"><label>Estilo de imagen</label><select name="style">${Object.entries(o.styles).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select></div>
+        <div style="flex:1"><label>Duración</label><select name="seconds"><option value="30">30 s</option><option value="60" selected>1 min</option><option value="90">1,5 min</option><option value="180">3 min</option></select></div></div>
+      <div class="row"><div style="flex:1"><label>Narración</label><select name="narration"><option value="tercera">Narrador (tercera persona)</option><option value="primera">El protagonista lo cuenta (primera persona)</option></select></div>
+        <div style="flex:1"><label>Idioma</label><select name="language">${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
+      <div class="row"><div style="flex:1"><label>Voces</label><select name="voiceMode">
+          ${o.hasGemini ? '<option value="gemini">Gratis · Gemini (más naturales, con emoción)</option>' : ''}
+          ${sys.length ? `<option value="system">Gratis · voces de tu equipo (${esVoices.length || sys.length} disponibles)</option>` : ''}
+          <option value="settings">Las de Ajustes (OpenAI / ElevenLabs)</option></select></div>
+        <div style="flex:1"><label>Voz del narrador</label><select name="narratorVoice"><option value="">Automática</option></select></div></div>
+      <div class="row"><div style="flex:1"><label>Imágenes</label><select name="imageMode"><option value="free">Gratis (Pollinations)</option><option value="settings">Las de Ajustes (OpenAI / Gemini / IA local)</option></select></div>
+        <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
+      ${freeOk ? '' : '<div class="small warn-txt">Para voces gratis: añade tu clave de Gemini en Ajustes (gratis en Google AI Studio) o usa la app de escritorio (voces de tu equipo).</div>'}
+      <div class="small muted">Las imágenes gratis tardan un poco (hay un límite de 1 imagen cada pocos segundos): una historia de 1 min suele tardar 3-6 min.</div>
+      <div class="row"><button type="button" class="btn" id="draft">✎ Ver el guion primero</button><button class="btn gold" id="go">🎬 Crear vídeo</button></div>
+    </form>
+    <div class="card" id="script"><h2>Guion</h2><p class="muted">Puedes revisar y cambiar el guion (lo que dice cada personaje) antes de crear el vídeo.</p></div>
+  </div>
+  <h2 style="margin-top:28px">Mis historias</h2><div class="card" id="list"></div>`;
+  const f = $('#f');
+  let mode = 'story';
+  $('#mode').querySelectorAll('button').forEach(b => b.onclick = () => {
+    mode = b.dataset.m; $('#mode').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    $('#storyLbl').textContent = mode === 'fruit' ? 'Idea de la frutinovela' : 'Cuéntame la historia';
+    f.story.placeholder = mode === 'fruit' ? 'Ej: La Fresa descubre que su novio el Plátano la engaña con la Piña… y la Manzana, su mejor amiga, lo sabía todo.' : 'Ej: Un chico pobre entra a un ascensor lleno de gente rica…';
+    if (mode === 'fruit') f.style.value = 'fruta'; else if (f.style.value === 'fruta') f.style.value = 'caricatura';
+  });
+  const fillVoices = () => {
+    const vm = f.voiceMode.value, sel = f.narratorVoice;
+    const list = vm === 'gemini' ? [...o.gemini.male.map(v => ['gemini:' + v, v + ' (hombre)']), ...o.gemini.female.map(v => ['gemini:' + v, v + ' (mujer)'])]
+      : vm === 'system' ? (esVoices.length ? esVoices : sys).map(v => ['system:' + v.id, `${v.name} (${v.lang}, ${v.gender === 'female' ? 'mujer' : 'hombre'})`]) : [];
+    sel.innerHTML = '<option value="">Automática</option>' + list.map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+    sel.disabled = !list.length;
+  };
+  f.voiceMode.onchange = fillVoices; fillVoices();
+  const opts2 = () => { const d = Object.fromEntries(new FormData(f)); d.type = 'story'; d.mode = mode; d.format = 'vertical'; d.seconds = Number(d.seconds); if (mode === 'fruit') d.style = d.style || 'fruta'; return d; };
+  let script = null;
+  const showScript = () => {
+    $('#script').innerHTML = `<h2>Guion</h2><div class="stack">
+      <div><label>Título</label><input id="st" value="${esc(script.title || '')}"></div>
+      ${(script.characters || []).length ? `<div class="small muted">Personajes: ${script.characters.map(c => `<b>${esc(c.name)}</b>`).join(', ')}</div>` : ''}
+      ${script.scenes.map((s, i) => `<div class="scene stack"><div class="small muted">Escena ${i + 1}</div>
+        ${s.lines.map((l, k) => `<div class="row" style="flex-wrap:nowrap;gap:6px"><input data-sp="${i}:${k}" value="${esc(l.speaker)}" style="width:110px;flex:none"><textarea data-tx="${i}:${k}" rows="2" style="flex:1">${esc(l.text)}</textarea></div>`).join('')}
+        <input data-ip="${i}" value="${esc(s.image_prompt || '')}" title="Descripción de la imagen (inglés)"></div>`).join('')}
+      <button class="btn gold block" id="prod">🎬 Crear vídeo con este guion</button></div>`;
+    $('#prod').onclick = e => busy(e.target, async () => {
+      script.title = $('#st').value;
+      script.scenes.forEach((s, i) => {
+        s.lines.forEach((l, k) => { l.speaker = $(`[data-sp="${i}:${k}"]`).value; l.text = $(`[data-tx="${i}:${k}"]`).value; });
+        s.narration = s.lines.map(l => l.text).join(' '); s.image_prompt = $(`[data-ip="${i}"]`).value;
+      });
+      const r = await api('/api/compose', { method: 'POST', body: { ...opts2(), script } });
+      location.hash = '#/proyecto/' + r.id;
+    });
+  };
+  $('#draft').onclick = e => { if (!f.story.value.trim()) return toast('Cuéntame la historia', 'bad'); busy(e.target, async () => { script = await api('/api/story/script', { method: 'POST', body: opts2() }); showScript(); }); };
+  f.onsubmit = e => { e.preventDefault(); busy($('#go'), async () => { const r = await api('/api/compose', { method: 'POST', body: opts2() }); location.hash = '#/proyecto/' + r.id; }); };
+  $('#list').innerHTML = projectTable(await api('/api/projects?type=story'));
+};
 
 // ---------- Buscador de nichos ----------
 routes.nichos = async () => {

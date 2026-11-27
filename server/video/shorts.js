@@ -158,6 +158,8 @@ Criterios (de más a menos importante):
 3. EMOCIÓN: humor, sorpresa, polémica, indignación, inspiración o vulnerabilidad.
 4. VALOR: consejo accionable, secreto, dato que la gente quiera guardar o enviar.
 5. FINAL: termina en una frase completa y contundente, sin cortar a media idea.
+6. AUTOSUFICIENTE: nada de clips que empiecen con «y», «pero», «entonces», «eso» o que dependan de algo dicho antes.
+Los clips empiezan al principio de una frase y acaban al final de otra (nunca a mitad de palabra o de idea).
 Las etiquetas entre corchetes son señales medidas del audio y el vídeo: 🔊 energía alta (gritos, risas, emoción), ⚡ habla rápida, 🎬 cambio de plano, 😂 risas. Úsalas como pista, pero manda el contenido.`;
   const user = `Transcripción con marcas de tiempo en segundos:
 ${lines}
@@ -173,16 +175,46 @@ JSON: {"clips":[{"start":número,"end":número,
  ${local ? '' : '"scores":{"hook":1-10,"story":1-10,"emotion":1-10,"value":1-10,"ending":1-10},\n '}"score":entero 1-10 (potencial viral global),
  "keywords":["3 a 6 palabras EXACTAS que se dicen en el clip y conviene resaltar en los subtítulos"],
  "emojis":[{"word":"palabra exacta que se dice","emoji":"un emoji"}] (2 a 4, solo donde aporten),
- "reason":"por qué funcionará, ${local ? 'máx. 12 palabras' : 'en una frase'}"}]}
+ "reason":"por qué funcionará, ${local ? 'máx. 12 palabras' : 'en una frase'}",
+ "category":"una de: ${CATEGORIES.join(' | ')}",
+ "viral":entero 0-100 (probabilidad realista de que funcione; reserva 90+ para lo excepcional),
+ "quote":"la frase más fuerte del clip, copiada tal cual de la transcripción (máx. 20 palabras)"}]}
 Escribe title, hook y reason en el idioma: ${language || 'el mismo del vídeo'}. keywords y emojis.word deben aparecer tal cual en la transcripción del clip.`;
   const res = await chatJSON(system, user, { maxTokens: local ? 5000 : 8000, onProgress: onProgress && (p => onProgress(p.stage || p)) });
   return Array.isArray(res) ? res : (res.clips || []);
 }
 
+export const CATEGORIES = ['Pelea / discusión', 'Humor', 'Polémica', 'Revelación', 'Historia', 'Consejo', 'Emotivo', 'Reacción', 'Dato curioso', 'Jugada'];
+/** Categoría, % viral y frase destacada que da la IA (se guardan con las señales del clip). */
+export function clipMeta(c) {
+  const cat = CATEGORIES.find(x => x.toLowerCase() === String(c.category || '').trim().toLowerCase()) || (c.category ? String(c.category).slice(0, 30) : null);
+  const viral = Number(c.viral);
+  return { category: cat, viral: Number.isFinite(viral) ? Math.max(1, Math.min(99, Math.round(viral))) : null, quote: c.quote ? String(c.quote).slice(0, 220) : null };
+}
+
+/**
+ * Ajusta el inicio y el final a frases enteras: empieza en una palabra que abre frase (tras punto o pausa)
+ * y acaba en una que la cierra, buscando cerca de lo que propuso la IA. Si no hay ninguna, la palabra más cercana.
+ */
 export function snap(words, start, end) {
   const near = (arr, t, k) => arr.filter(w => Math.abs(w[k] - t) < 1.5).sort((a, b) => Math.abs(a[k] - t) - Math.abs(b[k] - t))[0];
-  const s = near(words, start, 'start'), e = near(words, end, 'end');
-  return { start: Math.max(0, (s?.start ?? start) - 0.1), end: (e?.end ?? end) + 0.25 };
+  const i0 = words.findIndex(w => w.end > start - 4), i1 = words.findIndex(w => w.start > end + 4);
+  const W = words.slice(Math.max(0, i0), i1 < 0 ? words.length : i1);
+  const opens = (w, i) => { const prev = W[i - 1]; return !prev || /[.!?…]["»”]?$/.test(prev.word) || w.start - prev.end > 0.5; };
+  const closes = (w, i) => { const next = W[i + 1]; return !next || /[.!?…]["»”]?$/.test(w.word) || next.start - w.end > 0.5; };
+  const best = (cands, t, k, before, after) => cands.filter(w => w[k] >= t - before && w[k] <= t + after).sort((a, b) => Math.abs(a[k] - t) - Math.abs(b[k] - t))[0];
+  const s = best(W.filter(opens), start, 'start', 2.5, 1.5) || near(words, start, 'start');
+  const e = best(W.filter(closes), end, 'end', 2.5, 3) || near(words, end, 'end');
+  const st = s?.start ?? start, en = e?.end ?? end;
+  // margen sin pisar la palabra anterior / siguiente (para que no se oiga media sílaba)
+  const prev = words.filter(w => w.end <= st + 0.01).pop(), next = words.find(w => w.start >= en - 0.01);
+  return { start: Math.max(0, st - 0.12, prev ? Math.min(st - 0.02, prev.end + 0.03) : 0), end: next ? Math.max(en + 0.08, Math.min(en + 0.3, next.start - 0.04)) : en + 0.3 };
+}
+/** Quita clips que se solapan mucho con otro mejor. */
+export function dropOverlaps(list) {
+  const kept = [];
+  for (const c of list) if (!kept.some(k => Math.min(k.end, c.end) - Math.max(k.start, c.start) > 0.4 * Math.min(k.end - k.start, c.end - c.start))) kept.push(c);
+  return kept;
 }
 
 register('shorts.pick', async ({ id }) => {
@@ -197,15 +229,18 @@ register('shorts.pick', async ({ id }) => {
   for (const old of await q('SELECT file FROM clips WHERE project_id = $1', [id])) await removeFile(old.file);
   await q('DELETE FROM clips WHERE project_id = $1', [id]);
   let n = 0;
+  const accepted = [];
   for (const c of picked) {
     let { start, end } = snap(p.data.transcript.words, Number(c.start), Number(c.end));
     end = Math.min(end, p.duration || end);
     if (!(end - start > 3)) continue;
+    if (dropOverlaps([...accepted, { start, end }]).length <= accepted.length) continue; // repite casi el mismo momento
+    accepted.push({ start, end });
     // Nota final: 75 % criterio de la IA + 25 % señales medidas (si hay datos de audio)
     const llm = Math.max(1, Math.min(10, Number(c.score) || 5));
     const measured = sig.score(start, end);
     const final = sig.hasAudioData ? Math.round(llm * 0.75 + measured.score * 0.25) : Math.round(llm);
-    const signals = { llm, measured: measured.score, scores: c.scores || {}, peaks: measured.peaks, rate: +measured.rate.toFixed(2), cuts: measured.cuts, laugh: measured.laugh };
+    const signals = { llm, measured: measured.score, scores: c.scores || {}, ...clipMeta(c), peaks: measured.peaks, rate: +measured.rate.toFixed(2), cuts: measured.cuts, laugh: measured.laugh };
     const clipWords = new Set(sliceWords(p.data.transcript.words, start, end).map(w => normWord(w.word)));
     const keywords = (c.keywords || []).map(String).filter(k => clipWords.has(normWord(k))).slice(0, 6);
     const emojis = (c.emojis || []).filter(e => e?.emoji && clipWords.has(normWord(e.word))).slice(0, 4);
@@ -284,6 +319,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     fs.writeFileSync(assFile, buildASS(words, { layout: capLayout, font: E?.font, textColor: C.textColor,
       // El gancho se muestra como texto fijo arriba durante todo el clip, con el estilo elegido en el editor
       titleBar: hook ? { color: E?.titleBar?.color || '#FFFFFF', bg: E?.titleBar?.bg || 'none', size: E?.titleBar?.size || 1, text: hook,
+        style: E?.titleBar?.style, accent: E?.titleBar?.accent, font: E?.titleBar?.font, x: E?.titleBar?.x, y: E?.titleBar?.y,
         top: (E?.layout || clip.layout) === 'gaming' ? Math.round(OH * 0.355) + 40 : undefined } : null,
       hook: '', duration: dur, highlight: C.color || await getSetting('caption_color'),
       captionMarginV: Math.round(capMargin), width: OW, height: OH,

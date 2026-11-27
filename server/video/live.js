@@ -10,7 +10,7 @@ import { buildSignals } from './signals.js';
 import { transcribeChunk } from '../ai/transcribe.js';
 import { register, enqueue } from '../jobs.js';
 import { saveFile, inputPath } from '../storage.js';
-import { pickClips, snap, checkDone } from './shorts.js';
+import { pickClips, snap, checkDone, clipMeta } from './shorts.js';
 import { resolvePlaylist, recordMedia } from './hls.js';
 import { ytdlp, parseOut } from './ytdlp.js';
 import { chatJSON } from '../ai/llm.js';
@@ -338,7 +338,7 @@ async function batchClips(id, seg, o, last) {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13,$14) RETURNING id`,
         [id, ++idx, start, end, String(c.title || '').slice(0, 100), String(c.hook || '').slice(0, 80), final, c.reason || '',
           o.layout || 'face', o.captionStyle || 'clasico', JSON.stringify(keywords), JSON.stringify(emojis),
-          JSON.stringify({ llm, measured: measured.score, scores: c.scores || {}, peaks: measured.peaks, rate: +measured.rate.toFixed(2), laugh: measured.laugh }),
+          JSON.stringify({ llm, measured: measured.score, scores: c.scores || {}, ...clipMeta(c), peaks: measured.peaks, rate: +measured.rate.toFixed(2), laugh: measured.laugh }),
           JSON.stringify(parts)]);
       existing.push({ start, end }); made++;
       await enqueue('clip.render', { clipId: clip.id, fast: true });
@@ -406,7 +406,7 @@ register('live.analyze', async ({ id, seg, last, batch }, ctx) => {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rendering',$10,$11,$12,$13,$14) RETURNING id`,
         [id, ++idx, start, end, String(c.title || '').slice(0, 100), String(c.hook || '').slice(0, 80), final, c.reason || '',
           o.layout || 'face', o.captionStyle || 'clasico', JSON.stringify(keywords), JSON.stringify(emojis),
-          JSON.stringify({ llm, measured: measured.score, scores: c.scores || {}, peaks: measured.peaks, rate: +measured.rate.toFixed(2), laugh: measured.laugh }),
+          JSON.stringify({ llm, measured: measured.score, scores: c.scores || {}, ...clipMeta(c), peaks: measured.peaks, rate: +measured.rate.toFixed(2), laugh: measured.laugh }),
           JSON.stringify(parts)]);
       existing.push({ start, end });
       await enqueue('clip.render', { clipId: clip.id });

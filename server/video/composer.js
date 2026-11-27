@@ -57,6 +57,41 @@ JSON: {"title":"título de YouTube","description":"descripción SEO","tags":["..
     { maxTokens: 6000 });
 }
 
+// ---------- Historias IA y Frutinovelas ----------
+export const STORY_STYLES = {
+  caricatura: { label: '✏️ Caricatura (historias con muñeco)', short: '2D cartoon webcomic style, thick black outlines, flat colors, expressive meme faces, simple stick figure with round white head', prompt: '2D cartoon illustration, clean thick black outlines, flat colors, simple soft shading, webcomic style, very expressive faces, detailed simple background. The protagonist is a simple stick-figure man with a round plain white meme-style head and exaggerated facial expressions' },
+  fruta: { label: '🍓 Frutinovela (frutas 3D con drama)', short: '3D Pixar style animation, cute anthropomorphic fruit characters with big eyes and faces, dramatic telenovela lighting', prompt: '3D animated movie still, Pixar-like CGI style, anthropomorphic fruit characters with expressive faces, big glossy eyes, small arms and legs, telenovela drama, dramatic cinematic lighting, highly detailed, shallow depth of field' },
+  pixar: { label: '🧸 Animación 3D', short: '3D Pixar style animation, cinematic lighting', prompt: '3D animated movie still, Pixar-like CGI style, expressive characters, cinematic lighting, highly detailed' },
+  anime: { label: '🌸 Anime', short: 'anime illustration, cel shading, vibrant', prompt: 'anime illustration, detailed cel shading, expressive characters, cinematic composition, vibrant colors' },
+  comic: { label: '💥 Cómic', short: 'comic book art, bold ink lines, vivid colors', prompt: 'comic book illustration, bold ink lines, halftone shading, dynamic composition, vivid colors' },
+  realista: { label: '🎬 Realista cinematográfico', short: 'cinematic photorealistic film still, dramatic lighting', prompt: 'cinematic photorealistic film still, dramatic lighting, 35mm, shallow depth of field, highly detailed' },
+};
+
+/** Guion de una historia (o frutinovela) dividido en escenas con diálogos y personajes fijos. */
+export async function generateStoryScript({ story, seconds = 60, style = 'caricatura', mode = 'story', language = 'Español', narration = 'tercera' }) {
+  const words = Math.round(seconds * 2.4);
+  const fruit = mode === 'fruit' || style === 'fruta';
+  const res = await chatJSON(
+    fruit ? 'Eres guionista de «frutinovelas»: telenovelas cortas y virales (TikTok/Reels) protagonizadas por frutas y verduras con personalidad humana. Mucho drama, traiciones, celos, secretos, giros inesperados, frases exageradas de telenovela y un final con gancho («¿Qué pasará?»).'
+      : 'Eres guionista de vídeos cortos de historias animadas (TikTok/Reels/Shorts) que enganchan desde la primera frase: gancho inmediato, tensión creciente, giro y remate. Narración ágil, natural y emotiva.',
+    `${fruit ? 'Idea o historia' : 'Historia'} que te da el usuario:\n«${story}»\n
+Escribe el guion en ${language}. Duración: ~${seconds} s (≈ ${words} palabras habladas en total).
+${fruit ? 'Los personajes son frutas o verduras (cada uno una fruta distinta). Usa diálogos entre ellos y un narrador dramático breve.' : `Narración en ${narration === 'primera' ? 'primera persona (el protagonista cuenta lo que le pasó)' : 'tercera persona'}; añade diálogos cortos de los personajes cuando ayuden.`}
+Divide en escenas de 1 a 3 frases (una imagen por escena; entre ${Math.max(4, Math.round(seconds / 7))} y ${Math.max(6, Math.round(seconds / 4))} escenas).
+Personajes: describe el ASPECTO FIJO de cada uno EN INGLÉS (especie/fruta, color, ropa, rasgos) para que se vea igual en todas las imágenes.${fruit ? ' El aspecto de cada fruta empieza SIEMPRE por «an anthropomorphic <fruit> character with a cartoon face, arms and legs» (nunca una persona).' : ''}
+Para cada escena:
+- "lines": lo que se oye, en orden: [{"speaker":"Narrador" o el nombre del personaje,"text":"...","emotion":"cómo lo dice (p. ej. llorando, furiosa, susurrando)"}]
+- "image_prompt": EN INGLÉS, la imagen de la escena: acción, lugar, plano (close-up, wide shot…), emociones; incluye el aspecto completo de cada personaje que aparece. Sin texto en la imagen.
+- "overlay": opcional, 1-4 palabras impactantes para poner en pantalla en momentos clave (o "")
+JSON: {"title":"título viral (máx 70 caracteres)","description":"descripción corta con gancho","tags":["..."],
+"characters":[{"name":"...","gender":"male|female","look":"visual description in English"}],
+"scenes":[{"lines":[{"speaker":"...","text":"...","emotion":"..."}],"image_prompt":"...","overlay":""}]}`,
+    { maxTokens: 8000 });
+  res.scenes = (res.scenes || []).filter(s => s.lines?.length).map(s => ({ ...s, narration: s.lines.map(l => l.text).join(' ') }));
+  res.characters = (res.characters || []).slice(0, 8);
+  return res;
+}
+
 // ---------- Filtros ----------
 /** Encaja un visual en W×H: si la proporción es parecida rellena; si no, fondo difuminado + centrado. */
 function fitFilter(W, H, iw, ih, input = '[0:v]') {
@@ -78,6 +113,8 @@ register('compose.script', async ({ id }) => {
     if (p.type === 'ad') {
       script = await generateAdScript({ ...o, images: (o.media || []).length });
       script.scenes.forEach(s => { if (Number.isInteger(s.image) && o.media?.[s.image]) s.media = o.media[s.image]; });
+    } else if (p.type === 'story') {
+      script = await generateStoryScript(o);
     } else if (p.type === 'montage') {
       script = await generateMontageScript({ ...o, notes: (o.media || []).map((_, i) => o.notes?.[i] || '') });
     } else {
@@ -86,6 +123,14 @@ register('compose.script', async ({ id }) => {
   }
   if (p.type === 'montage') script.scenes.forEach((s, i) => { s.media = o.media?.[i] || s.media; });
   if (!script.scenes?.length) throw new Error('El guion no tiene escenas.');
+  // Historias: voz del narrador y una voz distinta para cada personaje
+  if (p.type === 'story' && o.voiceMode !== 'settings' && !script.cast) {
+    const { castVoices, defaultFreeVoiceProvider } = await import('../ai/voices.js');
+    const prov = o.voiceMode === 'gemini' || o.voiceMode === 'system' ? o.voiceMode : await defaultFreeVoiceProvider();
+    const narrator = o.narratorVoice || (prov === 'gemini' ? 'gemini:Charon' : (await castVoices([{ name: 'Narrador', gender: o.narratorGender || 'male' }], prov, null))[0].voice);
+    script.cast = { provider: prov, narrator, characters: await castVoices(script.characters || [], prov, narrator) };
+  }
+  if (p.type === 'story' && !script.seed) script.seed = Math.floor(Math.random() * 1e9);
   await updateProject(id, { title: script.title || p.title, data: { ...p.data, script, parts: [] } });
   await enqueue('compose.scene', { id, i: 0 });
 }, ({ id }, msg) => updateProject(id, { status: 'error', error: msg, progress: null }));
@@ -109,7 +154,27 @@ register('compose.scene', async ({ id, i }, ctx) => {
 
     // 1) Voz en off
     let voice = null, dur = Number(s.duration) || 3, words = [];
-    if (useVoice) {
+    if (useVoice && s.lines?.length && p.type === 'story') {
+      // Historia: cada línea con la voz de quien habla, unidas con una pausa corta
+      const cast = p.data.script.cast || {};
+      const voiceOf = sp => cast.characters?.find(c => c.name && String(sp).toLowerCase() === c.name.toLowerCase())?.voice || cast.narrator;
+      const files = [];
+      for (const [k, l] of s.lines.entries()) {
+        if (!String(l.text || '').trim()) continue;
+        const v = voiceOf(l.speaker);
+        const f = t(`l${k}.mp3`);
+        if (v) { const { freeTTS } = await import('../ai/voices.js'); await freeTTS(l.text, f, v, { style: l.emotion ? `Say it ${l.emotion}` : '' }); }
+        else await tts(l.text, f);
+        files.push(f);
+      }
+      voice = t('voice.mp3');
+      const gap = t('gap.mp3');
+      await ffmpeg(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono', '-t', '0.18', '-b:a', '128k', gap]);
+      const seq = files.flatMap((f, k) => k ? [gap, f] : [f]);
+      await ffmpeg([...seq.flatMap(f => ['-i', f]), '-filter_complex', `${seq.map((_, k) => `[${k}:a]aresample=44100,aformat=channel_layouts=mono[a${k}]`).join(';')};${seq.map((_, k) => `[a${k}]`).join('')}concat=n=${seq.length}:v=0:a=1[a]`, '-map', '[a]', '-b:a', '160k', voice]);
+      dur = (await probe(voice)).duration + 0.35;
+      words = await wordTimings(voice, s.narration, dur - 0.35);
+    } else if (useVoice) {
       voice = await tts(s.narration, t('voice.mp3'), { voice: character?.voice || undefined });
       dur = (await probe(voice)).duration + 0.3;
       words = await wordTimings(voice, s.narration, dur - 0.3);
@@ -126,6 +191,29 @@ register('compose.scene', async ({ id, i }, ctx) => {
       media = await saveBuffer(buf, `scene_${tag}.png`, 'image/png');
       s.media = media; // se guarda para no regenerarla en un reintento
       await updateProject(id, { data: { ...p.data, script: { ...p.data.script, scenes } } });
+    }
+    if (!media && p.type === 'story') {
+      await updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: dibujando la imagen con IA…` });
+      const st = STORY_STYLES[o.style] || STORY_STYLES.caricatura;
+      const said = (s.image_prompt + ' ' + s.lines.map(l => l.speaker + ' ' + l.text).join(' ')).toLowerCase();
+      const chars = (p.data.script.characters || []).filter(c => c.look && c.name && said.includes(String(c.name).toLowerCase()));
+      // cada nombre va acompañado de su aspecto fijo (así la IA no lo convierte en una persona)
+      let ip = String(s.image_prompt || '');
+      for (const c of chars) ip = ip.split(c.name).join(`${c.name} (${c.look})`);
+      const fruitRule = (o.style || '') === 'fruta' || o.mode === 'fruit' ? 'IMPORTANT: every character is an anthropomorphic FRUIT or vegetable with a cartoon face, arms and legs — NOT a human, no people, no human skin. ' : '';
+      const prompt = `${fruitRule}${st.prompt}. ${ip}. ${chars.filter(c => !ip.includes(c.look)).map(c => `${c.name}: ${c.look}`).join('. ')}. ${vertical ? 'Vertical 9:16 composition, subject centered.' : 'Horizontal composition.'} No text, no letters, no captions, no watermark.`;
+      // Imágenes gratis (Pollinations): el servicio gratuito entiende mal los textos largos → versión corta
+      const short = w => String(w || '').split(/\s+/).slice(0, 14).join(' ').replace(/[,.;]+$/, '');
+      let ipShort = String(s.image_prompt || '');
+      for (const c of chars) ipShort = ipShort.split(c.name).join(short(c.look));
+      const compact = `${ipShort.slice(0, 260)}, ${st.short}${fruitRule ? ', fruit characters, no humans' : ''}, vertical, no text`;
+      const free = o.imageMode === 'free' || (o.imageMode !== 'settings' && (await getSetting('image_provider')) === 'pollinations');
+      const buf = await generateImage(free ? compact : prompt, { size: vertical ? '1024x1536' : '1536x1024', provider: o.imageMode === 'free' ? 'pollinations' : undefined, seed: p.data.script.seed });
+      media = await saveBuffer(buf, `scene_${tag}.png`, 'image/png');
+      s.media = media;
+      const fresh = await getProject(id);
+      fresh.data.script.scenes[i].media = media;
+      await updateProject(id, { data: { ...fresh.data } });
     }
     let input, kind = 'color', iw = 0, ih = 0;
     if (media) {
@@ -148,7 +236,7 @@ register('compose.scene', async ({ id, i }, ctx) => {
     const assFile = t('s.ass');
     fs.writeFileSync(assFile, buildASS(words, {
       duration: dur, highlight: await getSetting('caption_color'), overlay: s.overlay || '',
-      captionMarginV: vertical ? 520 : 90, wordsPerGroup: vertical ? 3 : 5,
+      captionMarginV: vertical ? (p.type === 'story' ? 420 : 520) : 90, wordsPerGroup: vertical ? 3 : 5, ...(p.type === 'story' ? { style: o.captionStyle || 'impacto' } : {}),
       captions: o.captions !== false && useVoice, width: W, height: H, capSize: vertical ? 80 : 60,
     }));
 
@@ -163,7 +251,18 @@ register('compose.scene', async ({ id, i }, ctx) => {
 
     const frames = Math.ceil(dur * 30);
     let v = kind === 'color' ? `[0:v]setsar=1` : fitFilter(W, H, iw, ih);
-    if (kind === 'image') v += `,scale=${Math.round(W * 1.15)}:${Math.round(H * 1.15)},zoompan=z='min(zoom+0.0006,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=30`;
+    if (kind === 'image') {
+      // Movimiento de cámara distinto en cada escena (acercar, alejar, desplazar): da vida a las imágenes
+      const n = Math.max(1, frames), m = p.type === 'story' ? i % 5 : 0;
+      const zp = [
+        `z='1+0.14*on/${n}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`,
+        `z='1.14-0.14*on/${n}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`,
+        `z='1.12':x='(iw-iw/zoom)*on/${n}':y='ih/2-(ih/zoom/2)'`,
+        `z='1.12':x='(iw-iw/zoom)*(1-on/${n})':y='ih/2-(ih/zoom/2)'`,
+        `z='1+0.18*on/${n}':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*0.3'`,
+      ][m];
+      v += `,scale=${Math.round(W * 1.5)}:${Math.round(H * 1.5)},zoompan=${zp}:d=1:s=${W}x${H}:fps=30`;
+    }
     v += `,fps=30,trim=end_frame=${frames},${assFilter(assFile)}[v]`;
     const a = `[1:a]apad,atrim=0:${dur.toFixed(3)},aresample=44100,aformat=channel_layouts=stereo[a]`;
     const out = t('part.mp4');

@@ -11,7 +11,7 @@ import { publicSettings, setSettings, internalSecret, getSetting, aiMode } from 
 import { chat, chatJSON } from './ai/llm.js';
 import { generateImage } from './ai/media.js';
 import { run, FFMPEG, probe, FONTS_DIR } from './video/ffmpeg.js';
-import { CAPTION_STYLES, FONTS } from './video/ass.js';
+import { CAPTION_STYLES, FONTS, TITLE_STYLES } from './video/ass.js';
 import { liveWords } from './video/shorts.js';
 import { setLive, liveCuts } from './video/live.js';
 import { suggestRanking } from './video/ranking.js';
@@ -637,7 +637,7 @@ app.post('/api/ranking', h(async (req, res) => {
 }));
 
 // Vídeo completo / anuncio / montaje: mismo motor de composición
-const COMPOSE_TYPES = ['long', 'ad', 'montage'];
+const COMPOSE_TYPES = ['long', 'ad', 'montage', 'story'];
 app.post('/api/compose/script', h(async (req, res) => {
   const { type = 'long', ...o } = req.body;
   if (type === 'ad') return res.json(await generateAdScript({ ...o, images: (o.media || []).length }));
@@ -651,11 +651,23 @@ app.post('/api/compose', h(async (req, res) => {
   if (type === 'montage' && !options.media?.length) throw new Error('Sube al menos un clip o imagen.');
   if (type === 'ad' && !options.product) throw new Error('Escribe el nombre del producto.');
   if (type === 'long' && !options.topic && !script) throw new Error('Escribe un tema para el vídeo.');
+  if (type === 'story' && !String(options.story || '').trim() && !script) throw new Error('Cuéntame la historia.');
   if (script?.scenes && type === 'ad') script.scenes.forEach(s => { if (Number.isInteger(s.image) && options.media?.[s.image]) s.media = options.media[s.image]; });
-  const title = script?.title || options.topic || options.product || 'Montaje';
+  const title = script?.title || options.topic || options.product || (type === 'story' ? String(options.story).slice(0, 60) : 'Montaje');
   const p = await insert('projects', { type, title, channel_id: Number(channel_id) || null, data: { options, script: script || null }, progress: 'En cola…' });
   await enqueue('compose.script', { id: p.id });
   res.json({ id: p.id });
+}));
+app.post('/api/story/script', h(async (req, res) => {
+  if (!String(req.body.story || '').trim()) throw new Error('Cuéntame la historia.');
+  const { generateStoryScript } = await import('./video/composer.js');
+  res.json(await generateStoryScript(req.body));
+}));
+// Historias IA: estilos y voces gratis disponibles en este equipo
+app.get('/api/story-options', h(async (req, res) => {
+  const { STORY_STYLES } = await import('./video/composer.js');
+  const { systemVoices, GEMINI_VOICES } = await import('./ai/voices.js');
+  res.json({ styles: Object.fromEntries(Object.entries(STORY_STYLES).map(([k, v]) => [k, v.label])), system: IS_VERCEL ? [] : await systemVoices(), gemini: GEMINI_VOICES, hasGemini: !!(await getSetting('gemini_key')) });
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
@@ -841,7 +853,7 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
-    fonts: FONTS, split2: E.split2 || p.data.split?.rects?.b || null, splitTop: !E.facecam && (E.layout || c.layout) === 'split' ? p.data.split?.rects?.a || null : null, outros: outroOut(await getOutros()),
+    fonts: FONTS, titleStyles: TITLE_STYLES, split2: E.split2 || p.data.split?.rects?.b || null, splitTop: !E.facecam && (E.layout || c.layout) === 'split' ? p.data.split?.rects?.a || null : null, outros: outroOut(await getOutros()),
     highlight: await getSetting('caption_color') || '#FFD400', styles: Object.fromEntries(Object.entries(CAPTION_STYLES).map(([k, v]) => [k, v])),
   });
 }));
@@ -882,7 +894,9 @@ function editLook(b, prev, num) {
   const pick = (k, fn) => { if (k in b) { const v = fn(b[k]); if (v != null) out[k] = v; } else if (prev[k] != null) out[k] = prev[k]; };
   pick('font', v => FONTS[v] ? v : null);
   pick('titleBar', v => v && typeof v === 'object' ? { show: !!v.show, text: String(v.text || '').slice(0, 140), color: hexOk(v.color) ? v.color : '#FFFFFF',
-    bg: v.bg === 'none' ? 'none' : hexOk(v.bg) ? v.bg : '#E11D48', size: num(v.size, 0.6, 1.6, 1), upper: v.upper !== false } : null);
+    bg: v.bg === 'none' ? 'none' : hexOk(v.bg) ? v.bg : '#E11D48', size: num(v.size, 0.6, 1.8, 1), upper: v.upper !== false,
+    style: TITLE_STYLES[v.style] ? v.style : undefined, accent: hexOk(v.accent) ? v.accent : undefined, font: FONTS[v.font] ? v.font : undefined,
+    ...(v.x != null && v.y != null && Number.isFinite(Number(v.x)) && Number.isFinite(Number(v.y)) ? { x: num(v.x, 0.05, 0.95, 0.5), y: num(v.y, 0.03, 0.97, 0.1) } : {}) } : null);
   pick('grade', v => ['vivo', 'calido', 'frio', 'cine', 'brillo', 'bn'].includes(v) ? v : null);
   pick('adjust', v => v && typeof v === 'object' ? { b: num(v.b, -50, 50, 0), c: num(v.c, -50, 50, 0), s: num(v.s, -50, 50, 0) } : null);
   pick('mirror', v => !!v);

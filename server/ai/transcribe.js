@@ -26,7 +26,7 @@ async function whisper(file, language, onProgress) {
   const key = await requireKey(isGroq ? 'groq_key' : 'openai_key', 'transcribir el audio');
   const form = new FormData();
   form.append('file', new Blob([fs.readFileSync(file)], { type: 'audio/mpeg' }), path.basename(file));
-  form.append('model', isGroq ? 'whisper-large-v3-turbo' : 'whisper-1');
+  form.append('model', isGroq ? (await getSetting('groq_whisper_model') || 'whisper-large-v3') : 'whisper-1');
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'word');
   form.append('timestamp_granularities[]', 'segment');
@@ -65,6 +65,7 @@ export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, 
     const segments = (r.segments || []).map(s => ({ start: s.start + offset, end: s.end + offset, text: s.text.trim() }));
     let words = (r.words || []).map(w => ({ word: w.word.trim(), start: w.start + offset, end: w.end + offset }));
     if (!words.length) words = approximateWords(segments);
+    else punctuateWords(words, segments);
     return { language: r.language || language || '', segments, words, energy, cuts };
   } finally { fs.rmSync(out, { force: true }); }
 }
@@ -80,6 +81,25 @@ export async function wordTimings(audioFile, text, duration) {
     }
   } catch (e) { console.warn('wordTimings:', e.message); }
   return approximateWords([{ start: 0, end: duration, text }]);
+}
+
+/**
+ * Whisper da las palabras sueltas sin puntuación, pero las frases (segmentos) sí la llevan: se copia a cada palabra
+ * («¿hasta», «todo?», «capital.»). Así los subtítulos se cortan por frases y los clips empiezan y acaban en frases enteras.
+ */
+export function punctuateWords(words, segments) {
+  const n = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9ñ]/g, '');
+  let wi = 0;
+  for (const s of segments) {
+    const toks = String(s.text || '').split(/\s+/).filter(Boolean);
+    let ti = 0;
+    while (wi < words.length && words[wi].start < s.end - 0.02 && ti < toks.length) {
+      const w = words[wi], nw = n(w.word);
+      for (let j = ti; j < Math.min(toks.length, ti + 4); j++) if (nw && n(toks[j]) === nw) { w.word = toks[j]; ti = j + 1; break; }
+      wi++;
+    }
+  }
+  return words;
 }
 
 export function approximateWords(segments) {

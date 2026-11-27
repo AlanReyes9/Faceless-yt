@@ -7,6 +7,11 @@ export async function tts(text, outFile, { voice: voiceOverride } = {}) {
   // voiceOverride: 'openai:nova' | 'elevenlabs:<voiceId>' (voz propia del personaje)
   let [provider, forcedVoice] = voiceOverride ? voiceOverride.split(':') : [];
   provider = provider || await getSetting('tts_provider');
+  // Voces gratis: las del sistema (Mac / Windows) o Gemini (plan gratuito)
+  if (provider === 'system' || provider === 'gemini') {
+    const { freeTTS } = await import('./voices.js');
+    return freeTTS(text, outFile, voiceOverride || `${provider}:${provider === 'gemini' ? (await getSetting('gemini_voice')) || 'Kore' : ''}`);
+  }
   let r;
   if (provider === 'elevenlabs') {
     const voice = forcedVoice || await getSetting('elevenlabs_voice_id');
@@ -173,11 +178,11 @@ async function geminiImage(prompt, { size, references }) {
 }
 
 // --- Pollinations: gratis sin clave (con marca de agua); con clave, sin marca y mejores modelos ---
-async function pollinationsImage(prompt, { size }) {
+async function pollinationsImage(prompt, { size, seed: fixedSeed }) {
   const [w, h] = { '9:16': [768, 1344], '16:9': [1344, 768], '1:1': [1024, 1024] }[ratioOf(size)];
   const key = await getSetting('pollinations_key');
   const model = await getSetting('pollinations_model');
-  const seed = Math.floor(Math.random() * 1e9);
+  const seed = fixedSeed ?? Math.floor(Math.random() * 1e9);
   const q = new URLSearchParams({ width: w, height: h, nologo: 'true', seed: String(seed), ...(model ? { model } : {}) });
   const url = key ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt.slice(0, 1500))}?${q}`
     : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1500))}?${q}`;
@@ -189,7 +194,7 @@ async function pollinationsImage(prompt, { size }) {
     const body = buf.toString('utf8');
     // Sin clave: límite gratuito (1 imagen cada ~45 s por IP). Se espera lo que indique y se reintenta una vez.
     const wait = Number(body.match(/Retry after (\d+)/i)?.[1] || r.headers.get('retry-after'));
-    if ((r.status === 402 || r.status === 429) && attempt === 1 && wait > 0 && wait <= 60) {
+    if ((r.status === 402 || r.status === 429 || r.status === 503) && attempt <= 2 && wait > 0 && wait <= 60) {
       console.log(`[imagen] Pollinations: límite gratuito, esperando ${wait} s…`);
       await new Promise(res => setTimeout(res, (wait + 1) * 1000));
       continue;
@@ -206,7 +211,7 @@ const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, ope
  * size: '1024x1536' (vertical) | '1536x1024' (horizontal) | '1024x1024'.
  * references: Buffers de imágenes del personaje para mantener su aspecto (OpenAI y Gemini).
  */
-export async function generateImage(prompt, { size = '1024x1536', references = [], provider, steps, onProgress } = {}) {
+export async function generateImage(prompt, { size = '1024x1536', references = [], provider, steps, onProgress, seed } = {}) {
   const preferred = provider || await getSetting('image_provider');
   const order = [preferred];
   // Con la IA local no se recurre a servicios externos
@@ -216,7 +221,7 @@ export async function generateImage(prompt, { size = '1024x1536', references = [
     const prov = IMAGE_PROVIDERS[p];
     if (!prov) continue;
     try {
-      const out = await prov.fn(prompt, { size, references, steps, onProgress });
+      const out = await prov.fn(prompt, { size, references, steps, onProgress, seed });
       if (p !== preferred) console.log(`[imagen] generada con ${p} (respaldo de ${preferred})`);
       return out;
     } catch (e) {

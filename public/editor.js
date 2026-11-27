@@ -24,7 +24,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     ...(d.splitTop ? { facecam: { ...d.splitTop } } : {}),
     font: E.font || 'DejaVu Sans',
     // Estilo del texto fijo de arriba (el gancho, durante todo el clip)
-    titleBar: { color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || 'none', size: E.titleBar?.size || 1 },
+    titleBar: { color: E.titleBar?.color || '#FFFFFF', bg: E.titleBar?.bg || 'none', size: E.titleBar?.size || 1, style: E.titleBar?.style || (E.titleBar?.bg && E.titleBar.bg !== 'none' ? 'caja' : 'sticker'),
+      accent: E.titleBar?.accent || '#E11D48', font: E.titleBar?.font || '', ...(E.titleBar?.x != null ? { x: E.titleBar.x, y: E.titleBar.y } : {}) },
     grade: E.grade || '', adjust: { b: E.adjust?.b || 0, c: E.adjust?.c || 0, s: E.adjust?.s || 0 }, mirror: !!E.mirror, motion: E.motion || 0, speed: E.speed || 1,
     overlays: (E.overlays || []).map(o => ({ ...o })),
     outro: E.outro || null,
@@ -37,7 +38,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const loadFont = fam => { if (!FONT_FILES[fam] || [...document.fonts].some(f => f.family.replace(/"/g, '') === 'cp-' + fam)) return;
     const ff = new FontFace('cp-' + fam, `url(/fonts/${FONT_FILES[fam]})`); ff.load().then(f => { document.fonts.add(f); render(); }).catch(() => {}); };
   const fontCss = () => `"cp-${S.font}", "DejaVu Sans", Arial, sans-serif`;
-  loadFont(S.font);
+  loadFont(S.font); loadFont(S.titleBar.font || (S.titleBar.style === 'sticker' ? 'Anton' : S.font));
+  const titleFont = () => S.titleBar.font || (S.titleBar.style === 'sticker' ? 'Anton' : S.font);
+  let tbBox = null; // dónde se dibujó el texto fijo (para arrastrarlo)
   // Fotos y logos: imágenes para la vista previa
   const ovImg = {};
   const ovImage = o => { if (!o.url) return null; if (!ovImg[o.url]) { const im = new Image(); im.onload = () => render(); im.src = o.url; ovImg[o.url] = im; } return ovImg[o.url]; };
@@ -171,16 +174,31 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     // Título fijo arriba con caja de color (todo el clip)
     const tbText = S.hookOn ? (S.hook || '').trim() : '';
     if (tbText) {
-      const size = 64 * S.titleBar.size * k; ctx.font = `800 ${size}px ${fontCss()}`;
+      const TB = S.titleBar, tf = titleFont(), size = 64 * TB.size * k * (tf === 'Anton' || tf === 'Bebas Neue' ? 1.45 : 1);
+      ctx.font = `800 ${size}px "cp-${tf}", "DejaVu Sans", Arial, sans-serif`;
       const words = tbText.toUpperCase().split(/\s+/), lines = []; let cur = '';
       for (const w of words) { const tryL = cur ? cur + ' ' + w : w; if (ctx.measureText(tryL).width > cwid * 0.82 && cur) { lines.push(cur); cur = w; } else cur = tryL; }
       if (cur) lines.push(cur);
+      const lh = size * 1.2, blockH = lines.length * lh;
+      const free = TB.x != null && TB.y != null;
+      const top = free ? TB.y * chei - blockH / 2 : (S.layout === 'gaming' ? Math.round(oh * 0.355) + 40 : 110) * k;
+      const cx = free ? TB.x * cwid : cwid / 2;
+      let maxW = 0;
+      ctx.save(); ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
       lines.forEach((line, i) => {
-        const w = ctx.measureText(line).width, x = (cwid - w) / 2, y = (S.layout === 'gaming' ? Math.round(oh * 0.355) + 40 : 110) * k + size * 0.62 + i * size * 1.2;
-        if (S.titleBar.bg !== 'none') { ctx.fillStyle = S.titleBar.bg; ctx.fillRect(x - 16 * k, y - size * 0.62 - 8 * k, w + 32 * k, size * 1.24 + 16 * k); }
-        else { ctx.lineWidth = size * 0.14; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round'; ctx.strokeText(line, x, y); }
-        ctx.textBaseline = 'middle'; ctx.fillStyle = S.titleBar.color; ctx.fillText(line, x, y);
+        const w = ctx.measureText(line).width, x = cx - w / 2, y = top + size * 0.62 + i * lh;
+        maxW = Math.max(maxW, w);
+        const st = TB.style;
+        if (st === 'caja') { ctx.fillStyle = TB.bg !== 'none' ? TB.bg : '#E11D48'; ctx.fillRect(x - 16 * k, y - size * 0.62 - 8 * k, w + 32 * k, size * 1.24 + 16 * k); }
+        else if (st === 'sticker') { ctx.lineWidth = size * 0.6; ctx.strokeStyle = TB.accent; ctx.strokeText(line, x, y); ctx.lineWidth = Math.max(6 * k, size * 0.18); ctx.strokeStyle = '#000'; ctx.strokeText(line, x, y); }
+        else if (st === 'neon') { ctx.shadowColor = TB.accent; ctx.shadowBlur = size * 0.5; ctx.lineWidth = 6 * k; ctx.strokeStyle = TB.accent; ctx.strokeText(line, x, y); ctx.strokeText(line, x, y); ctx.shadowBlur = 0; }
+        else if (st === 'sombra') { ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowOffsetX = ctx.shadowOffsetY = size * 0.14; ctx.lineWidth = 4 * k; ctx.strokeStyle = '#000'; ctx.strokeText(line, x, y); }
+        else { ctx.lineWidth = size * (st === 'amarillo' ? 0.24 : 0.14); ctx.strokeStyle = '#000'; ctx.strokeText(line, x, y); }
+        ctx.fillStyle = st === 'amarillo' ? '#FFD400' : TB.color; ctx.fillText(line, x, y);
+        ctx.shadowColor = 'transparent'; ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
       });
+      ctx.restore();
+      tbBox = { x0: (cx - maxW / 2 - 20 * k) / cwid, x1: (cx + maxW / 2 + 20 * k) / cwid, y0: (top - 10 * k) / chei, y1: (top + blockH + 10 * k) / chei, cy: (top + blockH / 2) / chei, cx: cx / cwid };
     }
     // subtítulos
     if (S.captions.show && t >= S.start && t <= S.end) {
@@ -357,7 +375,16 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const b = out.getBoundingClientRect(), px = (e.clientX - b.left) / b.width, py = (e.clientY - b.top) / b.height, tc = vid.currentTime - S.start;
     const hit = [...S.overlays].reverse().find(o => { const im = ovImage(o); if (!im?.naturalWidth) return false; if (o.kind !== 'logo' && (tc < (o.from || 0) || (o.to > (o.from || 0) && tc > o.to))) return false;
       const hw = o.w / 2, hh = o.w * im.naturalHeight / im.naturalWidth * (out.width / out.height) / 2; return Math.abs(px - o.x) < hw && Math.abs(py - o.y) < hh; });
-    if (!hit) return;
+    if (!hit) {
+      // el texto fijo también se arrastra libremente
+      if (tbBox && S.hookOn && px >= tbBox.x0 && px <= tbBox.x1 && py >= tbBox.y0 && py <= tbBox.y1) {
+        e.preventDefault(); const X0 = tbBox.cx, Y0 = tbBox.cy;
+        const mv = ev => { S.titleBar.x = Math.max(0.05, Math.min(0.95, X0 + (ev.clientX - e.clientX) / b.width)); S.titleBar.y = Math.max(0.03, Math.min(0.97, Y0 + (ev.clientY - e.clientY) / b.height)); render(); };
+        const upT = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', upT); changed(); };
+        window.addEventListener('pointermove', mv); window.addEventListener('pointerup', upT);
+      }
+      return;
+    }
     e.preventDefault(); const x0 = hit.x, y0 = hit.y; if (hit.kind === 'logo') hit.pos = 'free';
     const move = ev => { hit.x = Math.max(0, Math.min(1, x0 + (ev.clientX - e.clientX) / b.width)); hit.y = Math.max(0, Math.min(1, y0 + (ev.clientY - e.clientY) / b.height)); render(); };
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); changed(); };
@@ -388,12 +415,15 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       P2.innerHTML = `
       <h4>▾ Letra</h4>
       <select data-s="font" style="font-family:${esc(fontCss())}">${opt(d.fonts || { 'DejaVu Sans': 'Clásica' }, S.font)}</select>
-      <h4>▾ Texto fijo arriba <span class="small muted">(el gancho, todo el clip)</span></h4>
+      <h4>▾ Texto fijo <span class="small muted">(el gancho, todo el clip · arrástralo donde quieras)</span></h4>
       <div class="row"><input data-s="hook" value="${esc(S.hook)}" style="flex:1" placeholder="Escribe el gancho"><label class="check" style="margin:0"><input type="checkbox" data-s="hookOn" ${S.hookOn ? 'checked' : ''}> Mostrar</label></div>
-      ${S.hookOn ? `<div class="row"><span class="small" style="width:70px">Texto</span><input type="color" data-s="tbcolor" value="${S.titleBar.color}" style="width:50px;height:34px;padding:2px">
-        <span class="small">Caja</span><input type="color" data-s="tbbg" value="${S.titleBar.bg === 'none' ? '#E11D48' : S.titleBar.bg}" style="width:50px;height:34px;padding:2px" ${S.titleBar.bg === 'none' ? 'disabled' : ''}>
-        <label class="check" style="margin:0"><input type="checkbox" data-s="tbnobg" ${S.titleBar.bg === 'none' ? 'checked' : ''}> Sin caja</label></div>
-      <div class="row"><span class="small" style="width:70px">Tamaño</span><input type="range" data-s="tbsize" min="0.6" max="1.6" step="0.05" value="${S.titleBar.size}" style="flex:1"></div>` : ''}
+      ${S.hookOn ? `<div class="tb-styles">${Object.entries(d.titleStyles || {}).map(([k2, l]) => `<button class="tb-st ${S.titleBar.style === k2 ? 'on' : ''}" data-tbst="${k2}" title="${esc(l)}"><span class="tb-prev tb-${k2}" style="--acc:${S.titleBar.accent}">TEXTO</span><small>${esc(l.split(' (')[0])}</small></button>`).join('')}</div>
+      <div class="row"><span class="small" style="width:70px">Letra</span><select data-s="tbfont" style="flex:1">${opt({ '': S.titleBar.style === 'sticker' ? 'Automática (Anton)' : 'La misma que los subtítulos', ...(d.fonts || {}) }, S.titleBar.font || '')}</select></div>
+      <div class="row"><span class="small" style="width:70px">Texto</span><input type="color" data-s="tbcolor" value="${S.titleBar.color}" style="width:50px;height:34px;padding:2px">
+        ${S.titleBar.style === 'caja' ? `<span class="small">Caja</span><input type="color" data-s="tbbg" value="${S.titleBar.bg === 'none' ? '#E11D48' : S.titleBar.bg}" style="width:50px;height:34px;padding:2px">` : ''}
+        ${['sticker', 'neon'].includes(S.titleBar.style) ? `<span class="small">Borde</span><input type="color" data-s="tbacc" value="${S.titleBar.accent}" style="width:50px;height:34px;padding:2px">` : ''}</div>
+      <div class="small muted">✋ Arrastra el texto en la vista previa para ponerlo donde quieras.${S.titleBar.x != null ? ' <button class="btn sm" id="tbReset">↺ Volver arriba</button>' : ''}</div>
+      <div class="row"><span class="small" style="width:70px">Tamaño</span><input type="range" data-s="tbsize" min="0.6" max="1.8" step="0.05" value="${S.titleBar.size}" style="flex:1"></div>` : ''}
       <h4>▾ Subtítulos</h4>
       <label class="check"><input type="checkbox" data-s="cshow" ${S.captions.show ? 'checked' : ''}> Mostrar subtítulos</label>
       <div class="row"><span class="small" style="width:70px">Estilo</span><select data-s="cstyle" style="flex:1">${opt(Object.fromEntries(Object.entries(d.styles).map(([k, v]) => [k, v.label])), S.captions.style)}</select></div>
@@ -500,6 +530,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'tbbg') S.titleBar.bg = v;
       else if (k === 'tbnobg') { S.titleBar.bg = v ? 'none' : '#E11D48'; pane(); }
       else if (k === 'tbsize') S.titleBar.size = Number(v);
+      else if (k === 'tbacc') S.titleBar.accent = v;
+      else if (k === 'tbfont') { S.titleBar.font = v; loadFont(titleFont()); }
       else if (k === 'ctext') S.captions.textColor = v;
       else if (k === 'grade') S.grade = v;
       else if (k === 'adjb' || k === 'adjc' || k === 'adjs') { S.adjust[k.slice(3)] = Number(v); el.nextElementSibling.textContent = v; }
@@ -545,6 +577,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     P2.querySelectorAll('[data-oname]').forEach(inp => inp.onchange = async () => { try { OUTROS = await api('/api/outros/' + inp.dataset.oname, { method: 'PUT', body: { name: inp.value } }); } catch (e) { toast(e.message, 'bad'); } });
     P2.querySelectorAll('[data-odel]').forEach(b => b.onclick = () => { if (!confirm('¿Borrar este final de tu lista? Los clips ya exportados no cambian.')) return; busy(b, async () => {
       OUTROS = await api('/api/outros/' + b.dataset.odel, { method: 'DELETE' }); pane(); P2.querySelector('.ed-outros').open = true; }); });
+    P2.querySelectorAll('[data-tbst]').forEach(b => b.onclick = () => { S.titleBar.style = b.dataset.tbst; if (S.titleBar.style === 'caja' && S.titleBar.bg === 'none') S.titleBar.bg = '#E11D48'; loadFont(titleFont()); changed(); pane(); render(); });
+    const tbr = P2.querySelector('#tbReset'); if (tbr) tbr.onclick = () => { delete S.titleBar.x; delete S.titleBar.y; changed(); pane(); render(); };
     const ar = P2.querySelector('#adjReset'); if (ar) ar.onclick = () => { S.adjust = { b: 0, c: 0, s: 0 }; changed(); pane(); render(); };
     P2.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => { S.speed = Number(b.dataset.speed); vid.playbackRate = S.speed; changed(); pane(); });
     // Fotos y logos

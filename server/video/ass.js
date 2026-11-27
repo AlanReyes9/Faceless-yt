@@ -19,6 +19,12 @@ export const FONTS = {
   'Poppins Black': 'Poppins Black (moderna)', 'Archivo Black': 'Archivo Black (impacto)', 'Lilita One': 'Lilita One (redondeada)',
   'Bangers': 'Bangers (cómic)', 'DM Serif Display': 'DM Serif (elegante)',
 };
+/** Estilos del texto fijo (gancho durante todo el clip). */
+export const TITLE_STYLES = {
+  sticker: 'Sticker (borde doble, como los virales)', contorno: 'Contorno negro', caja: 'Caja de color', amarillo: 'Amarillo con contorno',
+  neon: 'Neón', sombra: 'Sombra fuerte',
+};
+const titleStyleOf = tb => TITLE_STYLES[tb?.style] ? tb.style : (tb?.bg && tb.bg !== 'none' ? 'caja' : 'sticker');
 export const CAPTION_STYLES = {
   clasico: { label: 'Clásico (palabra resaltada)', wpg: 3, size: 80, upper: true, mode: 'color' },
   marcador: { label: 'Marcador (palabra con fondo de color)', wpg: 3, size: 80, upper: true, mode: 'box' },
@@ -51,6 +57,8 @@ function wrap(text, max = 22) {
  */
 export function buildASS(words, { hook = '', hookSeconds = 4, duration = 60, highlight = '#FFD400', captionMarginV = 560, wordsPerGroup = 3, captions = true, width = 1080, height = 1920, capSize = 80, hookSize = 80, overlay = '', style = 'clasico', keywords = [], keywordColor = '#3DFF6E', sizeScale = 1, upper, wpg, hookMarginV = 190, layout = null, font = null, textColor = null, titleBar = null } = {}) {
   const F = FONTS[font] ? font : FONT;
+  const tStyle = titleStyleOf(titleBar);
+  const TF = FONTS[titleBar?.font] ? titleBar.font : tStyle === 'sticker' ? 'Anton' : F;
   const base = textColor && /^#[0-9a-f]{6}$/i.test(textColor) ? assColor(textColor) : '&H00FFFFFF', baseC = base;
   const header = `[Script Info]
 ScriptType: v4.00+
@@ -64,14 +72,26 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Hook,${F},${hookSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,7,3,8,60,60,${titleBar?.text ? Math.max(hookMarginV, titleBarBottom(titleBar, height) + 30) : hookMarginV},1
 Style: Big,${F},${Math.round(hookSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&HA0000000,1,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
 Style: Cap,${F},${capSize},${baseC},${baseC},&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,4,2,60,60,${captionMarginV},1
-Style: Title,${F},${titleSize(titleBar)},${titleBar?.color ? assColor(titleBar.color) : '&H00FFFFFF'},&H00FFFFFF,${titleBar?.bg && titleBar.bg !== 'none' ? assColor(titleBar.bg) : '&H00000000'},&H00000000,1,0,0,0,100,100,0,0,${titleBar?.bg && titleBar.bg !== 'none' ? 3 : 1},${titleBar?.bg && titleBar.bg !== 'none' ? 16 : 7},0,8,70,70,${titleBar?.top || TITLE_TOP},1
+Style: Title,${TF},${titleSize(titleBar)},${tStyle === 'amarillo' ? '&H0000D4FF' : titleBar?.color ? assColor(titleBar.color) : '&H00FFFFFF'},&H00FFFFFF,${tStyle === 'caja' ? assColor(titleBar.bg && titleBar.bg !== 'none' ? titleBar.bg : '#E11D48') : '&H00000000'},&H00000000,1,0,0,0,100,100,0,0,${tStyle === 'caja' ? 3 : 1},${tStyle === 'caja' ? 16 : 7},0,8,70,70,${titleBar?.top || TITLE_TOP},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
   const lines = [];
   // Título fijo durante todo el clip, arriba, con caja de color opcional
-  if (titleBar?.text) lines.push(`Dialogue: 3,${ts(0)},${ts(duration)},Title,,0,0,0,,${wrap(esc(titleBar.upper === false ? titleBar.text : titleBar.text.toUpperCase()), 24)}`);
+  if (titleBar?.text) {
+    // las letras estrechas (Anton, Bebas) se ven pequeñas: se agrandan para ocupar el ancho como en los vídeos virales
+    const cond = TF === 'Anton' || TF === 'Bebas Neue', tsz = Math.round(titleSize(titleBar) * (cond ? 1.45 : 1)), acc = assColor(titleBar.accent || '#E11D48');
+    const txt = wrap(esc(titleBar.upper === false ? titleBar.text : titleBar.text.toUpperCase()), cond ? 17 : 24);
+    // posición libre (arrastrada en el editor): centro del bloque de texto
+    const pos = Number.isFinite(titleBar.x) && Number.isFinite(titleBar.y) ? `\\an5\\pos(${Math.round(titleBar.x * width)},${Math.round(titleBar.y * height)})` : '';
+    const L = (layer, tags) => lines.push(`Dialogue: ${layer},${ts(0)},${ts(duration)},Title,,0,0,0,,{${pos}\\fs${tsz}${tags}}${txt}`);
+    if (tStyle === 'sticker') { L(3, `\\bord${Math.round(tsz * 0.3)}\\3c${acc}\\shad0`); L(4, `\\bord${Math.max(3, Math.round(tsz * 0.09))}\\3c&H00000000&\\shad0`); }
+    else if (tStyle === 'neon') { L(3, `\\bord${Math.round(tsz * 0.2)}\\3c${acc}\\blur14\\shad0`); L(4, `\\bord3\\3c${acc}\\shad0`); }
+    else if (tStyle === 'sombra') L(3, `\\bord2\\3c&H00000000&\\shad${Math.round(tsz * 0.14)}\\4c&H00000000&\\4a&H30&`);
+    else if (tStyle === 'amarillo') L(3, `\\bord${Math.round(tsz * 0.12)}\\3c&H00000000&\\shad3`);
+    else L(3, '');
+  }
   if (hook) {
     // Línea 1 en color de resalte, línea 2 en blanco (estilo gancho viral)
     const [l1, l2] = wrap(esc(hook.toUpperCase()), 18).split('\\N');
@@ -95,10 +115,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     // Agrupa palabras: corta por número, por signos de puntuación o por pausas largas
     const groups = [];
     let cur = [];
+    // Reglas de subtitulado profesional: no más de unas pocas letras por grupo, una coma solo corta si ya hay 2 palabras,
+    // y no se deja una palabra sola colgando al final de una frase (se añade al grupo anterior).
+    const maxChars = Math.max(14, per * 7);
+    const len = g => g.reduce((n, x) => n + String(x.word).length, 0) + g.length - 1;
+    const endsSentence = w => /[.!?…]["»”]?$/.test(w.word);
     words.forEach((w, i) => {
+      if (cur.length && len(cur) + 1 + String(w.word).length > maxChars + 4) { groups.push(cur); cur = []; }
       cur.push(w);
       const next = words[i + 1];
-      if (cur.length >= per || /[.!?…,;:]$/.test(w.word) || (next && next.start - w.end > 0.6) || !next) { groups.push(cur); cur = []; }
+      const pause = next && next.start - w.end > 0.6;
+      const orphanNext = next && cur.length <= per && endsSentence(next) && !pause && len(cur) + 1 + String(next.word).length <= maxChars + 4 && next.start - w.end < 0.3;
+      if (orphanNext) return; // la siguiente palabra cierra la frase: va en este grupo
+      if (cur.length >= per || endsSentence(w) || (/[,;:]$/.test(w.word) && cur.length >= 2) || pause || !next) { groups.push(cur); cur = []; }
     });
     const baseTag = st.size !== capSize ? `{\\fs${st.size}${st.outline != null ? `\\bord${st.outline}` : ''}}` : '';
     groups.forEach((g, gi) => {
@@ -112,7 +141,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         let end = wi < g.length - 1 ? g[wi + 1].start : Math.min(nextStart, w.end + 0.5);
         if (end <= start) end = start + 0.08;
         const text = g.map((x, xi) => {
-          const t = esc(st.upper ? x.word.toUpperCase() : x.word);
+          // en pantalla se quitan comas y puntos finales (se ve más limpio); se mantienen ¿? ¡!
+          const shown = String(x.word).replace(/[.,;:…]+(["»”]?)$/, '$1') || x.word;
+          const t = esc(st.upper ? shown.toUpperCase() : shown);
           const active = xi === wi && st.mode !== 'none';
           const color = isKw(x.word) ? kw : active ? hl : null;
           if (active && st.mode === 'box') return `{\\3c${hl}\\bord16\\shad0}${t}{\\3c&H00000000&\\bord${st.outline ?? 8}\\shad4}`;
