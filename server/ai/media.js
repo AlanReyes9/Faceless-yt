@@ -8,9 +8,9 @@ export async function tts(text, outFile, { voice: voiceOverride } = {}) {
   let [provider, forcedVoice] = voiceOverride ? voiceOverride.split(':') : [];
   provider = provider || await getSetting('tts_provider');
   // Voces gratis: las del sistema (Mac / Windows) o Gemini (plan gratuito)
-  if (provider === 'system' || provider === 'gemini') {
+  if (provider === 'system' || provider === 'gemini' || provider === 'piper') {
     const { freeTTS } = await import('./voices.js');
-    return freeTTS(text, outFile, voiceOverride || `${provider}:${provider === 'gemini' ? (await getSetting('gemini_voice')) || 'Kore' : ''}`);
+    return freeTTS(text, outFile, voiceOverride || `${provider}:${provider === 'gemini' ? (await getSetting('gemini_voice')) || 'Kore' : provider === 'piper' ? (await getSetting('piper_voice')) || 'es_MX-claude-high' : ''}`);
   }
   let r;
   if (provider === 'elevenlabs') {

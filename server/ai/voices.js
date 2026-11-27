@@ -109,6 +109,7 @@ export async function freeTTS(text, outFile, voice = 'system:', { style = '' } =
   const [prov, name] = spec.split(':');
   const raw = pitchStr ? outFile + '.raw.mp3' : outFile;
   if (prov === 'gemini') await geminiTTS(text, raw, name || 'Kore', style);
+  else if (prov === 'piper') { const { piperTTS } = await import('./piper.js'); await piperTTS(text, raw, name || 'es_MX-claude-high'); }
   else await systemTTS(text, raw, name || '');
   const pitch = Number(pitchStr);
   if (pitchStr && pitch > 0.5 && pitch < 2 && pitch !== 1) {
@@ -124,6 +125,12 @@ export async function castVoices(characters, provider, narrator) {
   const used = new Set([narrator]);
   let pool;
   if (provider === 'gemini') pool = { female: GEMINI_VOICES.female.map(v => 'gemini:' + v), male: GEMINI_VOICES.male.map(v => 'gemini:' + v) };
+  else if (provider === 'piper') {
+    // primero las de Latinoamérica; las de España después
+    const { PIPER_VOICES } = await import('./piper.js');
+    const ids = Object.entries(PIPER_VOICES).sort((a, b) => (b[1].latam ? 1 : 0) - (a[1].latam ? 1 : 0));
+    pool = { female: ids.filter(([, v]) => v.gender === 'female').map(([k]) => 'piper:' + k), male: ids.filter(([, v]) => v.gender === 'male').map(([k]) => 'piper:' + k) };
+  }
   else {
     const vs = (await systemVoices()).filter(v => /^es/i.test(v.lang));
     const list = vs.length ? vs : await systemVoices();

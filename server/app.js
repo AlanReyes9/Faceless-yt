@@ -663,11 +663,24 @@ app.post('/api/story/script', h(async (req, res) => {
   const { generateStoryScript } = await import('./video/composer.js');
   res.json(await generateStoryScript(req.body));
 }));
+// Probar una voz antes de elegirla
+app.post('/api/voice-preview', h(async (req, res) => {
+  const v = String(req.body.voice || '');
+  if (!/^(piper|system|gemini):/.test(v)) throw new Error('Elige una voz.');
+  const os = await import('node:os'), path = await import('node:path'), fs = await import('node:fs');
+  const out = path.join(os.tmpdir(), `voz_${Date.now()}.mp3`);
+  const { freeTTS } = await import('./ai/voices.js');
+  await freeTTS(String(req.body.text || '¡Hola! Así sueno yo. ¿Te gusta mi voz para tu historia?').slice(0, 200), out, v);
+  res.type('audio/mpeg').send(fs.readFileSync(out));
+  fs.rmSync(out, { force: true });
+}));
 // Historias IA: estilos y voces gratis disponibles en este equipo
 app.get('/api/story-options', h(async (req, res) => {
   const { STORY_STYLES } = await import('./video/composer.js');
   const { systemVoices, GEMINI_VOICES } = await import('./ai/voices.js');
-  res.json({ styles: Object.fromEntries(Object.entries(STORY_STYLES).map(([k, v]) => [k, v.label])), system: IS_VERCEL ? [] : await systemVoices(), gemini: GEMINI_VOICES, hasGemini: !!(await getSetting('gemini_key')) });
+  const { PIPER_VOICES, piperReady } = await import('./ai/piper.js');
+  res.json({ styles: Object.fromEntries(Object.entries(STORY_STYLES).map(([k, v]) => [k, v.label])), system: IS_VERCEL ? [] : await systemVoices(), gemini: GEMINI_VOICES, hasGemini: !!(await getSetting('gemini_key')),
+    piper: Object.entries(PIPER_VOICES).map(([id, v]) => ({ id, label: v.label, gender: v.gender, mb: v.mb, ready: piperReady(id) })) });
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);

@@ -126,7 +126,7 @@ register('compose.script', async ({ id }) => {
   // Historias: voz del narrador y una voz distinta para cada personaje
   if (p.type === 'story' && o.voiceMode !== 'settings' && !script.cast) {
     const { castVoices, defaultFreeVoiceProvider } = await import('../ai/voices.js');
-    const prov = o.voiceMode === 'gemini' || o.voiceMode === 'system' ? o.voiceMode : await defaultFreeVoiceProvider();
+    const prov = ['gemini', 'system', 'piper'].includes(o.voiceMode) ? o.voiceMode : await defaultFreeVoiceProvider();
     const narrator = o.narratorVoice || (prov === 'gemini' ? 'gemini:Charon' : (await castVoices([{ name: 'Narrador', gender: o.narratorGender || 'male' }], prov, null))[0].voice);
     script.cast = { provider: prov, narrator, characters: await castVoices(script.characters || [], prov, narrator) };
   }
@@ -156,6 +156,7 @@ register('compose.scene', async ({ id, i }, ctx) => {
     let voice = null, dur = Number(s.duration) || 3, words = [];
     if (useVoice && s.lines?.length && p.type === 'story') {
       // Historia: cada línea con la voz de quien habla, unidas con una pausa corta
+      if (p.data.script.cast?.provider === 'piper' && i === 0) await updateProject(id, { progress: 'Preparando la IA de voz local (la primera vez se descargan las voces, ~60 MB cada una)…' });
       const cast = p.data.script.cast || {};
       const voiceOf = sp => cast.characters?.find(c => c.name && String(sp).toLowerCase() === c.name.toLowerCase())?.voice || cast.narrator;
       const files = [];

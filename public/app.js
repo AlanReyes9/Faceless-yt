@@ -1441,11 +1441,15 @@ routes.historias = async (_, params) => {
         <div style="flex:1"><label>Duración</label><select name="seconds"><option value="30">30 s</option><option value="60" selected>1 min</option><option value="90">1,5 min</option><option value="180">3 min</option></select></div></div>
       <div class="row"><div style="flex:1"><label>Narración</label><select name="narration"><option value="tercera">Narrador (tercera persona)</option><option value="primera">El protagonista lo cuenta (primera persona)</option></select></div>
         <div style="flex:1"><label>Idioma</label><select name="language">${Object.entries(LANGS).map(([k, v]) => `<option value="${v}">${v}</option>`).join('')}</select></div></div>
-      <div class="row"><div style="flex:1"><label>Voces</label><select name="voiceMode">
-          ${o.hasGemini ? '<option value="gemini">Gratis · Gemini (más naturales, con emoción)</option>' : ''}
-          ${sys.length ? `<option value="system">Gratis · voces de tu equipo (${esVoices.length || sys.length} disponibles)</option>` : ''}
-          <option value="settings">Las de Ajustes (OpenAI / ElevenLabs)</option></select></div>
-        <div style="flex:1"><label>Voz del narrador</label><select name="narratorVoice"><option value="">Automática</option></select></div></div>
+      <div><label>¿Qué voces uso?</label><input type="hidden" name="voiceMode">
+        <div class="vm-pick" id="vmPick">
+          <button type="button" data-vm="piper"><b>🧠 IA de voz local</b><small>Gratis y sin internet · voces neuronales</small></button>
+          <button type="button" data-vm="system" ${sys.length ? '' : 'disabled title="Solo en la app de escritorio"'}><b>🖥 Voz del computador</b><small>${sys.length ? `Gratis · ${esVoices.length || sys.length} voces de tu equipo` : 'Solo en la app de escritorio'}</small></button>
+          <button type="button" data-vm="gemini"><b>✨ Gemini</b><small>${o.hasGemini ? 'Gratis con tu clave · la más natural' : 'Añade tu clave de Gemini en Ajustes'}</small></button>
+          <button type="button" data-vm="settings"><b>⚙ Las de Ajustes</b><small>OpenAI / ElevenLabs (de pago)</small></button>
+        </div>
+        <div class="small muted" id="vmInfo"></div></div>
+      <div><label>Voz del narrador</label><div class="row" style="flex-wrap:nowrap"><select name="narratorVoice" style="flex:1"><option value="">Automática</option></select><button type="button" class="btn" id="vPrev" title="Escuchar esta voz">▶ Escuchar</button></div></div>
       <div class="row"><div style="flex:1"><label>Imágenes</label><select name="imageMode"><option value="free">Gratis (Pollinations)</option><option value="settings">Las de Ajustes (OpenAI / Gemini / IA local)</option></select></div>
         <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
       ${freeOk ? '' : '<div class="small warn-txt">Para voces gratis: añade tu clave de Gemini en Ajustes (gratis en Google AI Studio) o usa la app de escritorio (voces de tu equipo).</div>'}
@@ -1463,14 +1467,36 @@ routes.historias = async (_, params) => {
     f.story.placeholder = mode === 'fruit' ? 'Ej: La Fresa descubre que su novio el Plátano la engaña con la Piña… y la Manzana, su mejor amiga, lo sabía todo.' : 'Ej: Un chico pobre entra a un ascensor lleno de gente rica…';
     if (mode === 'fruit') f.style.value = 'fruta'; else if (f.style.value === 'fruta') f.style.value = 'caricatura';
   });
+  const VM_INFO = {
+    piper: () => `La primera vez se descargan las voces que se usen (~60 MB cada una); después funciona sin internet. ${(o.piper || []).filter(v => v.ready).length ? `Ya tienes ${(o.piper || []).filter(v => v.ready).length} descargada(s).` : ''}`,
+    system: () => 'Usa las voces que trae tu Mac o Windows. Suenan más robóticas; los personajes se distinguen cambiando el tono.',
+    gemini: () => o.hasGemini ? 'Voces muy naturales y con emoción. Plan gratuito con límite por minuto: si se llega, espera y sigue sola.' : '⚠ Falta tu clave de Gemini (Ajustes → Google Gemini API key, gratis en Google AI Studio).',
+    settings: () => 'Usa la voz elegida en Ajustes (OpenAI o ElevenLabs, de pago). Todos los personajes con la misma voz.',
+  };
+  const pickVM = vm => {
+    f.voiceMode.value = vm;
+    $('#vmPick').querySelectorAll('[data-vm]').forEach(b => b.classList.toggle('on', b.dataset.vm === vm));
+    $('#vmInfo').textContent = VM_INFO[vm]();
+    try { localStorage.setItem('storyVoice', vm); } catch {}
+    fillVoices();
+  };
+  $('#vmPick').querySelectorAll('[data-vm]').forEach(b => b.onclick = () => pickVM(b.dataset.vm));
   const fillVoices = () => {
     const vm = f.voiceMode.value, sel = f.narratorVoice;
-    const list = vm === 'gemini' ? [...o.gemini.male.map(v => ['gemini:' + v, v + ' (hombre)']), ...o.gemini.female.map(v => ['gemini:' + v, v + ' (mujer)'])]
+    const list = vm === 'piper' ? (o.piper || []).map(v => ['piper:' + v.id, `${v.label}${v.ready ? ' ✓' : ` (${v.mb} MB)`}`]) : vm === 'gemini' ? [...o.gemini.male.map(v => ['gemini:' + v, v + ' (hombre)']), ...o.gemini.female.map(v => ['gemini:' + v, v + ' (mujer)'])]
       : vm === 'system' ? (esVoices.length ? esVoices : sys).map(v => ['system:' + v.id, `${v.name} (${v.lang}, ${v.gender === 'female' ? 'mujer' : 'hombre'})`]) : [];
     sel.innerHTML = '<option value="">Automática</option>' + list.map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
     sel.disabled = !list.length;
   };
-  f.voiceMode.onchange = fillVoices; fillVoices();
+  $('#vPrev').onclick = e => busy(e.target, async () => {
+    const sel = f.narratorVoice; const v = sel.value || sel.options[1]?.value;
+    if (!v) throw new Error('Con las voces de Ajustes no hay prueba: elige otra opción.');
+    const r = await fetch('/api/voice-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voice: v }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'No se pudo generar la voz.');
+    const a = new Audio(URL.createObjectURL(await r.blob())); await a.play();
+    if (v.startsWith('piper:')) { const pv = (o.piper || []).find(x => 'piper:' + x.id === v); if (pv && !pv.ready) { pv.ready = true; fillVoices(); sel.value = v; } }
+  });
+  { let saved = null; try { saved = localStorage.getItem('storyVoice'); } catch {} pickVM(saved && (saved !== 'system' || sys.length) ? saved : 'piper'); }
   const opts2 = () => { const d = Object.fromEntries(new FormData(f)); d.type = 'story'; d.mode = mode; d.format = 'vertical'; d.seconds = Number(d.seconds); if (mode === 'fruit') d.style = d.style || 'fruta'; return d; };
   let script = null;
   const showScript = () => {
