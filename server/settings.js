@@ -40,6 +40,7 @@ export const FIELDS = {
   gemini_key: { secret: true, label: 'Google Gemini API key', group: 'IA de texto / voz / transcripción' },
   groq_key: { secret: true, label: 'Groq API key (transcripción Whisper barata)', group: 'IA de texto / voz / transcripción' },
   openrouter_key: { secret: true, label: 'OpenRouter API key', group: 'IA de texto / voz / transcripción' },
+  meta_ai_key: { secret: true, label: 'Meta Muse API key (texto Muse Spark e imágenes Muse Image · dev.meta.ai)', group: 'IA de texto / voz / transcripción' },
   elevenlabs_key: { secret: true, label: 'ElevenLabs API key', group: 'Voz' },
   pollinations_key: { secret: true, label: 'Pollinations API key (opcional: imágenes sin marca de agua)', group: 'Material' },
   pixabay_key: { secret: true, label: 'Pixabay API key (vídeos de stock, gratis)', group: 'Material' },
@@ -54,7 +55,8 @@ export const FIELDS = {
   tiktok_client_key: { secret: false, default: '', label: 'TikTok Client Key', group: 'Redes sociales' },
   tiktok_client_secret: { secret: true, default: '', label: 'TikTok Client Secret', group: 'Redes sociales' },
   use_cloud: { secret: false, default: '0', label: 'Usar servicios en la nube (con tus claves) en vez de la IA local', options: ['0', '1'], group: 'Nube' },
-  llm_provider: { secret: false, default: process.env.DEFAULT_LLM || 'openai', label: 'Proveedor de texto', options: ['local', 'openai', 'anthropic', 'gemini', 'groq', 'openrouter'], group: 'Preferencias' },
+  llm_provider: { secret: false, default: process.env.DEFAULT_LLM || 'openai', label: 'Proveedor de texto', options: ['local', 'openai', 'anthropic', 'gemini', 'groq', 'openrouter', 'meta'], group: 'Preferencias' },
+  meta_model: { secret: false, default: 'muse-spark-1.3', label: 'Modelo Meta Muse (texto)', group: 'Preferencias' },
   openai_model: { secret: false, default: 'gpt-4.1-mini', label: 'Modelo OpenAI', group: 'Preferencias' },
   anthropic_model: { secret: false, default: 'claude-sonnet-5-5', label: 'Modelo Claude', group: 'Preferencias' },
   gemini_model: { secret: false, default: 'gemini-3.8-flash', label: 'Modelo Gemini', group: 'Preferencias' },
@@ -84,7 +86,7 @@ export const FIELDS = {
   openai_voice: { secret: false, default: 'onyx', label: 'Voz OpenAI', group: 'Preferencias' },
   elevenlabs_voice_id: { secret: false, default: 'pNInz6obpgDQGcFmaJgB', label: 'ElevenLabs voice ID', group: 'Preferencias' },
   cleanup_days: { secret: false, default: '7', label: 'Borrar vídeos originales tras (días, 0 = nunca)', options: ['0', '1', '3', '7', '14', '30'], group: 'Almacenamiento' },
-  image_provider: { secret: false, default: process.env.DEFAULT_IMAGE || 'openai', label: 'Proveedor de imágenes (si falla se prueban los demás)', options: ['local', 'openai', 'gemini', 'pollinations'], group: 'Preferencias' },
+  image_provider: { secret: false, default: process.env.DEFAULT_IMAGE || 'openai', label: 'Proveedor de imágenes (si falla se prueban los demás)', options: ['local', 'openai', 'gemini', 'pollinations', 'meta'], group: 'Preferencias' },
   image_model: { secret: false, default: 'gpt-image-1', label: 'Modelo de imágenes OpenAI', group: 'Preferencias' },
   gemini_image_model: { secret: false, default: '', label: 'Modelo de imágenes Gemini (vacío = automático)', group: 'Preferencias' },
   pollinations_model: { secret: false, default: 'flux', label: 'Modelo de Pollinations', group: 'Preferencias' },
@@ -117,7 +119,7 @@ export async function getSetting(key) {
   return RETIRED[v] || v;
 }
 const CLOUD_ORDER = {
-  llm_provider: [['gemini', 'gemini_key'], ['openai', 'openai_key'], ['groq', 'groq_key'], ['anthropic', 'anthropic_key'], ['openrouter', 'openrouter_key']],
+  llm_provider: [['gemini', 'gemini_key'], ['openai', 'openai_key'], ['groq', 'groq_key'], ['anthropic', 'anthropic_key'], ['openrouter', 'openrouter_key'], ['meta', 'meta_ai_key']],
   image_provider: [['gemini', 'gemini_key'], ['openai', 'openai_key'], ['pollinations', null]],
   transcribe_provider: [['groq', 'groq_key'], ['openai', 'openai_key']],
 };
@@ -130,7 +132,7 @@ export async function aiMode() {
   const localAvailable = !!(process.env.LLAMA_SERVER || process.env.WHISPER_CLI || process.env.SD_CLI);
   const mode = localAvailable && (await all()).use_cloud !== '1' ? 'local' : 'cloud';
   const has = async k => !!(await getSetting(k));
-  const keys = { gemini: await has('gemini_key'), openai: await has('openai_key'), groq: await has('groq_key'), anthropic: await has('anthropic_key'), openrouter: await has('openrouter_key') };
+  const keys = { gemini: await has('gemini_key'), openai: await has('openai_key'), groq: await has('groq_key'), anthropic: await has('anthropic_key'), openrouter: await has('openrouter_key'), meta: await has('meta_ai_key') };
   return { mode, localAvailable, keys, cloudReady: Object.values(keys).some(Boolean),
     text: await getSetting('llm_provider'), image: await getSetting('image_provider'), transcribe: await getSetting('transcribe_provider') };
 }
