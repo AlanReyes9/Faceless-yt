@@ -19,6 +19,8 @@ import { chatJSON } from '../ai/llm.js';
 export const liveCuts = new Set();
 const OVERLAP = 60; // segundos del segmento anterior que se reanalizan (momentos que cruzan el corte)
 
+const streamCache = new Map(); // proyecto → { src, at }: enlace de la emisión ya resuelto
+
 /** Actualiza un campo de project.data de forma atómica (grabar y analizar corren a la vez). */
 export async function setLive(id, patch) {
   await q(`UPDATE projects SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{live}', COALESCE(data->'live', '{}'::jsonb) || $2::jsonb, true) WHERE id = $1`,
@@ -26,14 +28,14 @@ export async function setLive(id, patch) {
 }
 
 /** Convierte el enlace del directo en una URL de vídeo (HLS) que ffmpeg pueda grabar. */
-export async function resolveStream(url) {
+export async function resolveStream(url, onLine = () => {}) {
   if (/\.m3u8(\?|$)/i.test(url) || /^(rtmps?|srt|rtsp):\/\//i.test(url)) return url;
   if (IS_VERCEL) throw new Error('En Vercel solo se pueden grabar enlaces directos .m3u8 (YouTube/Twitch bloquean los servidores en la nube). Para usar enlaces de YouTube, Twitch o Kick, instala la app en tu PC. (400)');
   // Se pide la información completa y se usa la lista HLS maestra del directo (con todas las calidades y el audio):
   // así no depende de que exista un formato concreto (YouTube a veces solo ofrece vídeo y audio por separado).
   let j = null, lastErr = null;
   for (let i = 0; i < 3 && !j; i++) {
-    try { j = parseOut((await ytdlp(['-J', url], { stallMs: 90000, timeoutMs: 150000, fullOutput: true })).out); }
+    try { j = parseOut((await ytdlp(['-J', url], { stallMs: 90000, timeoutMs: 150000, fullOutput: true, onLine })).out); }
     catch (e) { lastErr = e; if (/no eres un bot/.test(e.message)) throw e; if (i < 2) await new Promise(r => setTimeout(r, 8000)); }
   }
   if (j) {
@@ -90,8 +92,20 @@ register('live.capture', async ({ id, seg }, ctx) => {
   const segSec = Math.floor(Math.min(want, maxSec - st.secs, (ctx.remaining() - 45000) / 1000));
   if (segSec < 20) { await enqueue('live.capture', { id, seg }); return; } // sin tiempo: a una ejecución nueva
 
+  // Enlace de la emisión: se reutiliza entre tramos (YouTube lo mantiene válido horas); se pide de nuevo si caduca
+  const cached = streamCache.get(id);
+  let src = cached && Date.now() - cached.at < 40 * 60e3 ? cached.src : null;
+  if (!src) {
+    const t0 = Date.now();
+    await updateProject(id, { status: 'processing', error: null, progress: `🔴 Conectando con el directo… (${fmtMin(st.secs)} grabados · ${st.clips} clips)` });
+    src = await resolveStream(p.source_url, line => {
+      // avisos de yt-dlp (p. ej. «probando con las cookies de Chrome»): se muestran para que no parezca colgado
+      if (/cookies|verificaci/i.test(line)) updateProject(id, { progress: `🔴 ${String(line).slice(0, 140)} (si macOS pide la contraseña del llavero para Chrome, acéptala)` }).catch(() => {});
+    });
+    console.log(`[directo ${id}] emisión encontrada en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+    streamCache.set(id, { src, at: Date.now() });
+  }
   await updateProject(id, { status: 'processing', error: null, progress: `🔴 Grabando el directo · ${fmtMin(st.secs)} grabados · ${st.clips} clips` });
-  const src = await resolveStream(p.source_url);
   const url = typeof src === 'string' ? src : src.video;
   await setLive(id, { recWall: Date.now(), recPos: st.secs }); // para "✂ Clip ahora": posición del directo en cada momento
   const out = path.join(WORK_DIR, `live_${id}_${seg}_${Date.now()}.mp4`);
@@ -100,7 +114,13 @@ register('live.capture', async ({ id, seg }, ctx) => {
   try {
     if (/\.m3u8(\?|$)/i.test(url) || /mpegurl/i.test(url)) {
       // HLS: grabador propio en Node (continúa donde terminó el segmento anterior, sin huecos)
-      const pl = await resolvePlaylist(url);
+      let pl;
+      try { pl = await resolvePlaylist(url); }
+      catch (e) {
+        // el enlace guardado caducó: se pide uno nuevo y se sigue
+        if (cached) { streamCache.delete(id); console.warn(`[directo ${id}] enlace guardado caducado: se vuelve a pedir`); await enqueue('live.capture', { id, seg }); return; }
+        throw e;
+      }
       if (src.audio && !pl.audio) pl.audio = (await resolvePlaylist(src.audio)).video; // audio en una lista aparte (YouTube)
       const deadline = Date.now() + Math.min(segSec * 1000 + 60000, ctx.remaining() - 30000);
       const vfile = path.join(WORK_DIR, `live_${id}_${seg}_v.ts`), afile = path.join(WORK_DIR, `live_${id}_${seg}_a.ts`);
@@ -141,6 +161,7 @@ register('live.capture', async ({ id, seg }, ctx) => {
       // Enlace del directo caducado o caído un momento: se vuelve a pedir y se sigue (hasta 5 veces seguidas)
       if (rec?.expired && !(await getProject(id)).data.live?.stopRequested && (live.retries || 0) < 5) {
         await setLive(id, { retries: (live.retries || 0) + 1, vSeq: null, aSeq: null });
+        streamCache.delete(id);
         console.warn(`[directo ${id}] enlace no disponible: se vuelve a conectar (${(live.retries || 0) + 1}/5)`);
         await new Promise(r => setTimeout(r, 5000));
         await enqueue('live.capture', { id, seg });
