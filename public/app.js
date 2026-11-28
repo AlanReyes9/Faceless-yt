@@ -34,7 +34,7 @@ const pill = s => `<span class="pill ${s}">${['processing', 'rendering', 'pendin
 
 // ---------- Navegación ----------
 const NAV = [
-  ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['calendario', '▣', 'Calendario de contenido']]],
+  ['ESTUDIO', [['', '⌂', 'Inicio'], ['canales', '▦', 'Mis canales'], ['videos', '▤', 'Mis vídeos'], ['cola', '⏳', 'Cola de trabajos'], ['rendimiento', '📈', 'Rendimiento'], ['calendario', '▣', 'Calendario de contenido']]],
   ['HERRAMIENTAS', [['nichos', '⌕', 'Buscador de nichos'], ['historias', '📖', 'Historias IA'], ['completo', '▶', 'Vídeo completo'], ['shorts', '✂', 'Convertir a Clips'], ['directo', '🔴', 'Clips de directos'], ['multiedit', '🧬', 'Multi Edit'],
     ['ranking', '🏆', 'Rankings Top'], ['miniaturas', '🖼', 'Miniaturas IA'], ['analizador', '◎', 'Analizador']]],
   ['CUENTA', [['ajustes', '⚿', 'Ajustes y claves'], ['papelera', '🗑', 'Papelera'], ['ayuda', '?', 'Ayuda']]],
@@ -320,11 +320,16 @@ function autoEditBox(el, { retakes = true, silence = true, normalize = true, not
   const item = (name, on, icon, title, desc, extra = '') => `<label class="ae-item"><input type="checkbox" name="${name}" ${on ? 'checked' : ''}>
     <span><b>${icon} ${title}</b><span class="small muted">${desc}</span>${extra}</span></label>`;
   el.innerHTML = `<div class="autoedit stack">
+    <div class="row" style="flex-wrap:nowrap"><b style="white-space:nowrap">🎨 Mi plantilla</b><select data-preset style="flex:1"><option value="">Ninguna (ajustes de abajo)</option></select></div>
+    <div class="small muted" data-presethint>Tus plantillas guardan estilo de subtítulos, texto fijo, letra, color, final y marca. Se crean desde el editor de un clip.</div>
     <b>✂ Edición automática</b>
     ${item('cutRetakes', retakes, '✂️', 'Cortar retomas y falsos comienzos', 'Cuando te trabas y repites, deja solo la última toma limpia (IA).',
       `<label class="check ae-sub"><input type="checkbox" name="condense"> Condensar además ideas redundantes (más agresivo)</label>`)}
     ${item('cutSilence', silence, '✂️', 'Cortar silencios', 'Elimina los vacíos y pausas muertas para un ritmo ágil.')}
     ${item('normalize', normalize, '🔊', 'Volumen parejo', 'Iguala el volumen de todo el clip. Se respetan los colores originales.')}
+    ${item('cutFillers', false, '🗣', 'Quitar muletillas', 'Corta los «eh», «em», «este», «o sea»… cuando van sueltos.')}
+    ${item('punchZoom', false, '🔍', 'Zoom en los momentos clave', 'Acercamiento rápido en gritos, risas y la frase más fuerte.')}
+    ${item('sfx', false, '💥', 'Efectos de sonido', 'Un «whoosh» en los cortes y un golpe al empezar (sonidos propios, sin derechos de autor).')}
     ${note ? `<div class="small muted">${note}</div>` : ''}
     <div class="ae-music"><button type="button" class="btn sm" data-mup>🎵 Agregar música de fondo (opcional)</button><span data-mname class="small"></span>
       <div class="row" data-mvol hidden><span class="small" style="width:72px">Volumen</span><input type="range" min="0.05" max="0.6" step="0.01" value="0.18" style="flex:1"><button type="button" class="btn sm" data-mdel title="Quitar música">✕</button></div>
@@ -346,8 +351,17 @@ function autoEditBox(el, { retakes = true, silence = true, normalize = true, not
   };
   $a('[data-mvol] input').oninput = e => { st.musicVolume = Number(e.target.value); };
   $a('[data-mdel]').onclick = () => { st.music = null; $a('[data-mname]').textContent = ''; $a('[data-mvol]').hidden = true; $a('[data-mhint]').hidden = true; $a('[data-mup]').textContent = '🎵 Agregar música de fondo (opcional)'; };
+  // plantillas guardadas (la última usada queda elegida)
+  api('/api/presets').then(list => {
+    const sel = $a('[data-preset]'); if (!sel) return;
+    let last = ''; try { last = localStorage.getItem('lastPreset') || ''; } catch {}
+    sel.innerHTML = '<option value="">Ninguna (ajustes de abajo)</option>' + list.map(p => `<option value="${p.id}" ${p.id === last ? 'selected' : ''}>${esc(p.name)}${p.brandProfile ? ' · con marca' : ''}</option>`).join('');
+    if (!list.length) sel.disabled = true; else $a('[data-presethint]').textContent = 'La plantilla se aplica a todos los clips nuevos (estilo, texto fijo, final y marca).';
+    sel.onchange = () => { try { localStorage.setItem('lastPreset', sel.value); } catch {} };
+  }).catch(() => {});
   return () => ({ cutRetakes: $a('[name=cutRetakes]').checked, condense: $a('[name=condense]').checked, cutSilence: $a('[name=cutSilence]').checked,
-    normalize: $a('[name=normalize]').checked, music: st.music, musicVolume: st.musicVolume });
+    normalize: $a('[name=normalize]').checked, music: st.music, musicVolume: st.musicVolume, presetId: $a('[data-preset]').value || null,
+    cutFillers: $a('[name=cutFillers]').checked, punchZoom: $a('[name=punchZoom]').checked, sfx: $a('[name=sfx]').checked });
 }
 
 // ---------- Mi marca: logo (marca de agua) y marco sobre los clips ----------
@@ -1085,7 +1099,7 @@ routes.proyecto = async id => {
       <div class="row small muted">${pill(p.status)} ${p.duration ? '· ' + mmss(p.duration) : ''} <span class="hprog">${p.progress ? '· ' + esc(p.progress) : ''}</span></div></div>
     <div class="row">${p.live && !p.live.ended ? `<button class="btn red" id="stop" ${p.live.stopRequested ? 'disabled' : ''}>⏹ Detener directo</button>` : ''}${isClips && p.clips?.length ? `<a class="btn gold" href="/api/projects/${p.id}/zip">⬇ Descargar .zip</a>` : ''}
       ${p.status === 'error' ? '<button class="btn" id="retry">↻ Reintentar</button>' : ''}<button class="btn red" id="del">Eliminar</button></div></div>
-    ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}</div>` : ''}
+    ${p.error ? `<div class="card err" style="margin-bottom:16px">${esc(p.error)}${fixHelp(p.error)}</div>` : ''}
     ${cleanupBanner(p)}${p.live && !p.live.ended ? `<div class="livewrap">${liveEmbed(p)}${liveBanner(p)}</div>` : liveBanner(p)}
     ${['pending', 'processing'].includes(p.status) && !p.live ? `<div class="progress stack" style="margin-bottom:16px">${pbar(p.percent, p.progress || 'Procesando…')}
       <div class="muted small">Puedes cerrar esta página: el servidor sigue trabajando. ${p.type === 'shorts' ? 'Los clips se renderizan de uno en uno.' : ''}</div></div>` : ''}`;
@@ -1237,7 +1251,11 @@ function bindLive(p) {
 
 function shortsGrid(p, chs) {
   if (!p.clips?.length) return p.live && !p.live.ended ? '<div class="empty">Aún no hay clips: el primero aparece tras analizar el primer segmento.</div>' : p.status === 'ready' ? '<div class="empty">No se generaron clips.</div>' : '';
-  return `<div class="shorts">${p.clips.map(c => {
+  return `<div class="batchbar" id="batchbar"><label class="check" style="margin:0"><input type="checkbox" id="selAll"> Seleccionar todos</label>
+      <span class="small muted" id="selCount">Marca la casilla de los clips para trabajar con varios a la vez</span>
+      <div class="row" style="margin-left:auto;gap:6px"><select id="bPreset" style="width:auto"><option value="">🎨 Aplicar plantilla…</option></select>
+        <button class="btn sm" id="bZip" disabled>⬇ Descargar seleccionados</button><button class="btn sm" id="bThumbs" disabled>🖼 Miniaturas</button><button class="btn sm gold" id="bSched" disabled>📅 Programar en YouTube</button></div></div>
+    <div class="shorts">${p.clips.map(c => {
     const dur = c.end - c.start;
     const langs = Object.entries(c.variants || {}).filter(([, v]) => v.url);
     const sg = c.signals || {};
@@ -1245,8 +1263,8 @@ function shortsGrid(p, chs) {
     const tone = ['pink', 'blue', 'peach', 'lilac'][(c.idx - 1) % 4];
     const cat = sg.category || (/marcado por ti/i.test(c.reason || '') ? '✂ Marcado por ti' : null);
     return `<div class="clip cc ${tone}" data-clip="${c.id}">
-      <div class="vid"><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>`
-        : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
+      <div class="vid"><label class="cc-sel" title="Seleccionar para acciones en lote"><input type="checkbox" data-sel="${c.id}"></label><button class="btn sm xbtn" data-x title="Eliminar clip">✕</button>${c.url && c.status !== 'rendering' ? `<video src="${c.url}" controls preload="metadata" playsinline></video>`
+        : c.status === 'error' ? `<div class="stack" style="padding:14px;text-align:center"><div style="font-size:26px">⚠️</div><div class="err small">${esc(friendlyError(c.error))}</div>${fixHelp(c.error)}${friendlyError(c.error) !== c.error ? `<details class="small muted" style="max-height:120px;overflow:auto;text-align:left"><summary>Ver detalle técnico</summary><code style="white-space:pre-wrap;word-break:break-all">${esc(c.error)}</code></details>` : ''}<button class="btn sm gold" data-retry>↻ Reintentar</button></div>`
         : `<div style="width:80%">${pbar(c.progress, c.stage || 'En cola…')}</div>`}
         ${cat ? `<span class="cc-cat">${esc(cat)}</span>` : ''}${c.variant_label ? `<span class="cc-var" title="Versión de otro clip (Multi Edit)">🧬 ${esc(c.variant_label)}</span>` : ''}</div>
       <div class="body">
@@ -1260,6 +1278,7 @@ function shortsGrid(p, chs) {
           ${c.url && c.status !== 'rendering' ? `<button class="btn cc-dl" data-dl>⬇ Descargar</button>` : ''}
           ${!p.cleanup?.deletedAt ? `<a class="btn cc-edit" href="#/editor/${c.id}">✎ Editar clip</a>` : ''}
           <button class="btn cc-pub" data-publish>📤 Publicar${c.yt_video_id ? ' · YouTube ✓' : ''}</button>
+          ${c.thumbUrl ? `<a class="btn cc-pub" href="${c.thumbUrl}" download="miniatura_${c.idx}.jpg" target="_blank">🖼 Miniatura <img src="${c.thumbUrl}" class="cc-thumb" alt=""></a>` : ''}
         </div>
         <details class="cc-more"><summary>⚙ Ajustes rápidos</summary><div class="stack" style="margin-top:8px">
         <div><label>Título</label><input data-f="title" value="${esc(c.title)}"></div>
@@ -1307,6 +1326,23 @@ function viralBreakdown(sg) {
 }
 
 /** Mensaje de error legible para el usuario (los detalles técnicos quedan en Estado del servidor). */
+/** «Cómo solucionarlo»: pasos concretos según el error, con un botón que lleva al sitio donde se arregla. */
+const FIXES = [
+  [/no eres un bot|cookies/i, 'YouTube pide verificar que no eres un bot', ['Abre YouTube en tu navegador con tu cuenta iniciada.', 'En Mac con Chrome, acepta la contraseña de «Chrome Safe Storage» si la pide.', 'En Ajustes → «Cookies del navegador para YouTube» elige tu navegador y vuelve a intentarlo.'], ['⚙ Abrir Ajustes', '#/ajustes']],
+  [/Falta la clave|API key|\(401\)|invalid.*key|Incorrect API key/i, 'Falta una clave o no es válida', ['Ve a Ajustes y pega la clave del servicio que indica el error.', 'Pulsa «Probar …» para comprobar que funciona.', 'O cambia al modo IA local (gratis) en el interruptor de arriba a la izquierda.'], ['⚙ Abrir Ajustes', '#/ajustes']],
+  [/\(429\)|rate limit|límite|quota|TPM|RESOURCE_EXHAUSTED/i, 'Se llegó al límite del plan de la IA', ['Espera un minuto y pulsa «Reintentar».', 'Con planes gratuitos (Groq, Gemini) el texto se analiza por partes automáticamente.', 'Si pasa a menudo, usa un modelo más pequeño o la IA local.'], null],
+  [/ENOSPC|no space|espacio/i, 'No queda espacio en el disco', ['Borra proyectos antiguos (y vacía la Papelera).', 'Activa el borrado automático de originales en Ajustes.', 'Libera espacio en tu equipo y pulsa «Reintentar».'], ['🗑 Abrir Papelera', '#/papelera']],
+  [/ENOTFOUND|ECONN|fetch failed|No se pudo conectar|network|tardó demasiado en responder/i, 'Problema de conexión a internet', ['Comprueba tu conexión.', 'Pulsa «Reintentar» en unos segundos.', 'Si usas VPN o proxy, prueba sin él.'], null],
+  [/tiempo máximo|tiempo límite|agotó el tiempo/i, 'Tardó demasiado', ['Pulsa «Reintentar»: se usará un modo más rápido.', 'En Ajustes → «Renderizar con» prueba «Tarjeta gráfica» si tu equipo tiene una.', 'Si sigue fallando, prueba con un clip más corto.'], ['⚙ Abrir Ajustes', '#/ajustes']],
+  [/no está instalado|yt-dlp/i, 'Falta una herramienta', ['Cierra y vuelve a abrir la app.', 'Si sigue, reinstala la última versión de Clippers Pro.'], null],
+  [/original se borró|\(410\)/i, 'El vídeo original ya no está', ['Para ahorrar espacio se borró el original de este proyecto.', 'Los clips ya hechos siguen disponibles; para rehacerlos sube de nuevo el vídeo.'], null],
+];
+function fixHelp(e = '') {
+  const f = FIXES.find(([re]) => re.test(e));
+  if (!f) return '';
+  const [, title, steps, link] = f;
+  return `<details class="fixhelp"><summary>💡 Cómo solucionarlo: ${esc(title)}</summary><ol>${steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>${link ? `<a class="btn sm" href="${link[1]}">${link[0]}</a>` : ''}</details>`;
+}
 function friendlyError(e = '') {
   if (/tiempo máximo|tiempo límite|agotó el tiempo/i.test(e)) return 'Tardó demasiado en renderizar. Pulsa Reintentar: se usará un modo más rápido.';
   if (/Falta la clave/i.test(e)) return e;
@@ -1349,7 +1385,111 @@ function bindClips(p) {
       document.body.appendChild(a); a.click(); a.remove();
     });
   });
+  bindBatch(p);
 }
+
+
+// ---------- Acciones en lote sobre los clips seleccionados ----------
+function bindBatch(p) {
+  const bar = $('#batchbar'); if (!bar) return;
+  const boxes = () => [...document.querySelectorAll('[data-sel]')];
+  const chosen = () => boxes().filter(b => b.checked).map(b => Number(b.dataset.sel));
+  const sync = () => {
+    const n = chosen().length;
+    $('#selCount').textContent = n ? `${n} clip${n > 1 ? 's' : ''} seleccionado${n > 1 ? 's' : ''}` : 'Marca la casilla de los clips para trabajar con varios a la vez';
+    ['#bZip', '#bThumbs', '#bSched'].forEach(x => { $(x).disabled = !n; }); $('#bPreset').disabled = !n;
+    document.querySelectorAll('.clip.cc').forEach(c => c.classList.toggle('selected', !!c.querySelector('[data-sel]:checked')));
+  };
+  boxes().forEach(b => b.onchange = sync);
+  $('#selAll').onchange = e => { boxes().forEach(b => { b.checked = e.target.checked; }); sync(); };
+  sync();
+  api('/api/presets').then(list => { $('#bPreset').innerHTML = `<option value="">🎨 Aplicar plantilla…</option>${list.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}${list.length ? '' : '<option disabled>Aún no tienes plantillas (créalas en el editor)</option>'}`; }).catch(() => {});
+  $('#bPreset').onchange = async e => {
+    const id = e.target.value; if (!id) return;
+    const ids = chosen();
+    if (!confirm(`¿Aplicar la plantilla a ${ids.length} clip(s)? Se volverán a renderizar.`)) { e.target.value = ''; return; }
+    try { const r = await api(`/api/presets/${id}/apply`, { method: 'POST', body: { clipIds: ids } }); toast(`🎨 Plantilla aplicada a ${r.count} clips: renderizando…`, 'good'); router(); }
+    catch (err) { toast(err.message, 'bad'); e.target.value = ''; }
+  };
+  $('#bZip').onclick = e => busy(e.target, async () => { const r = await api('/api/clips/zip-select', { method: 'POST', body: { clipIds: chosen() } }); location.href = r.url; });
+  $('#bThumbs').onclick = e => busy(e.target, async () => {
+    const r = await api('/api/clips/thumbs', { method: 'POST', body: { clipIds: chosen() } });
+    toast(`🖼 Creando ${r.count} miniatura(s)… aparecerán en cada clip`, 'good'); setTimeout(router, 4000);
+  });
+  $('#bSched').onclick = () => scheduleDialog(p, chosen());
+}
+
+// ---------- Cola de trabajos ----------
+routes.cola = async () => {
+  main.innerHTML = `<div class="row between"><div><h1>⏳ Cola de trabajos</h1><p class="sub">Todo lo que la app está haciendo o tiene pendiente: renders, transcripciones, escenas… Puedes pausar la cola, cancelar un trabajo o pasarlo delante.</p></div>
+    <button class="btn" id="qPause"></button></div><div class="card" id="qList"><span class="spinner"></span></div>`;
+  const ago = d => { const s = Math.max(0, Math.round((Date.now() - new Date(d)) / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+  const load = async () => {
+    if (!document.body.contains($('#qList'))) return;
+    const r = await api('/api/jobs').catch(() => null); if (!r) return;
+    $('#qPause').textContent = r.paused ? '▶ Reanudar la cola' : '⏸ Pausar la cola';
+    $('#qPause').className = r.paused ? 'btn gold' : 'btn';
+    $('#qPause').onclick = e => busy(e.target, async () => { await api('/api/jobs/pause', { method: 'POST', body: { paused: !r.paused } }); load(); });
+    const act = r.jobs.filter(j => j.status !== 'failed'), fail = r.jobs.filter(j => j.status === 'failed');
+    const row = j => `<tr><td>${j.status === 'running' ? '<span class="pill ready">▶ En curso</span>' : j.status === 'queued' ? `<span class="pill">En espera${j.priority ? ' · ⬆' : ''}</span>` : '<span class="pill error">Cancelado / error</span>'}</td>
+      <td><b>${esc(j.label)}</b>${j.clip ? ` · clip #${j.clip.idx}` : ''}${j.scene ? ` · escena ${j.scene}` : ''}${j.status === 'running' && j.clip?.stage ? `<div class="small muted">${esc(j.clip.stage)} ${j.clip.progress ? Math.round(j.clip.progress) + '%' : ''}</div>` : ''}${j.error ? `<div class="small muted">${esc(j.error)}</div>` : ''}</td>
+      <td>${j.project ? `<a href="#/proyecto/${j.project.id}">${esc(j.project.title || 'Proyecto ' + j.project.id)}</a>` : '—'}</td>
+      <td class="small muted">${j.status === 'running' && j.locked_at ? 'hace ' + ago(j.locked_at) : 'hace ' + ago(j.created_at)}</td>
+      <td style="text-align:right;white-space:nowrap">${j.status === 'queued' ? `<button class="btn sm" data-prio="${j.id}" title="Pasar delante">⬆ Primero</button> ` : ''}${j.status !== 'failed' ? `<button class="btn sm red" data-cancel="${j.id}">✕ Cancelar</button>` : ''}</td></tr>`;
+    $('#qList').innerHTML = (r.paused ? '<div class="small warn-txt" style="margin-bottom:8px">⏸ La cola está en pausa: lo que está en curso termina, pero no empieza nada nuevo (la grabación de directos sigue).</div>' : '') +
+      (act.length ? `<table><tr><th>Estado</th><th>Trabajo</th><th>Proyecto</th><th>Tiempo</th><th></th></tr>${act.map(row).join('')}</table>` : '<div class="empty">✓ No hay nada en la cola. Todo terminado.</div>') +
+      (fail.length ? `<details style="margin-top:12px"><summary class="small">Cancelados o con error en las últimas 24 h (${fail.length})</summary><table>${fail.map(row).join('')}</table></details>` : '');
+    $('#qList').querySelectorAll('[data-prio]').forEach(b => b.onclick = () => busy(b, async () => { await api(`/api/jobs/${b.dataset.prio}/priority`, { method: 'POST' }); load(); }));
+    $('#qList').querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { if (confirm('¿Cancelar este trabajo?')) busy(b, async () => { const x = await api(`/api/jobs/${b.dataset.cancel}/cancel`, { method: 'POST' }); if (x.running) toast('Se marcó como cancelado; el paso en curso termina y no sigue.'); load(); }); });
+  };
+  await load();
+  const t = setInterval(() => { if (!document.body.contains($('#qList'))) return clearInterval(t); load(); }, 3000);
+};
+
+// ---------- Programar clips en YouTube ----------
+async function scheduleDialog(p, ids) {
+  const chs = (await channelsCache.get()).filter(c => c.connected);
+  const today = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal card stack" style="max-width:520px">
+    <h2 style="margin:0">📅 Programar ${ids.length} clip(s) en YouTube</h2>
+    ${chs.length ? '' : '<div class="small warn-txt">No tienes canales de YouTube conectados. Conéctalo en «Mis canales».</div>'}
+    <div><label>Canal</label><select id="sch">${chs.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="row"><div style="flex:1"><label>Empezar el día</label><input type="date" id="sday" value="${today}"></div>
+      <div style="flex:1"><label>Clips por día</label><select id="sper"><option value="1">1 al día</option><option value="2" selected>2 al día</option><option value="3">3 al día</option></select></div></div>
+    <div><label>Horas (recomendadas para Shorts: 12:00, 19:00 y 21:00)</label><input id="shours" value="12:00, 19:00"></div>
+    <div class="small muted">Cada clip se sube ya como «programado» y YouTube lo publica solo a su hora. El título, la descripción y los hashtags son los de «📤 Publicar» de cada clip (si no los generaste, se usa el título). También se apuntan en tu calendario.</div>
+    <div class="row"><button class="btn" id="scancel">Cancelar</button><button class="btn gold" id="sgo" ${chs.length ? '' : 'disabled'}>📅 Programar</button></div></div>`;
+  document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.querySelector('#scancel').onclick = close;
+  bg.querySelector('#sper').onchange = e => { const H = { 1: '19:00', 2: '12:00, 19:00', 3: '12:00, 19:00, 21:00' }; bg.querySelector('#shours').value = H[e.target.value]; };
+  bg.querySelector('#sgo').onclick = e => busy(e.target, async () => {
+    const r = await api('/api/clips/schedule', { method: 'POST', body: { clipIds: ids, channel_id: bg.querySelector('#sch').value, start: bg.querySelector('#sday').value, hours: bg.querySelector('#shours').value, tzOffset: new Date().getTimezoneOffset() } });
+    close();
+    toast(`📅 ${r.scheduled.length} clip(s) programados: se están subiendo a YouTube`, 'good');
+  });
+}
+
+// ---------- Rendimiento ----------
+routes.rendimiento = async () => {
+  main.innerHTML = `<h1>📈 Rendimiento</h1><p class="sub">Visitas, «me gusta» y comentarios de los clips que publicaste en YouTube desde la app, y qué tipo de momentos funciona mejor en tu canal. La IA lo tiene en cuenta al buscar los próximos clips.</p><div id="perf"><span class="spinner"></span> Leyendo YouTube…</div>`;
+  let r;
+  try { r = await api('/api/performance'); } catch (e) { $('#perf').innerHTML = `<div class="card err">${esc(e.message)}${fixHelp(e.message)}</div>`; return; }
+  if (!r.clips.length) { $('#perf').innerHTML = `<div class="empty">${esc(r.note || 'Sin datos todavía.')}</div>`; return; }
+  const n = x => x == null ? '—' : x >= 1e6 ? (x / 1e6).toFixed(1) + ' M' : x >= 1e3 ? (x / 1e3).toFixed(1) + ' k' : String(x);
+  const tot = r.clips.reduce((a, c) => a + (c.views || 0), 0), maxCat = Math.max(1, ...r.byCategory.map(x => x.avgViews));
+  $('#perf').innerHTML = `<div class="grid g4" style="margin-bottom:18px">
+      <div class="card"><div class="small muted">Clips publicados</div><div class="stat">${r.clips.length}</div></div>
+      <div class="card"><div class="small muted">Visitas totales</div><div class="stat">${n(tot)}</div></div>
+      <div class="card"><div class="small muted">Media por clip</div><div class="stat">${n(Math.round(tot / r.clips.length))}</div></div>
+      <div class="card"><div class="small muted">Lo que mejor funciona</div><div style="font-weight:700;margin-top:6px">${esc((r.best || []).join(' · ') || 'Faltan datos')}</div></div></div>
+    <div class="card" style="margin-bottom:18px"><h2>Por tipo de momento</h2>${r.byCategory.map(x => `<div class="row" style="flex-wrap:nowrap;margin:6px 0"><span style="width:170px">${esc(x.category)}</span>
+      <div style="flex:1;height:10px;background:var(--line);border-radius:6px"><div style="width:${Math.round(x.avgViews / maxCat * 100)}%;height:100%;border-radius:6px;background:linear-gradient(90deg,#3b82f6,#8b5cf6)"></div></div>
+      <span class="small" style="width:190px;text-align:right">${n(x.avgViews)} de media · ${x.n} clip(s) · ${x.likeRate}% likes</span></div>`).join('')}</div>
+    <div class="card"><h2>Clips</h2><table><tr><th>Clip</th><th>Tipo</th><th>Nota IA</th><th>Visitas</th><th>Likes</th><th>Coment.</th><th></th></tr>
+      ${r.clips.sort((a, b) => (b.views || 0) - (a.views || 0)).map(c => `<tr><td><a href="#/proyecto/${c.project_id}">${esc(c.title || 'Clip ' + c.idx)}</a><div class="small muted">${esc(c.project || '')}</div></td><td class="small">${esc(c.category)}</td><td>${Math.round(c.ai)}%</td><td><b>${n(c.views)}</b></td><td>${n(c.likes)}</td><td>${n(c.comments)}</td><td><a class="small" target="_blank" href="https://youtube.com/shorts/${esc(c.yt)}">ver ↗</a></td></tr>`).join('')}</table></div>`;
+};
 
 // ---------- Vídeo completo ----------
 routes.completo = async (_, params) => {
@@ -2111,7 +2251,7 @@ routes.ajustes = async (_, params) => {
   const [{ values, fields }, sys0] = await Promise.all([api('/api/settings'), getSystem()]);
   const localMode = sys0.desktop && sys0.localAvailable;
   // App de escritorio: IA local; las claves de la nube quedan en una sección opcional y plegada
-  const KEEP = ['ytdlp_cookies', 'local_llm', 'meta_app_id', 'meta_app_secret', 'meta_config_id', 'tiktok_client_key', 'tiktok_client_secret', 'whisper_model', 'caption_color', 'cleanup_days'];
+  const KEEP = ['render_device', 'ytdlp_cookies', 'local_llm', 'meta_app_id', 'meta_app_secret', 'meta_config_id', 'tiktok_client_key', 'tiktok_client_secret', 'whisper_model', 'caption_color', 'cleanup_days'];
   const groups = {}, cloud = {};
   for (const [k, f] of Object.entries(fields)) {
     if ((localMode && k === 'use_cloud') || (!localMode && k === 'local_llm')) continue;
@@ -2136,8 +2276,31 @@ routes.ajustes = async (_, params) => {
       ${localMode ? `<details class="card" id="cloudBox" style="grid-column:1/-1" ${values.use_cloud === '1' || params?.get('cloud') ? 'open' : ''}><summary style="cursor:pointer"><b>☁ Servicios en la nube (opcional)</b> <span class="small muted">— solo para Vídeo completo (voz y vídeos de stock), Analizador, Publicar en YouTube o si prefieres la IA de OpenAI/Gemini</span></summary>
         <div class="stack" style="margin-top:12px"><label class="check"><input type="checkbox" id="useCloud" ${values.use_cloud === '1' ? 'checked' : ''}> Usar los servicios en la nube con mis claves en vez de la IA local</label>
         <div class="grid g2">${Object.entries(cloud).map(card).join('')}</div></div></details>` : ''}
-      <div style="grid-column:1/-1"><button class="btn gold">Guardar ajustes</button></div></form>`;
+      <div style="grid-column:1/-1"><button class="btn gold">Guardar ajustes</button></div></form>
+    <div class="card stack" style="margin-top:18px"><h2 style="margin:0">💾 Copia de seguridad</h2>
+      <div class="small muted">Guarda en un archivo tus ajustes, plantillas, finales, canales, personajes, calendario, proyectos y clips. Sirve para pasar la app a otro equipo o por si algo falla. Los vídeos no van dentro (ocupan mucho): se quedan en la carpeta de la app.</div>
+      <label class="check"><input type="checkbox" id="bkKeys"> Incluir mis claves de API (guarda el archivo en un sitio seguro)</label>
+      <div class="row"><button type="button" class="btn" id="bkDown">⬇ Descargar copia</button><button type="button" class="btn" id="bkUp">⬆ Restaurar una copia</button><input type="file" id="bkFile" accept=".json,application/json" hidden></div>
+      <div class="small muted">Restaurar añade lo de la copia a lo que ya tienes (no borra nada).</div></div>`;
+  $('#bkDown').onclick = () => { location.href = '/api/backup' + ($('#bkKeys').checked ? '?keys=1' : ''); };
+  $('#bkUp').onclick = () => { $('#bkFile').value = ''; $('#bkFile').click(); };
+  $('#bkFile').onchange = () => busy($('#bkUp'), async () => {
+    const file = $('#bkFile').files[0]; if (!file) return;
+    if (!confirm('¿Restaurar esta copia? Se añadirán sus proyectos, clips y ajustes a los tuyos.')) return;
+    const fd = new FormData(); fd.append('file', file, file.name);
+    const r = await fetch('/api/restore', { method: 'POST', body: fd }).then(x => x.json());
+    if (r.error) throw new Error(r.error);
+    toast(`✓ Copia restaurada: ${r.restored.projects || 0} proyectos, ${r.restored.clips || 0} clips`, 'good'); router();
+  });
   const f = $('#f');
+  // Renderizar con: nombres claros y la tarjeta gráfica detectada
+  const rd = f.querySelector('select[name=render_device]');
+  if (rd) {
+    const L = { auto: 'Automático (tarjeta gráfica si hay; si no, procesador)', cpu: 'Procesador (CPU)', gpu: 'Tarjeta gráfica (GPU)' };
+    [...rd.options].forEach(o => { o.value = o.value || o.textContent; o.textContent = L[o.value] || o.value; });
+    rd.insertAdjacentHTML('afterend', '<div class="small muted" id="rdHint">Comprobando tu tarjeta gráfica…</div>');
+    api('/api/render-device').then(r => { $('#rdHint').innerHTML = r.encoder ? `✓ Tarjeta gráfica compatible: <b>${esc(r.name)}</b>. Renderiza más rápido.` : 'ℹ No se encontró una tarjeta gráfica compatible: se renderiza con el procesador (aunque elijas «Tarjeta gráfica»).'; }).catch(() => {});
+  }
   f.onsubmit = e => {
     e.preventDefault();
     busy(f.querySelector('.btn.gold'), async () => { const body = Object.fromEntries(new FormData(f)); if ($('#useCloud')) body.use_cloud = $('#useCloud').checked ? '1' : '0';

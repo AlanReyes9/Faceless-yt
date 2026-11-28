@@ -23,7 +23,7 @@ import { generateScript, generateAdScript, generateMontageScript } from './video
 import { authUrl, handleCallback, uploadVideo, youtubeConfigured, baseUrl } from './youtube.js';
 import { analyzeChannel } from './analyzer.js';
 import { preview as cleanupPreview, runCleanup } from './cleanup.js';
-import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl } from './jobs.js';
+import { enqueue, drain, kick, ensureWorker, queueStatus, setBaseUrl, register } from './jobs.js';
 import { STORAGE_MODE, saveFile, saveBuffer, publicUrl, readStream, removeFile, signedGetUrl, newKey, inputPath, toLocal } from './storage.js';
 import { s3Configured, presign, putBucketCors, S3 } from './s3.js';
 
@@ -209,6 +209,28 @@ const tools = () => {
   return toolsCache.p;
 };
 if (!IS_VERCEL) setTimeout(() => { tools(); import('./ai/localwhisper.js').catch(() => {}); import('./ai/localmodels.js').catch(() => {}); queueStatus().catch(() => {}); }, 300);
+// Copia de seguridad (descargar / restaurar)
+app.get('/api/backup', h(async (req, res) => {
+  const { makeBackup } = await import('./backup.js');
+  const b = await makeBackup({ keys: req.query.keys === '1' });
+  res.setHeader('content-disposition', `attachment; filename="clippers-copia-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.type('application/json').send(JSON.stringify(b));
+}));
+app.post('/api/restore', upload.single('file'), h(async (req, res) => {
+  if (!req.file) throw new Error('Elige el archivo de la copia (.json).');
+  const fs = await import('node:fs');
+  let b;
+  try { b = JSON.parse(fs.readFileSync(req.file.path, 'utf8')); } catch { throw new Error('El archivo no es una copia válida (.json).'); } finally { fs.rmSync(req.file.path, { force: true }); }
+  const { restoreBackup } = await import('./backup.js');
+  res.json({ ok: true, restored: await restoreBackup(b, { settings: req.body.settings !== '0' }) });
+}));
+// Tarjeta gráfica para renderizar (se comprueba una vez)
+app.get('/api/render-device', h(async (req, res) => {
+  const { gpuEncoder } = await import('./video/ffmpeg.js');
+  const enc = await gpuEncoder();
+  const NAMES = { h264_videotoolbox: 'Mac (VideoToolbox)', h264_nvenc: 'NVIDIA (NVENC)', h264_qsv: 'Intel (Quick Sync)', h264_amf: 'AMD (AMF)', h264_vaapi: 'VA-API' };
+  res.json({ encoder: enc, name: enc ? NAMES[enc] || enc : null, mode: (await getSetting('render_device')) || 'auto' });
+}));
 app.get('/api/system', h(async (req, res) => res.json({
   // si la comprobación aún no terminó (yt-dlp tarda en abrirse la primera vez), no se hace esperar a la interfaz:
   // se da por disponible y la comprobación sigue en segundo plano
@@ -373,7 +395,7 @@ function projectOut(p) {
   if (data.script?.scenes) data.script.scenes = data.script.scenes.map(s => ({ ...s, mediaUrl: publicUrl(s.media) }));
   return { ...p, data, hasTranscript: !!transcript?.words?.length, outputUrl: publicUrl(p.output), sourceUrl: publicUrl(p.source) };
 }
-const clipOut = c => ({ ...c, url: publicUrl(c.file), variants: Object.fromEntries(Object.entries(c.variants || {}).map(([l, v]) => [l, { title: v.title, hook: v.hook, url: publicUrl(v.file), file: v.file }])) });
+const clipOut = c => ({ ...c, url: publicUrl(c.file), thumbUrl: c.thumb ? publicUrl(c.thumb) : null, variants: Object.fromEntries(Object.entries(c.variants || {}).map(([l, v]) => [l, { title: v.title, hook: v.hook, url: publicUrl(v.file), file: v.file }])) });
 
 app.get('/api/projects', h(async (req, res) => {
   const trash = req.query.trash === '1';
@@ -462,6 +484,8 @@ function autoEditOptions(b) {
     cutRetakes: b.cutRetakes === true, condense: b.cutRetakes === true && b.condense === true, cutSilence: b.cutSilence === true, normalize: b.normalize === true,
     music: typeof b.music === 'string' && b.music && b.music.length < 400 && !/[\s"']/.test(b.music) ? b.music : null,
     musicVolume: Math.max(0.02, Math.min(1, Number(b.musicVolume) || 0.18)),
+    presetId: /^[a-f0-9]{8}$/.test(String(b.presetId || '')) ? b.presetId : null,
+    cutFillers: b.cutFillers === true, punchZoom: b.punchZoom === true, sfx: b.sfx === true,
   };
 }
 app.post('/api/shorts', h(async (req, res) => {
@@ -663,6 +687,90 @@ app.post('/api/story/script', h(async (req, res) => {
   const { generateStoryScript } = await import('./video/composer.js');
   res.json(await generateStoryScript(req.body));
 }));
+// ---------- Cola de trabajos: ver, pausar, cancelar y dar prioridad ----------
+const JOB_LABEL = { 'clip.render': 'Renderizar clip', 'clip.translate': 'Traducir clip', 'clip.thumb': 'Miniatura del clip', 'shorts.start': 'Preparar vídeo', 'shorts.transcribe': 'Transcribir',
+  'shorts.pick': 'Buscar los mejores momentos', 'shorts.report': 'Informe y SEO', 'compose.script': 'Escribir el guion', 'compose.scene': 'Crear escena', 'compose.concat': 'Unir escenas',
+  'live.capture': 'Grabar directo', 'live.analyze': 'Analizar directo', 'live.batch': 'Sacar clips del directo', 'ranking.prep': 'Preparar ranking', 'ranking.render': 'Montar ranking' };
+app.get('/api/jobs', h(async (req, res) => {
+  const rows = await q(`SELECT id, type, payload, status, attempts, lane, COALESCE(priority, 0) AS priority, created_at, locked_at, error FROM jobs
+    WHERE status IN ('queued', 'running') OR (status = 'failed' AND created_at > now() - interval '1 day') ORDER BY (status = 'running') DESC, (status = 'queued') DESC, COALESCE(priority, 0) DESC, id LIMIT 200`);
+  const clipIds = rows.map(r => r.payload?.clipId).filter(Boolean);
+  const clips = clipIds.length ? await q('SELECT id, idx, title, project_id, progress, stage FROM clips WHERE id = ANY($1::int[])', [clipIds]) : [];
+  const projIds = [...new Set([...rows.map(r => r.payload?.id), ...clips.map(c => c.project_id)].filter(Boolean).map(Number))];
+  const projs = projIds.length ? await q('SELECT id, title, type FROM projects WHERE id = ANY($1::int[])', [projIds]) : [];
+  res.json({ paused: (await getSetting('queue_paused')) === '1', jobs: rows.map(r => {
+    const c = clips.find(x => x.id === r.payload?.clipId), pr = projs.find(x => x.id === Number(c?.project_id ?? r.payload?.id));
+    return { id: r.id, type: r.type, label: JOB_LABEL[r.type] || r.type, status: r.status, attempts: r.attempts, lane: r.lane, priority: r.priority, created_at: r.created_at, locked_at: r.locked_at,
+      error: r.status === 'failed' ? String(r.error || '').slice(0, 200) : null, project: pr ? { id: pr.id, title: pr.title, type: pr.type } : null,
+      clip: c ? { id: c.id, idx: c.idx, title: c.title, progress: c.progress, stage: c.stage } : null, scene: r.type === 'compose.scene' ? r.payload.i + 1 : null };
+  }) });
+}));
+app.post('/api/jobs/pause', h(async (req, res) => {
+  await setSettings({ queue_paused: req.body.paused ? '1' : '0' });
+  (await import('./jobs.js')).resetPausedCache();
+  if (!req.body.paused) kick(true);
+  res.json({ paused: !!req.body.paused });
+}));
+app.post('/api/jobs/:id/priority', h(async (req, res) => {
+  const top = await one("SELECT COALESCE(MAX(priority), 0) AS m FROM jobs WHERE status = 'queued'");
+  await q("UPDATE jobs SET priority = $2 WHERE id = $1 AND status = 'queued'", [Number(req.params.id), (Number(top?.m) || 0) + 1]);
+  res.json({ ok: true });
+}));
+app.post('/api/jobs/:id/cancel', h(async (req, res) => {
+  const j = await one('SELECT * FROM jobs WHERE id = $1', [Number(req.params.id)]);
+  if (!j) throw new Error('Ese trabajo ya no está en la cola.');
+  if (j.status === 'running' && j.type === 'live.capture') throw new Error('Para parar la grabación usa «Detener directo» en el proyecto.');
+  await q("UPDATE jobs SET status = 'failed', error = 'Cancelado por ti' WHERE id = $1", [j.id]);
+  if (j.payload?.clipId) await updateClip(j.payload.clipId, { status: 'error', error: 'Cancelado por ti. Pulsa «Reintentar» para hacerlo de nuevo.', progress: 0 }).catch(() => {});
+  else if (j.payload?.id && !String(j.type).startsWith('live.')) await updateProject(j.payload.id, { status: 'error', error: 'Cancelado por ti. Pulsa «Reintentar» para continuar.', progress: null }).catch(() => {});
+  res.json({ ok: true, running: j.status === 'running' });
+}));
+
+// ---------- Mis plantillas (estilo + marca) y acciones en lote ----------
+app.get('/api/presets', h(async (req, res) => { const m = await import('./presets.js'); res.json((await m.getPresets()).map(m.presetOut)); }));
+app.post('/api/presets', h(async (req, res) => {
+  const m = await import('./presets.js');
+  let edit = req.body.edit;
+  if (req.body.clipId) edit = (await getClip(Number(req.body.clipId)))?.edit || {};
+  res.json(m.presetOut(await m.addPreset({ name: req.body.name, edit, withBrand: req.body.withBrand !== false })));
+}));
+app.put('/api/presets/:id', h(async (req, res) => { const m = await import('./presets.js'); res.json(m.presetOut(await m.renamePreset(req.params.id, req.body.name))); }));
+app.delete('/api/presets/:id', h(async (req, res) => { const m = await import('./presets.js'); await m.removePreset(req.params.id); res.json({ ok: true }); }));
+// Aplica una plantilla a varios clips y los vuelve a renderizar
+app.post('/api/presets/:id/apply', h(async (req, res) => {
+  const m = await import('./presets.js');
+  const ids = (req.body.clipIds || []).map(Number).filter(Boolean).slice(0, 200);
+  if (!ids.length) throw new Error('Selecciona al menos un clip.');
+  let n = 0, pid = null;
+  for (const id of ids) {
+    const c = await getClip(id); if (!c) continue;
+    const edit = await m.presetEditFor(req.params.id, c);
+    if (!edit) throw new Error('Plantilla no encontrada.');
+    await updateClip(c.id, { edit, ...(edit.captions?.style ? { style: edit.captions.style } : {}), status: 'rendering', error: null, progress: 0, stage: 'En cola…' });
+    await enqueue('clip.render', { clipId: c.id }); n++; pid = c.project_id;
+  }
+  if (pid) await updateProject(pid, { status: 'processing', error: null, progress: `Aplicando la plantilla a ${n} clips…` });
+  res.json({ ok: true, count: n });
+}));
+// Miniaturas automáticas de los clips seleccionados
+app.post('/api/clips/thumbs', h(async (req, res) => {
+  const ids = (req.body.clipIds || []).map(Number).filter(Boolean).slice(0, 100);
+  if (!ids.length) throw new Error('Selecciona al menos un clip.');
+  const rows = await q("SELECT id FROM clips WHERE id = ANY($1::int[]) AND file IS NOT NULL AND status = 'ready'", [ids]);
+  for (const r of rows) await enqueue('clip.thumb', { clipId: r.id });
+  res.json({ ok: true, count: rows.length });
+}));
+// Descargar varios clips en un .zip (los seleccionados)
+app.post('/api/clips/zip-select', h(async (req, res) => {
+  const ids = (req.body.clipIds || []).map(Number).filter(Boolean);
+  if (!ids.length) throw new Error('Selecciona al menos un clip.');
+  const rows = await q('SELECT id, project_id FROM clips WHERE id = ANY($1::int[])', [ids]);
+  if (!rows.length) throw new Error('No se encontraron los clips.');
+  const pid = rows[0].project_id;
+  await q('UPDATE clips SET include_zip = (id = ANY($2::int[])) WHERE project_id = $1', [pid, ids]);
+  res.json({ url: `/api/projects/${pid}/zip` });
+}));
+
 // ---------- Editor de historias (y frutinovelas) ----------
 const storyProject = async id => { const p = await getProject(id); if (p.type !== 'story') throw new Error('Solo para historias. (400)'); return p; };
 app.post('/api/projects/:id/scenes/:i/image', h(async (req, res) => {
@@ -903,7 +1011,8 @@ app.get('/api/clips/:id/editor', h(async (req, res) => {
   }
   const autoKeys = plan?.keys ? plan.keys.map(k => ({ t: c.track.start + k.t, cx: (k.x + plan.cw / 2) / W, cut: !!k.cut })) : null;
   res.json({
-    autocut: { silence: E.autocut?.silence ?? !!p.data.options?.cutSilence, retakes: E.autocut?.retakes ?? !!p.data.options?.cutRetakes, condense: E.autocut?.condense ?? !!p.data.options?.condense, cuts: Array.isArray(c.keep) ? Math.max(0, c.keep.length - 1) : null },
+    punchZoom: E.punchZoom ?? !!p.data.options?.punchZoom, sfx: E.sfx ?? !!p.data.options?.sfx,
+    autocut: { silence: E.autocut?.silence ?? !!p.data.options?.cutSilence, retakes: E.autocut?.retakes ?? !!p.data.options?.cutRetakes, condense: E.autocut?.condense ?? !!p.data.options?.condense, fillers: E.autocut?.fillers ?? !!p.data.options?.cutFillers, cuts: Array.isArray(c.keep) ? Math.max(0, c.keep.length - 1) : null },
     brand: await (await import('./brand.js')).getBrand().then(b => ({ logoUrl: b.logoUrl, frameUrl: b.frameUrl, pos: b.pos, size: b.size, opacity: b.opacity, on: E.brand ?? !!p.data.options?.brand })),
     clip: clipOut(c), edit: E, window: { from, to }, words, autoKeys, facecam: E.facecam || p.data.facecam?.rect || null,
     project: { id: p.id, title: p.title, width: W, height: H, duration: dur, fps: fps || 30, sourceUrl: live ? publicUrl(live.ref) : publicUrl(p.source), timeOffset: live ? live.from : 0, sourceDeleted: !!p.data.sourceDeletedAt || (p.type === 'live' && !live), captionStyle: p.data.options?.captionStyle },
@@ -1000,15 +1109,19 @@ app.put('/api/clips/:id/edit', h(async (req, res) => {
       keys: (b.crop?.keys || []).slice(0, 500).map(k => ({ t: num(k.t, 0, 1e7, 0), cx: num(k.cx, 0, 1, 0.5), cut: !!k.cut })) },
     captions: { show: b.captions?.show !== false, style: CAPTION_STYLES[b.captions?.style] ? b.captions.style : (c.style || 'impacto'), size: num(b.captions?.size, 0.5, 2, 1), textColor: /^#[0-9a-f]{6}$/i.test(b.captions?.textColor || '') ? b.captions.textColor : null,
       y: num(b.captions?.y, 0.1, 0.95, null), color: /^#[0-9a-f]{6}$/i.test(b.captions?.color || '') ? b.captions.color : null, upper: b.captions?.upper == null ? null : !!b.captions.upper, wpg: num(b.captions?.wpg, 1, 8, null) },
-    ...(b.autocut && typeof b.autocut === 'object' ? { autocut: { silence: !!b.autocut.silence, retakes: !!b.autocut.retakes, condense: !!b.autocut.retakes && !!b.autocut.condense } } : c.edit?.autocut ? { autocut: c.edit.autocut } : {}),
+    ...(b.autocut && typeof b.autocut === 'object' ? { autocut: { silence: !!b.autocut.silence, retakes: !!b.autocut.retakes, condense: !!b.autocut.retakes && !!b.autocut.condense, fillers: !!b.autocut.fillers } } : c.edit?.autocut ? { autocut: c.edit.autocut } : {}),
+    ...(typeof b.punchZoom === 'boolean' ? { punchZoom: b.punchZoom } : c.edit?.punchZoom != null ? { punchZoom: c.edit.punchZoom } : {}),
+    ...(typeof b.sfx === 'boolean' ? { sfx: b.sfx } : c.edit?.sfx != null ? { sfx: c.edit.sfx } : {}),
     ...editLook(b, c.edit || {}, num),
     hookOn: b.hookOn !== false, emojis: b.emojis !== false, ...(typeof b.brand === 'boolean' ? { brand: b.brand } : c.edit?.brand != null ? { brand: c.edit.brand } : {}),
+    ...(b.brandProfile && typeof b.brandProfile === 'object' ? { brandProfile: { logo: String(b.brandProfile.logo || '') || null, frame: String(b.brandProfile.frame || '') || null, pos: String(b.brandProfile.pos || 'tr'), size: Number(b.brandProfile.size) || 0.2, opacity: Number(b.brandProfile.opacity) || 0.9 } }
+      : b.brandProfile === null ? {} : c.edit?.brandProfile ? { brandProfile: c.edit.brandProfile } : {}),
     ...(words ? { words, wordsFrom: num(b.wordsFrom, 0, 1e7, start), wordsTo: num(b.wordsTo, 0, 1e7, end) } : (c.edit?.words ? { words: c.edit.words, wordsFrom: c.edit.wordsFrom, wordsTo: c.edit.wordsTo } : {})),
   };
   const f = { start, end, edit, layout: edit.layout, style: edit.captions.style };
   // Los cortes automáticos se recalculan al renderizar si cambian inicio/fin o qué se corta
   const po = (await getProject(c.project_id))?.data?.options || {};
-  const eff = a => JSON.stringify(a ? { s: !!a.silence, r: !!a.retakes, c: !!a.condense } : { s: !!po.cutSilence, r: !!po.cutRetakes, c: !!po.condense });
+  const eff = a => JSON.stringify(a ? { s: !!a.silence, r: !!a.retakes, c: !!a.condense, f: !!a.fillers } : { s: !!po.cutSilence, r: !!po.cutRetakes, c: !!po.condense, f: !!po.cutFillers });
   if (start !== c.start || end !== c.end || eff(edit.autocut) !== eff(c.edit?.autocut)) f.keep = null;
   // Directos: el clip se forma con los trozos de los segmentos grabados que cubren el nuevo inicio y final
   if (c.src && (start !== c.start || end !== c.end)) {
@@ -1156,6 +1269,64 @@ Escribe ${lang ? 'en el idioma con código ' + lang : 'en el idioma del texto'} 
   };
   await updateClip(c.id, { social });
   res.json(social);
+}));
+// ---------- Programar varios clips en YouTube (cada uno a su hora) ----------
+register('clip.ytupload', async ({ clipId, channel_id, publishAt, privacy }) => {
+  const c = await getClip(clipId);
+  if (!c?.file || c.yt_video_id) return;
+  const s = c.social || {};
+  const t = s.title || c.title || 'Clip';
+  const id = await uploadVideo(Number(channel_id), c.file, {
+    title: /#shorts/i.test(t) ? t : `${t} #Shorts`, description: `${s.description || c.hook || ''}\n\n${s.hashtags || ''} #Shorts`.trim(),
+    tags: String(s.hashtags || '').split(/\s+/).map(x => x.replace(/^#/, '')).filter(Boolean).slice(0, 12), privacy: publishAt ? 'private' : privacy, publishAt,
+  });
+  await updateClip(c.id, { yt_video_id: id, yt_publish_at: publishAt || null });
+  if (publishAt) await insert('calendar', { date: publishAt.slice(0, 10), title: `▶ Short: ${t}`.slice(0, 120), notes: `Programado en YouTube para ${new Date(publishAt).toLocaleString('es')} · https://youtube.com/shorts/${id}`, channel_id: Number(channel_id) || null, kind: 'short' }).catch(() => {});
+}, async ({ clipId }, msg) => { await updateClip(clipId, { yt_error: String(msg).slice(0, 300) }).catch(() => {}); });
+app.post('/api/clips/schedule', h(async (req, res) => {
+  const b = req.body || {};
+  const ids = (b.clipIds || []).map(Number).filter(Boolean).slice(0, 60);
+  if (!ids.length) throw new Error('Selecciona al menos un clip.');
+  if (!Number(b.channel_id)) throw new Error('Elige un canal de YouTube conectado.');
+  if (!await one('SELECT id FROM channels WHERE id = $1 AND yt_refresh_token IS NOT NULL', [Number(b.channel_id)])) throw new Error('Ese canal no está conectado a YouTube. Conéctalo en «Mis canales».');
+  const hours = (Array.isArray(b.hours) ? b.hours : String(b.hours || '19:00').split(',')).map(h2 => String(h2).trim()).filter(h2 => /^\d{1,2}:\d{2}$/.test(h2)).slice(0, 6);
+  if (!hours.length) throw new Error('Elige al menos una hora.');
+  const tz = Number(b.tzOffset) || 0; // minutos (como Date.getTimezoneOffset del navegador)
+  const start = new Date(String(b.start || new Date().toISOString().slice(0, 10)) + 'T00:00:00Z');
+  const rows = (await q('SELECT id, file, status, yt_video_id FROM clips WHERE id = ANY($1::int[]) ORDER BY idx', [ids])).filter(c => c.file && c.status === 'ready' && !c.yt_video_id);
+  if (!rows.length) throw new Error('Los clips seleccionados no están listos o ya se publicaron.');
+  const out = [];
+  let k = 0;
+  for (let day = 0; k < rows.length && day < 120; day++) for (const hh of hours) {
+    if (k >= rows.length) break;
+    const [H, M] = hh.split(':').map(Number);
+    const at = new Date(start.getTime() + day * 864e5 + (H * 60 + M + tz) * 6e4);
+    if (at.getTime() < Date.now() + 20 * 6e4) continue; // YouTube pide que la hora sea futura
+    await enqueue('clip.ytupload', { clipId: rows[k].id, channel_id: Number(b.channel_id), publishAt: at.toISOString(), privacy: 'public' });
+    out.push({ clipId: rows[k].id, at: at.toISOString() }); k++;
+  }
+  res.json({ ok: true, scheduled: out });
+}));
+
+// ---------- Rendimiento: estadísticas de YouTube de los clips publicados ----------
+app.get('/api/performance', h(async (req, res) => {
+  const rows = await q(`SELECT c.id, c.idx, c.title, c.score, c.signals, c.yt_video_id, c.created_at, p.id AS project_id, p.title AS project
+    FROM clips c JOIN projects p ON p.id = c.project_id WHERE c.yt_video_id IS NOT NULL AND p.deleted_at IS NULL ORDER BY c.id DESC LIMIT 200`);
+  if (!rows.length) return res.json({ clips: [], byCategory: [], note: 'Aún no has publicado clips en YouTube desde la app.' });
+  const { ytGet } = await import('./youtube.js');
+  const stats = new Map();
+  for (let i = 0; i < rows.length; i += 50) {
+    const j = await ytGet('videos', { part: 'statistics,snippet', id: rows.slice(i, i + 50).map(r => r.yt_video_id).join(',') });
+    for (const it of j.items || []) stats.set(it.id, { views: Number(it.statistics?.viewCount) || 0, likes: Number(it.statistics?.likeCount) || 0, comments: Number(it.statistics?.commentCount) || 0, publishedAt: it.snippet?.publishedAt });
+  }
+  const clips = rows.map(r => ({ id: r.id, idx: r.idx, title: r.title, project: r.project, project_id: r.project_id, ai: r.signals?.viral ?? (r.score || 0) * 10, category: r.signals?.category || 'Sin categoría', yt: r.yt_video_id, ...(stats.get(r.yt_video_id) || { views: null }) }));
+  const cats = {};
+  for (const c of clips) if (c.views != null) { const x = (cats[c.category] ||= { category: c.category, n: 0, views: 0, likes: 0 }); x.n++; x.views += c.views; x.likes += c.likes; }
+  const byCategory = Object.values(cats).map(x => ({ ...x, avgViews: Math.round(x.views / x.n), likeRate: x.views ? +(x.likes / x.views * 100).toFixed(1) : 0 })).sort((a, b) => b.avgViews - a.avgViews);
+  // Lo aprendido se guarda para que la IA dé prioridad a lo que mejor funciona en tu canal
+  const best = byCategory.filter(x => x.n >= 2).slice(0, 3).map(x => x.category);
+  if (best.length) await setSettings({ perf_insights: JSON.stringify({ best, at: new Date().toISOString() }) }).catch(() => {});
+  res.json({ clips, byCategory, best });
 }));
 app.put('/api/clips/:id/caption', h(async (req, res) => {
   const b = req.body || {};

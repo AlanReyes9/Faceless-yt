@@ -31,6 +31,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     outro: E.outro || null,
   };
   let OUTROS = d.outros || [];
+  let brandProfile; // marca de una plantilla aplicada en esta sesión (undefined = la que ya tuviera el clip)
   S.captions.textColor = E.captions?.textColor || '#FFFFFF';
   // Letras: se cargan en el navegador para que la vista previa sea igual que el vídeo final
   const FONT_FILES = { 'DejaVu Sans': 'DejaVuSans-Bold.ttf', 'Anton': 'Anton-Regular.ttf', 'Bebas Neue': 'BebasNeue-Regular.ttf', 'Poppins Black': 'Poppins-Black.ttf',
@@ -49,7 +50,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const lookCss = () => `${GRADE_CSS[S.grade] || ''} brightness(${1 + S.adjust.b / 100 * 0.6}) contrast(${1 + S.adjust.c / 100}) saturate(${Math.max(0, 1 + S.adjust.s / 100)})`.trim();
   // Mi marca (logo y marco): imágenes para la vista previa
   const BR = d.brand || {}; S.brand = !!BR.on;
-  S.autocut = { silence: !!d.autocut?.silence, retakes: !!d.autocut?.retakes, condense: !!d.autocut?.condense };
+  S.autocut = { silence: !!d.autocut?.silence, retakes: !!d.autocut?.retakes, condense: !!d.autocut?.condense, fillers: !!d.autocut?.fillers };
+  S.punchZoom = !!d.punchZoom; S.sfx = !!d.sfx;
   const brandImg = u => { if (!u) return null; const im = new Image(); im.onload = () => render(); im.src = u; return im; };
   const bLogo = brandImg(BR.logoUrl), bFrame = brandImg(BR.frameUrl);
   if (S.layout === 'face' && S.crop.mode === 'fixed') S.layout = 'crop';
@@ -58,7 +60,7 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   const autoKeys = d.autoKeys || [{ t: S.start, cx: 0.5, cut: true }];
 
   main.innerHTML = `<div class="ed">
-    <div class="ed-top"><div class="row"><button class="btn ed-ghost" id="back">← ${window.opener ? 'Cerrar editor' : 'Volver al vídeo completo'}</button><span class="ed-saved" id="saved">✓ Guardado</span></div>
+    <div class="ed-top"><div class="row"><button class="btn ed-ghost" id="back">← ${window.opener ? 'Cerrar editor' : 'Volver al vídeo completo'}</button><span class="ed-saved" id="saved">✓ Guardado</span><button class="btn sm ed-ghost" id="undo" title="Deshacer (Ctrl/Cmd+Z)" disabled>↶</button><button class="btn sm ed-ghost" id="redo" title="Rehacer (Ctrl/Cmd+Mayús+Z)" disabled>↷</button></div>
       <div class="ed-title"><span class="ed-logo">▶</span> ${esc(c.title || 'Clip ' + c.idx)} <span class="muted">· ${esc(P.title)}</span></div>
       <div class="row"><span class="small muted mono" id="tdur2"></span></div></div>
     <div class="ed-main">
@@ -456,6 +458,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       <label class="check"><input type="checkbox" data-s="acRetakes" ${S.autocut.retakes ? 'checked' : ''}> ✂️ Cortar retomas y falsos comienzos (IA)</label>
       <label class="check" style="margin-left:22px"><input type="checkbox" data-s="acCondense" ${S.autocut.condense ? 'checked' : ''} ${S.autocut.retakes ? '' : 'disabled'}> Condensar ideas redundantes</label>
       <label class="check"><input type="checkbox" data-s="acSilence" ${S.autocut.silence ? 'checked' : ''}> ✂️ Cortar silencios</label>
+      <label class="check"><input type="checkbox" data-s="acFillers" ${S.autocut.fillers ? 'checked' : ''}> 🗣 Quitar muletillas («eh», «em», «este»…)</label>
+      <label class="check"><input type="checkbox" data-s="punchZoom" ${S.punchZoom ? 'checked' : ''}> 🔍 Zoom en los momentos clave</label>
+      <label class="check"><input type="checkbox" data-s="sfx" ${S.sfx ? 'checked' : ''}> 💥 Efectos de sonido (golpe al inicio y «whoosh» en los cortes)</label>
       <div class="small muted">${d.autocut?.cuts ? `En el último render se hicieron ${d.autocut.cuts} corte(s). ` : ''}Los cortes se aplican al exportar; la vista previa muestra el tramo completo.</div>
       <h4>▾ Audio</h4><div class="small muted">El clip conserva el audio original. El volumen de abajo solo afecta a la vista previa.</div>`;
     else if (tab === 4) P2.innerHTML = `
@@ -491,8 +496,11 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
         <div class="row"><button class="btn sm" data-ovc="${i}">Centrar</button><button class="btn sm red" data-ovx="${i}">✕ Quitar</button></div></div></div>`).join('')}
       ${S.overlays.length ? '<button class="btn sm gold" id="ovAll">📌 Poner el logo y las fotos en TODOS los clips</button>' : ''}`;
     else P2.innerHTML = `<h4>▾ Plantillas de subtítulos</h4><div class="ed-tpl">${Object.entries(d.styles).map(([k, v]) => `<button class="ed-tplc ${S.captions.style === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(v.label.split(' (')[0])}</b><span class="small muted">${esc((v.label.match(/\((.*)\)/) || [])[1] || '')}</span></button>`).join('')}</div>
-      <h4>▾ Mi plantilla</h4><div class="row"><button class="btn sm" id="saveTpl">💾 Guardar estos ajustes</button><button class="btn sm" id="applyTpl">Aplicar mi plantilla</button></div>
-      <div class="small muted">Guarda formato, encuadre, estilo, tamaño, posición y color de subtítulos para aplicarlos a otros clips.</div>
+      <h4>▾ Mis plantillas <span class="small muted">(estilo + marca, para todos tus clips)</span></h4>
+      <div class="row" style="flex-wrap:nowrap"><input id="tplName" placeholder="Nombre (p. ej. Canal de podcasts)" style="flex:1"><button class="btn sm gold" id="saveTpl">💾 Guardar</button></div>
+      <label class="check"><input type="checkbox" id="tplBrand" checked> Incluir mi marca actual (logo y marco de Ajustes)</label>
+      <div class="ed-presets" id="tplList"><span class="small muted">Cargando…</span></div>
+      <div class="small muted">Guarda letra, subtítulos, texto fijo, color, imagen, velocidad, final y edición automática. Elígela al crear clips o aplícala a varios clips desde la lista.</div>
       <h4>▾ Aplicar a TODOS los clips de este proyecto</h4>
       <label class="check"><input type="checkbox" id="allText" checked> Letra, título fijo y subtítulos</label>
       <label class="check"><input type="checkbox" id="allLook" checked> Imagen: color, ajustes, espejo, movimiento, velocidad y vídeo final</label>
@@ -541,6 +549,9 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
       else if (k === 'acRetakes') { S.autocut.retakes = v; if (!v) S.autocut.condense = false; pane(); }
       else if (k === 'acCondense') S.autocut.condense = v;
       else if (k === 'acSilence') S.autocut.silence = v;
+      else if (k === 'acFillers') S.autocut.fillers = v;
+      else if (k === 'punchZoom') S.punchZoom = v;
+      else if (k === 'sfx') S.sfx = v;
       else if (k === 'title') S.title = v;
       else if (k === 'tstart' || k === 'tend') { if (el.type !== 'checkbox' && /^\d+:\d+:\d+(\.\d+)?$/.test(v)) { const t = v.split(':').reduce((a, n) => a * 60 + Number(n), 0); if (k === 'tstart') S.start = Math.min(t, S.end - 2); else S.end = Math.max(t, S.start + 2); } }
       changed(); render();
@@ -558,9 +569,28 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
     const si = P2.querySelector('#setin'); if (si) si.onclick = () => { S.start = Math.min(vid.currentTime, S.end - 2); changed(); pane(); };
     const so = P2.querySelector('#setout'); if (so) so.onclick = () => { S.end = Math.max(vid.currentTime, S.start + 2); changed(); pane(); };
     const ca = P2.querySelector('#camAuto'); if (ca) ca.onclick = () => { S.facecamSet = false; if (d.facecam) S.facecam = { ...d.facecam }; changed(); pane(); render(); };
-    const sv = P2.querySelector('#saveTpl'); if (sv) sv.onclick = () => { try { localStorage.setItem('clipTemplate', JSON.stringify({ format: S.format, layout: S.layout, crop: { mode: S.crop.mode, zoom: S.crop.zoom, cy: S.crop.cy }, captions: S.captions })); toast('Plantilla guardada', 'good'); } catch {} };
-    const ap = P2.querySelector('#applyTpl'); if (ap) ap.onclick = () => { try { const t = JSON.parse(localStorage.getItem('clipTemplate') || 'null'); if (!t) return toast('Aún no has guardado una plantilla', 'bad');
-      Object.assign(S, { format: t.format, layout: t.layout }); Object.assign(S.crop, t.crop); S.captions = { ...S.captions, ...t.captions }; sizeOut(); changed(); pane(); render(); } catch {} };
+    // Mis plantillas (en el servidor, con nombre y marca)
+    const tl = P2.querySelector('#tplList');
+    const loadTpl = () => tl && api('/api/presets').then(list => {
+      tl.innerHTML = list.length ? list.map(x => `<div class="row ed-preset"><b style="flex:1">${esc(x.name)}</b>${x.brandProfile?.logoUrl ? `<img src="${esc(x.brandProfile.logoUrl)}" alt="">` : ''}<button class="btn sm" data-tapply="${x.id}">Aplicar</button><button class="btn sm red" data-tdel="${x.id}" title="Borrar">✕</button></div>`).join('') : '<span class="small muted">Aún no tienes plantillas.</span>';
+      tl.querySelectorAll('[data-tapply]').forEach(b => b.onclick = () => {
+        const x = list.find(y => y.id === b.dataset.tapply); if (!x) return;
+        const e = structuredClone(x.edit || {});
+        for (const k of ['captions', 'font', 'hookOn', 'emojis', 'grade', 'adjust', 'mirror', 'motion', 'speed', 'format', 'outro', 'autocut', 'brand']) if (e[k] !== undefined) S[k] = e[k];
+        if (e.titleBar) S.titleBar = { ...S.titleBar, ...e.titleBar };
+        if (x.brandProfile) S.brand = true;
+        brandProfile = x.brandProfile || null;
+        loadFont(S.font); loadFont(titleFont()); sizeOut(); changed(); pane(); render();
+        toast(`🎨 Plantilla «${x.name}» aplicada`, 'good');
+      });
+      tl.querySelectorAll('[data-tdel]').forEach(b => b.onclick = () => { if (confirm('¿Borrar esta plantilla?')) api('/api/presets/' + b.dataset.tdel, { method: 'DELETE' }).then(loadTpl); });
+    }).catch(() => {});
+    loadTpl();
+    const sv = P2.querySelector('#saveTpl'); if (sv) sv.onclick = () => busy(sv, async () => {
+      const name = P2.querySelector('#tplName').value.trim(); if (!name) throw new Error('Ponle un nombre a la plantilla.');
+      await api('/api/presets', { method: 'POST', body: { name, edit: body(false), withBrand: P2.querySelector('#tplBrand').checked } });
+      P2.querySelector('#tplName').value = ''; toast('💾 Plantilla guardada', 'good'); loadTpl();
+    });
     P2.querySelectorAll('[data-nudge]').forEach(nudgeBtn);
     // Vídeos finales: subir, renombrar y borrar
     const ao = P2.querySelector('#addOutro'), of = P2.querySelector('#outroFile');
@@ -634,18 +664,35 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
 
   // ---------- Guardado automático y exportación ----------
   let saveT = null;
-  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, autocut: S.autocut, format: S.format,
+  const body = render => ({ start: S.start, end: S.end, title: S.title, hook: S.hook, hookOn: S.hookOn, emojis: S.emojis, brand: S.brand, autocut: S.autocut, punchZoom: S.punchZoom, sfx: S.sfx, format: S.format, ...(brandProfile !== undefined ? { brandProfile } : {}),
     layout: ['blur', 'gaming', 'split'].includes(S.layout) ? S.layout : S.crop.mode === 'face' ? 'face' : 'crop', crop: S.crop, captions: S.captions,
     font: S.font, titleBar: S.titleBar, outro: S.outro, grade: S.grade, adjust: S.adjust, mirror: S.mirror, motion: S.motion, speed: S.speed, overlays: S.overlays,
     ...(S.layout === 'split' ? { facecam: S.facecam, split2: S.split2 } : {}),
     ...(S.layout === 'gaming' && S.facecamSet ? { facecam: S.facecam } : {}),
     ...(wordsDirty ? { words: S.words, wordsFrom: WIN.from, wordsTo: WIN.to } : {}), render });
+  // ---------- Deshacer / rehacer: historial de estados del editor ----------
+  const hist = [], fut = [];
+  let lastSnap = JSON.stringify(S), snapT = null, restoring = false;
+  const updUndo = () => { const u = $e('#undo'), r = $e('#redo'); if (u) u.disabled = !hist.length; if (r) r.disabled = !fut.length; };
+  const snapshot = () => { clearTimeout(snapT); snapT = null; const cur = JSON.stringify(S); if (cur === lastSnap) return; hist.push(lastSnap); if (hist.length > 60) hist.shift(); fut.length = 0; lastSnap = cur; updUndo(); };
+  const restore = json => {
+    restoring = true;
+    for (const k of Object.keys(S)) delete S[k];
+    Object.assign(S, JSON.parse(json)); lastSnap = json;
+    loadFont(S.font); loadFont(titleFont()); sizeOut(); pane(); render(); changed(); updUndo();
+    restoring = false;
+  };
+  const undo = () => { if (snapT) snapshot(); if (!hist.length) return; fut.push(JSON.stringify(S)); restore(hist.pop()); toast('↶ Deshecho'); };
+  const redo = () => { if (!fut.length) return; hist.push(JSON.stringify(S)); restore(fut.pop()); toast('↷ Rehecho'); };
+  $e('#undo').onclick = undo; $e('#redo').onclick = redo;
   const changed = (save = true) => {
+    // los cambios seguidos (p. ej. arrastrar un deslizador) cuentan como uno solo
+    if (save && !restoring) { clearTimeout(snapT); snapT = setTimeout(snapshot, 400); }
     if (save) $e('#saved').textContent = 'Guardando…';
     $e('#exportInfo').textContent = `Duración ${((S.end - S.start) / S.speed + (S.outro?.dur || 0)).toFixed(1)} s${S.outro ? ' (con final)' : ''} · ${FORMATS[S.format][0].split(' (')[0]} ${FORMATS[S.format][1]}×${FORMATS[S.format][2]}`;
     if (!save) return drawTimeline();
     clearTimeout(saveT);
-    saveT = setTimeout(async () => { try { await api(`/api/clips/${clipId}/edit`, { method: 'PUT', body: body(false) }); $e('#saved').textContent = '✓ Guardado'; } catch (e) { $e('#saved').textContent = '⚠ ' + e.message; } }, 1200);
+    saveT = setTimeout(async () => { const mark = t => { const el = $e('#saved'); if (el) el.textContent = t; }; try { await api(`/api/clips/${clipId}/edit`, { method: 'PUT', body: body(false) }); mark('✓ Guardado'); } catch (e) { mark('⚠ ' + e.message); } }, 1200);
     drawTimeline();
   };
   $e('#export').onclick = () => busy($e('#export'), async () => {
@@ -681,6 +728,8 @@ export async function openClipEditor(clipId, { api, esc, toast, busy, main, mmss
   window.addEventListener('keydown', function key(e) {
     if (!document.body.contains(vid)) return window.removeEventListener('keydown', key);
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); return redo(); }
     if (e.code === 'Space') { e.preventDefault(); $e('#play').click(); }
     // ← → : un fotograma atrás / adelante (mantener pulsado = varios). Mayús + ← → : un segundo
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); stepFrame(e.key === 'ArrowRight' ? 1 : -1, e.shiftKey); }

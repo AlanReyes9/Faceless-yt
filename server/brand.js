@@ -19,8 +19,13 @@ export async function getBrand() {
  * Añade el marco y el logo al final de la cadena de filtros del clip.
  * Devuelve { args: entradas extra de ffmpeg, filter: texto a añadir a -filter_complex, last: etiqueta final }.
  */
-export async function brandFilter({ last, firstInput, OW, OH }) {
-  const b = await getBrand();
+/** Marca guardada en una plantilla (perfil de marca) con los mismos límites que la de Ajustes. */
+export function brandFrom(pr) {
+  const num = (v, a, z, d) => { const x = Number(v); return Number.isFinite(x) ? Math.max(a, Math.min(z, x)) : d; };
+  return { logo: pr?.logo || null, frame: pr?.frame || null, pos: BRAND_POS.includes(pr?.pos) ? pr.pos : 'tr', size: num(pr?.size, 0.05, 0.6, 0.2), opacity: num(pr?.opacity, 0.1, 1, 0.9) };
+}
+export async function brandFilter({ last, firstInput, OW, OH, profile }) {
+  const b = profile ? brandFrom(profile) : await getBrand();
   if (!b.logo && !b.frame) return { args: [], filter: '', last };
   const args = [];
   let filter = '', i = firstInput;

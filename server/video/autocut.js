@@ -9,10 +9,25 @@ const SILENCE = 0.55;    // pausa a partir de la cual se corta
  * @param words  palabras con tiempos absolutos (todas las del vídeo; se filtran las del clip)
  * @returns [[inicio, fin], ...] absolutos, o null si no hay nada que cortar
  */
-export async function computeKeep({ words, start, end, cutSilence, cutRetakes, condense, language }) {
+// Muletillas que se quitan cuando van sueltas (sin IA): «eh», «em», «mmm»… siempre; «este», «o sea», «bueno» solo entre pausas o comas
+const ALWAYS = /^(e+h+|e+m+|m+h*|a+h+|u+m+|h+m+|ehm+|mmm+)$/;
+const LOOSE = new Set(['este', 'esto', 'bueno', 'pues', 'like', 'um', 'uh']);
+function markFillers(ws, removed) {
+  const n = w => String(w.word).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zñ]/g, '');
+  ws.forEach((w, i) => {
+    const x = n(w), prev = ws[i - 1], next = ws[i + 1];
+    const pauseBefore = !prev || w.start - prev.end > 0.25 || /[,.…]$/.test(prev.word), pauseAfter = !next || next.start - w.end > 0.25 || /[,…]$/.test(w.word);
+    if (ALWAYS.test(x)) removed[i] = true;
+    else if (LOOSE.has(x) && pauseBefore && pauseAfter) removed[i] = true;
+    else if (x === 'o' && next && n(next) === 'sea' && /[,…]$/.test(next.word)) { removed[i] = true; removed[i + 1] = true; }
+  });
+}
+
+export async function computeKeep({ words, start, end, cutSilence, cutRetakes, condense, language, cutFillers }) {
   const ws = words.filter(w => w.end > start && w.start < end && String(w.word || '').trim()).sort((a, b) => a.start - b.start);
   if (ws.length < 3) return null;
   const removed = new Array(ws.length).fill(false);
+  if (cutFillers) markFillers(ws, removed);
   if (cutRetakes) {
     try {
       const list = ws.map((w, i) => `${i}:${String(w.word).trim()}`).join(' ');

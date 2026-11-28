@@ -84,3 +84,48 @@ export function filterPath(p) {
 }
 /** Filtro de subtítulos ASS con las fuentes incluidas en el proyecto. */
 export const assFilter = file => `ass='${filterPath(file)}':fontsdir='${filterPath(FONTS_DIR)}'`;
+
+// ---------- Codificar con la tarjeta gráfica (si la hay) o con el procesador ----------
+// Ajustes → «Renderizar con»: auto (gráfica si funciona) · cpu (procesador) · gpu (gráfica; si falla, procesador)
+const GPU_CANDIDATES = process.platform === 'darwin' ? ['h264_videotoolbox'] : process.platform === 'win32' ? ['h264_nvenc', 'h264_qsv', 'h264_amf'] : ['h264_nvenc', 'h264_vaapi'];
+let gpuProbe = null;
+/** Primer codificador de gráfica que funciona en este equipo (se prueba una vez con un vídeo diminuto), o null. */
+export function gpuEncoder() {
+  return (gpuProbe ||= (async () => {
+    if (process.env.VERCEL || process.env.NO_GPU_ENCODE) return null;
+    for (const enc of GPU_CANDIDATES) {
+      const ok = await run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=256x256:r=30:d=0.5', '-pix_fmt', 'yuv420p', '-c:v', enc, '-f', 'null', '-'], { timeoutMs: 20000 })
+        .then(() => true, () => false);
+      if (ok) { console.log(`[render] tarjeta gráfica disponible: ${enc}`); return enc; }
+    }
+    console.log('[render] sin codificador de tarjeta gráfica: se renderiza con el procesador');
+    return null;
+  })());
+}
+/** Codificador a usar según Ajustes. */
+export async function pickEncoder() {
+  let mode = 'auto';
+  try { mode = (await (await import('../settings.js')).getSetting('render_device')) || 'auto'; } catch {}
+  if (mode === 'cpu') return 'libx264';
+  return (await gpuEncoder()) || 'libx264';
+}
+/** Argumentos de vídeo para el codificador (calidad parecida a x264 CRF 20-23). */
+export function encoderArgs(enc, { preset = 'veryfast', crf = 22 } = {}) {
+  const br = crf <= 21 ? '10M' : crf <= 23 ? '8M' : '6M';
+  if (enc === 'h264_videotoolbox') return ['-c:v', enc, '-b:v', br, '-maxrate', '14M', '-allow_sw', '1', '-pix_fmt', 'yuv420p'];
+  if (enc === 'h264_nvenc') return ['-c:v', enc, '-preset', 'p5', '-rc', 'vbr', '-cq', String(crf + 1), '-b:v', '0', '-pix_fmt', 'yuv420p'];
+  if (enc === 'h264_qsv') return ['-c:v', enc, '-global_quality', String(crf + 1), '-look_ahead', '0', '-pix_fmt', 'nv12'];
+  if (enc === 'h264_amf') return ['-c:v', enc, '-quality', 'balanced', '-rc', 'cqp', '-qp_i', String(crf), '-qp_p', String(crf + 2), '-pix_fmt', 'yuv420p'];
+  if (enc === 'h264_vaapi') return ['-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-pix_fmt', 'yuv420p']; // vaapi necesita subir los fotogramas a la gráfica: se usa el procesador
+  return ['-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-pix_fmt', 'yuv420p'];
+}
+/** Ejecuta un render con la gráfica y, si falla por la gráfica, lo repite con el procesador. build(enc) → argumentos de ffmpeg. */
+export async function ffmpegEncode(build, opts = {}, { preset, crf } = {}) {
+  const enc = await pickEncoder();
+  try { return await ffmpeg(build(encoderArgs(enc, { preset, crf })), opts); }
+  catch (e) {
+    if (enc === 'libx264' || e instanceof TimeoutError) throw e;
+    console.warn(`[render] la tarjeta gráfica (${enc}) falló; se repite con el procesador: ${String(e.message).slice(-200)}`);
+    return ffmpeg(build(encoderArgs('libx264', { preset, crf })), opts);
+  }
+}

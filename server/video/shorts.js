@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { downloadVideo } from './ytdlp.js';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { q, one, getProject, updateProject, getClip, updateClip, WORK_DIR, IS_VERCEL } from '../db.js';
-import { ffmpeg, probe, run, assFilter, FFMPEG } from './ffmpeg.js';
+import { ffmpeg, probe, run, assFilter, FFMPEG, ffmpegEncode } from './ffmpeg.js';
 import { buildASS, sliceWords, normWord } from './ass.js';
 import { trackFaces, trackSpeakers, cropPlan, cropExpr } from './face.js';
 import { buildSignals } from './signals.js';
@@ -180,7 +181,9 @@ JSON: {"clips":[{"start":número,"end":número,
  "viral":entero 0-100 (probabilidad realista de que funcione; reserva 90+ para lo excepcional),
  "quote":"la frase más fuerte del clip, copiada tal cual de la transcripción (máx. 20 palabras)"}]}
 Escribe title, hook y reason en el idioma: ${language || 'el mismo del vídeo'}. keywords y emojis.word deben aparecer tal cual en la transcripción del clip.`;
-  const res = await chatJSON(system, user, { maxTokens: local ? 5000 : 8000, onProgress: onProgress && (p => onProgress(p.stage || p)) });
+  let perf = null; try { perf = JSON.parse(await getSetting('perf_insights') || 'null'); } catch {}
+  const learned = perf?.best?.length ? `\nEn este canal, según las visitas reales en YouTube, funcionan mejor los clips de: ${perf.best.join(', ')}. A igualdad de calidad, dales prioridad (sin descartar otros momentos muy buenos).` : '';
+  const res = await chatJSON(system + learned, user, { maxTokens: local ? 5000 : 8000, onProgress: onProgress && (p => onProgress(p.stage || p)) });
   return Array.isArray(res) ? res : (res.clips || []);
 }
 
@@ -285,20 +288,26 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
   const prog = progressWriter(clipId);
   await updateClip(clipId, { status: 'rendering', error: null });
   await prog(ctx.attempt > 1 ? `Reintento ${ctx.attempt} (modo rápido)…` : 'Preparando…', 0, true);
+  // Plantilla elegida al crear el proyecto: se aplica a los clips nuevos (sin cambios del editor) la primera vez
+  if (!clip.edit && p.data.options?.presetId) {
+    const { presetEditFor } = await import('../presets.js');
+    const pe = await presetEditFor(p.data.options.presetId, clip).catch(() => null);
+    if (pe) { clip.edit = pe; await updateClip(clipId, { edit: pe, ...(pe.captions?.style ? { style: pe.captions.style } : {}) }); }
+  }
   const E = clip.edit || null; // ajustes del editor (encuadre, formato, subtítulos, texto corregido)
   let allWords = p.type === 'live' ? await liveWords(p.id, clip.start, clip.end) : (p.data.transcript?.words || []);
   if (E?.words) allWords = [...allWords.filter(w => w.end <= E.wordsFrom || w.start >= E.wordsTo), ...E.words].sort((a, b) => a.start - b.start);
   // Edición automática: cortar silencios y retomas (se calcula una vez y se guarda; [] = nada que cortar)
   const o = p.data.options || {}, AC = E?.autocut || {};
-  const cutSilence = AC.silence ?? o.cutSilence, cutRetakes = AC.retakes ?? o.cutRetakes, condense = AC.condense ?? o.condense;
+  const cutSilence = AC.silence ?? o.cutSilence, cutRetakes = AC.retakes ?? o.cutRetakes, condense = AC.condense ?? o.condense, cutFillers = AC.fillers ?? o.cutFillers;
   let keep = clip.keep;
-  if (keep == null && (cutSilence || cutRetakes)) {
+  if (keep == null && (cutSilence || cutRetakes || cutFillers)) {
     await prog(cutRetakes ? 'Quitando retomas y silencios…' : 'Quitando silencios…', 0, true);
-    keep = await computeKeep({ words: allWords, start: clip.start, end: clip.end, cutSilence, cutRetakes, condense, language: o.titleLanguage || o.language }) || [];
+    keep = await computeKeep({ words: allWords, start: clip.start, end: clip.end, cutSilence, cutRetakes, condense, cutFillers, language: o.titleLanguage || o.language }) || [];
     await updateClip(clipId, { keep });
     if (keep.length) console.log(`[edición automática] clip ${clipId}: ${keep.length} tramo(s), ${(clip.end - clip.start).toFixed(1)} s → ${keep.reduce((t, [a, b]) => t + b - a, 0).toFixed(1)} s`);
   }
-  if (!(cutSilence || cutRetakes)) keep = null;
+  if (!(cutSilence || cutRetakes || cutFillers)) keep = null;
   if (keep?.length) parts = cutParts(parts, clip.start, keep);
   // Varios trozos: cada uno dura un número exacto de fotogramas (vídeo y audio se recortan igual al unirlos)
   if (parts.length > 1) { parts = parts.map(x => ({ ...x, dur: Math.max(1, Math.round(x.dur * 30)) / 30 })); dur = parts.reduce((t, x) => t + x.dur, 0); }
@@ -462,7 +471,13 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     const grade = (GRADES[E?.grade] ? GRADES[E.grade] + ',' : '') + adj;
     // Espejo y zoom suave cada N s: sobre la imagen ya encuadrada, antes de los textos (que no se voltean)
     const every = Math.max(0, Math.min(30, Number(E?.motion) || 0));
-    const Z = every ? `if(eq(mod(floor(t/${every})\\,2)\\,1)\\,1.12\\,1)` : null;
+    let Z = every ? `if(eq(mod(floor(t/${every})\\,2)\\,1)\\,1.12\\,1)` : null;
+    // Zoom en los momentos clave: acercamiento rápido en la frase destacada y en los picos de volumen (gritos, risas)
+    const punches = !lang && (E?.punchZoom ?? o.punchZoom) ? await punchTimes({ p, clip, words, keep, dur }) : [];
+    if (punches.length) {
+      const zp = `(1+0.13*(${punches.map(t => `between(t\\,${t.toFixed(2)}\\,${(t + 1.3).toFixed(2)})`).join('+')}))`;
+      Z = Z ? `${Z}*${zp}` : zp;
+    }
     const post = (E?.mirror ? 'hflip,' : '') + (Z ? `scale=w='trunc(${OW}*${Z}/2)*2':h='trunc(${OH}*${Z}/2)*2':eval=frame,crop=${OW}:${OH},setsar=1,` : '');
     if (post) vf = vf.replace(ass, post + ass);
     // Un solo trozo: se pasa a 30 fps al principio (como con varios trozos), para que los cambios de encuadre caigan en su fotograma
@@ -507,7 +522,7 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     // Mi marca: marco y logo encima de todo (si el proyecto o el clip lo piden)
     if (E?.brand ?? p.data.options?.brand) {
       const { brandFilter } = await import('../brand.js');
-      const bf = await brandFilter({ last, firstInput: parts.length + k, OW, OH });
+      const bf = await brandFilter({ last, firstInput: parts.length + k, OW, OH, profile: E?.brandProfile });
       extra.push(...bf.args); vf += bf.filter; last = bf.last;
     }
     vf += Q.W !== 1080 ? `;[${last}]scale=${Q.W}:${Math.round(Q.W * OH / OW / 2) * 2}[v]` : `;[${last}]null[v]`;
@@ -548,6 +563,23 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
       }
       if (a && a !== '[0:a]' && a !== '[ca]') amap = a;
     }
+    // Efectos de sonido: golpe grave al empezar y «whoosh» en cada corte y en los zooms (sonidos generados, sin derechos de autor)
+    if (!lang && (E?.sfx ?? o.sfx)) {
+      const hasA0 = amap !== '0:a?' || (await probe(inputs[0]).catch(() => ({ hasAudio: false }))).hasAudio;
+      if (hasA0) {
+        const cutsAt = []; if (keep?.length > 1) { let acc = 0; for (const [a0, b0] of keep.slice(0, -1)) { acc += b0 - a0; cutsAt.push(acc); } }
+        const whoosh = [...cutsAt, ...punches].filter(t => t > 0.4 && t < dur - 0.3).sort((a, b) => a - b).filter((t, i, arr) => !i || t - arr[i - 1] > 1.2).slice(0, 10);
+        const src = amap === '0:a?' ? '[0:a]' : amap, labels = [];
+        vf += `;sine=f=55:d=0.7,volume=1.6,afade=t=in:d=0.01,afade=t=out:st=0.06:d=0.6,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[sfxb]`; labels.push('[sfxb]');
+        whoosh.forEach((t, i2) => {
+          const ms = Math.max(0, Math.round((t - 0.22) * 1000));
+          vf += `;anoisesrc=d=0.45:c=pink:a=0.4,bandpass=f=1800:width_type=o:w=2.5,afade=t=in:d=0.2,afade=t=out:st=0.22:d=0.23,adelay=${ms}|${ms},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[sfx${i2}]`;
+          labels.push(`[sfx${i2}]`);
+        });
+        vf += `;${src}aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[sfxm];[sfxm]${labels.join('')}amix=inputs=${labels.length + 1}:duration=first:normalize=0[asfx]`;
+        amap = '[asfx]';
+      }
+    }
     // Velocidad de la voz y del vídeo (1,1x…1,5x): se acelera el resultado ya montado (textos incluidos, que van a su ritmo)
     const speed = lang ? 1 : Math.max(1, Math.min(1.5, Number(E?.speed) || 1));
     let outDur = dur;
@@ -583,13 +615,13 @@ export async function renderClip(clipId, { lang } = {}, ctx = { attempt: 1, rema
     }
     await prog('Renderizando', 0, true);
     const inArgs = parts.flatMap((x, i) => ['-ss', x.ss.toFixed(3), ...(parts.length > 1 ? ['-t', (x.dur + 0.5).toFixed(3)] : []), '-i', inputs[i]]);
-    await ffmpeg(['-threads', '0', ...inArgs, ...extra, '-t', totalDur.toFixed(3),
+    await ffmpegEncode(venc => ['-threads', '0', ...inArgs, ...extra, '-t', totalDur.toFixed(3),
       '-filter_complex', vf, '-map', '[v]', '-map', amap,
-      '-c:v', 'libx264', '-preset', Q.preset, '-crf', String(Q.crf), '-pix_fmt', 'yuv420p', '-r', '30',
+      ...venc, '-r', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', out], {
       onProgress: sec => prog('Renderizando', (sec / totalDur) * 95),
       timeoutMs: ctx.remaining() - 15000, // parar antes de que el servidor corte la función
-    });
+    }, { preset: Q.preset, crf: Q.crf });
     await prog('Guardando', 97, true);
     const ref = await saveFile(out, `short_${tag}.mp4`);
     const fresh = await getClip(clipId);
@@ -658,3 +690,84 @@ ${segs.map((s, i) => `${i + 1}. ${s.text}`).join('\n')}`);
   await updateClip(clipId, { variants: clip.variants });
   await enqueue('clip.render', { clipId, lang }); // el render va en su propio paso
 }, clipFail);
+
+// ---------- Momentos clave para el zoom: frase destacada y picos de volumen ----------
+export async function punchTimes({ p, clip, words, keep, dur }) {
+  const out = [];
+  const map = keep?.length ? timeMapper(keep, clip.start) : (t => (t >= 0 && t <= dur ? t : null));
+  // 1) la frase más fuerte (la que eligió la IA)
+  const qn = String(clip.signals?.quote || '').split(/\s+/).map(normWord).filter(Boolean).slice(0, 3);
+  if (qn.length >= 2) for (let i = 0; i + qn.length <= words.length; i++) if (qn.every((x, k) => normWord(words[i + k].word) === x)) { out.push(words[i].start); break; }
+  // 2) picos de volumen dentro del clip
+  let energy = p.data.transcript?.energy || [];
+  if (p.type === 'live') energy = (await q('SELECT energy FROM live_segments WHERE project_id = $1 AND start < $3 AND start + 400 > $2', [p.id, clip.start, clip.end]).catch(() => [])).flatMap(r => r.energy || []);
+  const en = energy.filter(e => e.t >= clip.start && e.t <= clip.end && e.db > -60);
+  if (en.length > 6) {
+    const sorted = [...en].map(e => e.db).sort((a, b) => a - b), med = sorted[Math.floor(sorted.length / 2)];
+    for (const e of [...en].sort((a, b) => b.db - a.db)) {
+      if (e.db < med + 6) break;
+      const t = map(e.t - clip.start);
+      if (t != null) out.push(t);
+      if (out.length >= 4) break;
+    }
+  }
+  return out.filter(t => t > 0.6 && t < dur - 1.2).sort((a, b) => a - b).filter((t, i, arr) => !i || t - arr[i - 1] > 3).slice(0, 4);
+}
+
+// ---------- Miniatura automática de un clip: mejor fotograma (cara grande y nítida) + título en estilo sticker ----------
+register('clip.thumb', async ({ clipId }) => {
+  const clip = await getClip(clipId);
+  if (!clip?.file) return;
+  const p = await getProject(clip.project_id);
+  const { detectFaces } = await import('./face.js');
+  const { buildASS } = await import('./ass.js');
+  // Fotograma limpio (sin subtítulos) del vídeo original; si ya se borró, del clip terminado (sin añadir otro título)
+  const parts = clip.src ? JSON.parse(clip.src) : (p.source && !p.data.sourceDeletedAt ? [{ ref: p.source, ss: clip.start, dur: clip.end - clip.start }] : null);
+  const fromSource = !!parts?.every(x => x.ref);
+  const at = rel => { if (!fromSource) return { file: inputPath(clip.file), t: rel }; let acc = 0; for (const x of parts) { if (rel < acc + x.dur) return { file: inputPath(x.ref), t: x.ss + rel - acc }; acc += x.dur; } const l = parts[parts.length - 1]; return { file: inputPath(l.ref), t: l.ss + l.dur - 0.5 }; };
+  const total = fromSource ? parts.reduce((a, x) => a + x.dur, 0) : (await probe(inputPath(clip.file))).duration;
+  const tag = `thumb_${clipId}_${Date.now()}`, tmp = path.join(WORK_DIR, tag);
+  fs.mkdirSync(tmp, { recursive: true });
+  try {
+    // 8 fotogramas del primer 70 % del clip: se elige el de la cara más grande y centrada
+    let best = { rel: Math.min(1, total / 3), score: -1, cx: 0.5 };
+    for (let i = 0; i < 8; i++) {
+      const rel = Math.max(0.2, total * 0.7 * (i + 0.5) / 8), { file, t } = at(rel);
+      const rgb = await new Promise(resolve => {
+        const ch = []; const pr = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-ss', t.toFixed(2), '-i', file, '-frames:v', '1', '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+        pr.stdout.on('data', d => ch.push(d)); pr.on('error', () => resolve(Buffer.alloc(0))); pr.on('close', () => resolve(Buffer.concat(ch)));
+      });
+      if (rgb.length < 640 * 360 * 3) continue;
+      const faces = await detectFaces(rgb, 0.6).catch(() => []);
+      let sc = 0, cx = 0.5;
+      for (const f of faces) { const v = (f.x2 - f.x1) * (f.y2 - f.y1); if (v > sc) { sc = v; cx = (f.x1 + f.x2) / 2; } }
+      if (sc > best.score) best = { rel, score: sc, cx };
+    }
+    const { file, t } = at(best.rel);
+    const info = await probe(file);
+    const W = info.width || 1080, H = info.height || 1920;
+    let vf;
+    if (!fromSource || W / H < 0.7) vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920';
+    else {
+      // recorte vertical centrado en la cara (coordenadas del detector: imagen 640×360 con bandas)
+      const sw = 640, sh = Math.round(640 * H / W), padY = (360 - Math.min(360, sh)) / 2;
+      const fx = Math.max(0, Math.min(1, best.cx * 640 / sw));
+      void padY;
+      const cw = Math.round(H * 9 / 16 / 2) * 2, x = Math.max(0, Math.min(W - cw, Math.round(fx * W - cw / 2)));
+      vf = `crop=${cw}:${H}:${x}:0,scale=1080:1920`;
+    }
+    const text = (clip.hook || clip.title || '').trim();
+    let tail = '';
+    if (fromSource && text) {
+      const ass = path.join(tmp, 't.ass');
+      fs.writeFileSync(ass, buildASS([], { duration: 1, captions: false, width: 1080, height: 1920, titleBar: { text, style: clip.edit?.titleBar?.style || 'sticker', accent: clip.edit?.titleBar?.accent || '#E11D48', size: 1.35, x: 0.5, y: 0.22, font: clip.edit?.titleBar?.font } }));
+      tail = ',' + assFilter(ass);
+    }
+    const out = path.join(tmp, 'thumb.jpg');
+    await ffmpeg(['-ss', t.toFixed(2), '-i', file, '-frames:v', '1', '-vf', `${vf},eq=contrast=1.08:saturation=1.18${tail}`, '-q:v', '3', out]);
+    const ref = await saveFile(out, `thumb_${clipId}.jpg`, 'image/jpeg');
+    if (clip.thumb) await removeFile(clip.thumb).catch(() => {});
+    await updateClip(clipId, { thumb: ref });
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+

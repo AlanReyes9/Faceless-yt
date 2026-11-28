@@ -32,10 +32,20 @@ export async function enqueue(type, payload = {}) {
   return job.id;
 }
 
+// Cola en pausa (desde la página «Cola de trabajos»): no se empiezan trabajos nuevos, salvo la grabación de directos
+let pausedCache = { at: 0, v: false };
+async function queuePaused() {
+  if (Date.now() - pausedCache.at < 3000) return pausedCache.v;
+  const r = await one("SELECT value FROM settings WHERE key = 'queue_paused'").catch(() => null);
+  pausedCache = { at: Date.now(), v: r?.value === '1' };
+  return pausedCache.v;
+}
+export const resetPausedCache = () => { pausedCache.at = 0; };
 async function claim(lane = 'work') {
+  if (lane !== 'live' && await queuePaused()) return null;
   return one(`UPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1
     WHERE id = (SELECT id FROM jobs WHERE COALESCE(lane, 'work') = $1 AND (status = 'queued' OR (status = 'running' AND locked_at < now() - ${STALE}))
-                ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
+                ORDER BY COALESCE(priority, 0) DESC, id FOR UPDATE SKIP LOCKED LIMIT 1)
     RETURNING *`, [lane]);
 }
 

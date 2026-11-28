@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { ffmpeg, run, FFMPEG } from '../video/ffmpeg.js';
 import { getSetting, requireKey } from '../settings.js';
-import { WORK_DIR } from '../db.js';
+import { WORK_DIR, q, one } from '../db.js';
 import { apiError } from './llm.js';
 import { audioEnergy, sceneCuts } from '../video/signals.js';
 import { proxyBytes } from '../video/netproxy.js';
@@ -43,7 +43,35 @@ async function whisper(file, language, onProgress) {
  * Transcribe un trozo [offset, offset+len] de un vídeo/audio (ruta o URL).
  * Devuelve { language, segments:[{start,end,text}], words:[{word,start,end}] } con tiempos absolutos.
  */
-export async function transcribeChunk(input, { offset = 0, len = CHUNK_SECONDS, language, onProgress } = {}) {
+// Caché de transcripciones: el mismo archivo (mismo tamaño y mismo principio/final), mismo trozo y mismo motor → no se paga dos veces
+async function cacheKey(input, offset, len, language) {
+  try {
+    if (/^https?:/.test(String(input))) return null;
+    const st = fs.statSync(input);
+    if (st.size < 1e5) return null;
+    const fd = fs.openSync(input, 'r'), a = Buffer.alloc(1 << 20), b = Buffer.alloc(1 << 20);
+    try { fs.readSync(fd, a, 0, a.length, 0); fs.readSync(fd, b, 0, b.length, Math.max(0, st.size - b.length)); } finally { fs.closeSync(fd); }
+    const prov = await transcribeProvider(), model = prov === 'local' ? await getSetting('whisper_model') : prov === 'groq' ? await getSetting('groq_whisper_model') : 'whisper-1';
+    return crypto.createHash('sha1').update(a).update(b).update(`${st.size}|${offset}|${len}|${language || ''}|${prov}|${model}`).digest('hex');
+  } catch { return null; }
+}
+
+export async function transcribeChunk(input, opts = {}) {
+  const { offset = 0, len = CHUNK_SECONDS, language } = opts;
+  const key = await cacheKey(input, offset, len, language);
+  if (key) {
+    const hit = await one('SELECT data FROM transcript_cache WHERE key = $1', [key]).catch(() => null);
+    if (hit?.data?.segments) { console.log(`[transcribir ${offset}s] reutilizada la transcripción guardada (no se vuelve a pagar)`); return hit.data; }
+  }
+  const r = await transcribeChunkRaw(input, opts);
+  if (key && r?.segments?.length) {
+    await q('INSERT INTO transcript_cache (key, data) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, created_at = now()', [key, JSON.stringify(r)]).catch(() => {});
+    await q("DELETE FROM transcript_cache WHERE created_at < now() - interval '60 days'").catch(() => {});
+  }
+  return r;
+}
+
+async function transcribeChunkRaw(input, { offset = 0, len = CHUNK_SECONDS, language, onProgress } = {}) {
   const out = path.join(WORK_DIR, `audio_${crypto.randomBytes(5).toString('hex')}.mp3`);
   try {
     const log = (m, t) => console.log(`[transcribir ${offset}s] ${m}${t ? ` en ${((Date.now() - t) / 1000).toFixed(1)} s` : ''} · descargado ${(proxyBytes() / 1e6).toFixed(0)} MB`);
