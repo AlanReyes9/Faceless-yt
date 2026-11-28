@@ -27,8 +27,7 @@ async function post(url, headers, body, { timeoutMs = 180000, retries = 3 } = {}
   }
 }
 
-const KEY_OF = { openai: 'openai_key', anthropic: 'anthropic_key', gemini: 'gemini_key', groq: 'groq_key', openrouter: 'openrouter_key', meta: 'meta_ai_key' };
-const META_BASE = () => process.env.META_AI_BASE_URL || 'https://api.meta.ai/v1';
+const KEY_OF = { openai: 'openai_key', anthropic: 'anthropic_key', gemini: 'gemini_key', groq: 'groq_key', openrouter: 'openrouter_key' };
 const PER_CALL_MS = Number(process.env.LLM_TIMEOUT_MS || 100000);       // máximo por llamada a un proveedor
 const GEMINI_PER_MODEL_MS = Number(process.env.GEMINI_TIMEOUT_MS || 60000); // máximo por modelo de Gemini
 const TOTAL_BUDGET_MS = Number(process.env.LLM_BUDGET_MS || 230000);    // todo el reparto cabe en un paso del servidor
@@ -53,7 +52,7 @@ export async function chat(system, user, { json = false, maxTokens = 4000, provi
   const deadline = Date.now() + TOTAL_BUDGET_MS;
   const order = [preferred];
   // Orden de respaldo: Groq primero (muy rápido), luego el resto de proveedores con clave
-  if (!provider) for (const p of ['groq', 'openai', 'anthropic', 'gemini', 'openrouter', 'meta']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
+  if (!provider) for (const p of ['groq', 'openai', 'anthropic', 'gemini', 'openrouter']) if (p !== preferred && await getSetting(KEY_OF[p])) order.push(p);
   let lastErr;
   for (const [i, p] of order.entries()) {
     if (deadline - Date.now() < 8000) break; // sin tiempo para otro intento útil
@@ -179,15 +178,14 @@ async function chatWith(provider, system, user, { json, maxTokens, deadline = Da
     return res.content.filter(b => b.type === 'text').map(b => b.text).join('');
   }
 
-  // OpenAI, Groq, OpenRouter y Meta Muse comparten el formato chat/completions
-  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1', meta: META_BASE() };
+  // OpenAI, Groq y OpenRouter comparten el formato chat/completions
+  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1' };
   const p = BASE[provider] ? provider : 'openai';
   const key = await requireKey(KEY_OF[p], 'usar ' + p);
   const call = model => post(BASE[p] + '/chat/completions', { authorization: 'Bearer ' + key }, {
-    model, ...(p === 'meta' ? { max_tokens: maxTokens } : { max_completion_tokens: maxTokens }),
+    model, max_completion_tokens: maxTokens,
     messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-    // Meta Muse no tiene modo «json_object» (el JSON se pide en las instrucciones y se lee igual)
-    ...(json && p !== 'openrouter' && p !== 'meta' ? { response_format: { type: 'json_object' } } : {}),
+    ...(json && p !== 'openrouter' ? { response_format: { type: 'json_object' } } : {}),
   }, opts);
   const wanted = String(await getSetting(p + '_model') || '').trim();
   const model = await resolveModel(p, key, wanted);
@@ -211,7 +209,7 @@ const modelCache = {};
 export async function providerModels(p, key) {
   const c = modelCache[p];
   if (c && Date.now() - c.at < 6 * 3600e3) return c.list;
-  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1', meta: META_BASE() };
+  const BASE = { openai: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'), groq: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'), openrouter: 'https://openrouter.ai/api/v1' };
   try {
     const r = await fetch(BASE[p] + '/models', { headers: { authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) return c?.list || [];

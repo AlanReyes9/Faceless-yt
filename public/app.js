@@ -1681,7 +1681,6 @@ routes.historias = async (_, params) => {
         <div class="vm-pick" id="imPick">
           <button type="button" data-im="local" ${o.localImage ? '' : 'disabled'}><b>🖼 IA de imágenes local</b><small>${o.localImage ? 'Gratis y sin internet · en tu equipo (SD-Turbo)' : 'Solo en la app de escritorio'}</small></button>
           <button type="button" data-im="free"><b>☁ Gratis en la nube</b><small>Pollinations · sin clave</small></button>
-          <button type="button" data-im="meta"><b>🎨 Meta Muse</b><small>${o.hasMeta ? 'Muse Image · ~0,01 $ por imagen' : 'Añade tu clave de Meta Muse en Ajustes'}</small></button>
           <button type="button" data-im="settings"><b>⚙ Las de Ajustes</b><small>OpenAI / Gemini (mejor calidad, de pago)</small></button>
         </div></div>
       <div class="row">
@@ -2268,7 +2267,7 @@ routes.ajustes = async (_, params) => {
         : /^(openai|groq|openrouter)_model$/.test(k)
           ? `<input name="${k}" list="ml_${k}" data-models="${k.split('_')[0]}" value="${esc(values[k])}" placeholder="Elige de la lista" autocomplete="off"><datalist id="ml_${k}"></datalist><div class="small muted" data-mhint="${k}">Haz clic para ver los modelos disponibles con tu clave.</div>`
           : `<input name="${k}" ${f.secret ? 'type="password" autocomplete="off"' : ''} value="${esc(values[k])}" placeholder="${f.secret ? 'Pega tu clave' : ''}">`}</div>`).join('')}
-      ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button><button type="button" class="btn sm" data-test="meta">Probar Meta Muse</button></div>` : ''}
+      ${g.startsWith('IA') ? `<div class="row"><button type="button" class="btn sm" data-test="openai">Probar OpenAI</button><button type="button" class="btn sm" data-test="anthropic">Probar Claude</button><button type="button" class="btn sm" data-test="gemini">Probar Gemini</button><button type="button" class="btn sm" data-test="groq">Probar Groq</button><button type="button" class="btn sm" data-test="openrouter">Probar OpenRouter</button></div>` : ''}
       ${g === 'Publicar en YouTube' ? `<div class="small muted">URI de redirección autorizada para tu cliente OAuth:<br><code>${location.origin}/api/youtube/callback</code></div>` : ''}
       ${g === 'Redes sociales' ? `<div class="small muted">URIs de redirección para tus apps (cópialas tal cual):<br>Meta: <code>${socialBase()}/api/social/meta/callback</code><br>TikTok: <code>${socialBase()}/api/social/tiktok/callback</code><br>Pasos completos en <a href="#/ayuda">Ayuda</a>.</div>` : ''}
       </div>`;

@@ -829,7 +829,7 @@ app.get('/api/story-options', h(async (req, res) => {
   const { PIPER_VOICES, piperReady } = await import('./ai/piper.js');
   res.json({ styles: Object.fromEntries(Object.entries(STORY_STYLES).map(([k, v]) => [k, v.label])), system: IS_VERCEL ? [] : await systemVoices(), gemini: GEMINI_VOICES, hasGemini: !!(await getSetting('gemini_key')),
     piper: Object.entries(PIPER_VOICES).map(([id, v]) => ({ id, label: v.label, gender: v.gender, mb: v.mb, ready: piperReady(id) })),
-    localImage: !IS_VERCEL && (await import('./ai/localmodels.js')).localImageAvailable(), hasMeta: !!(await getSetting('meta_ai_key')) });
+    localImage: !IS_VERCEL && (await import('./ai/localmodels.js')).localImageAvailable() });
 }));
 app.post('/api/projects/:id/retry', h(async (req, res) => {
   const p = await getProject(req.params.id);
@@ -980,9 +980,8 @@ async function liveEditSource(p, from, to) {
 // Modelos disponibles de un proveedor de IA (para elegir en Ajustes sin escribir el nombre a mano)
 app.get('/api/ai-models/:provider', h(async (req, res) => {
   const p = req.params.provider;
-  if (!['openai', 'groq', 'openrouter', 'meta'].includes(p)) return res.json({ models: [] });
-  const keyName = p === 'meta' ? 'meta_ai_key' : p + '_key';
-  const key = await getSetting(keyName);
+  if (!['openai', 'groq', 'openrouter'].includes(p)) return res.json({ models: [] });
+  const key = await getSetting(p + '_key');
   if (!key) return res.json({ models: [], error: 'Primero pega la clave de ' + p + '.' });
   const { providerModels } = await import('./ai/llm.js');
   res.json({ models: await providerModels(p, key) });

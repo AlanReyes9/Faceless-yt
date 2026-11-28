@@ -209,7 +209,7 @@ register('compose.scene', async ({ id, i }, ctx) => {
       for (const c of chars) ipShort = ipShort.split(c.name).join(short(c.look));
       const compact = `${ipShort.slice(0, 260)}, ${st.short}${fruitRule ? ', fruit characters, no humans' : ''}, vertical, no text`;
       const free = o.imageMode === 'free' || o.imageMode === 'local' || (o.imageMode !== 'settings' && (await getSetting('image_provider')) === 'pollinations');
-      const buf = await generateImage(free ? compact : prompt, { size: vertical ? '1024x1536' : '1536x1024', provider: o.imageMode === 'free' ? 'pollinations' : o.imageMode === 'local' ? 'local' : o.imageMode === 'meta' ? 'meta' : undefined, seed: p.data.script.seed,
+      const buf = await generateImage(free ? compact : prompt, { size: vertical ? '1024x1536' : '1536x1024', provider: o.imageMode === 'free' ? 'pollinations' : o.imageMode === 'local' ? 'local' : undefined, seed: p.data.script.seed,
         onProgress: t => updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: ${String(t?.stage || t)}` }).catch(() => {}) });
       media = await saveBuffer(buf, `scene_${tag}.png`, 'image/png');
       s.media = media;
@@ -341,7 +341,7 @@ export async function regenerateSceneImage(id, i, { prompt, source } = {}) {
   const src = source || o.imageMode || 'free';
   const prompt2 = src === 'settings' ? `${fruit ? 'Every character is an anthropomorphic fruit, not a human. ' : ''}${st.prompt}. ${ip}. Vertical 9:16 composition. No text.`
     : `${ip.slice(0, 260)}, ${st.short}${fruit ? ', fruit characters, no humans' : ''}, vertical, no text`;
-  const buf = await generateImage(prompt2, { size: '1024x1536', provider: src === 'free' ? 'pollinations' : src === 'local' ? 'local' : src === 'meta' ? 'meta' : undefined, seed: Math.floor(Math.random() * 1e9) });
+  const buf = await generateImage(prompt2, { size: '1024x1536', provider: src === 'free' ? 'pollinations' : src === 'local' ? 'local' : undefined, seed: Math.floor(Math.random() * 1e9) });
   const media = await saveBuffer(buf, `scene_p${id}_s${i}_${Date.now()}.png`, 'image/png');
   const fresh = await getProject(id);
   const old = fresh.data.script.scenes[i].media;

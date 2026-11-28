@@ -203,24 +203,8 @@ async function pollinationsImage(prompt, { size, seed: fixedSeed }) {
   }
 }
 
-// --- Meta Muse Image (muse-image-1.0, ~0,01 $ por imagen) ---
-async function metaImage(prompt, { size }) {
-  const key = await requireKey('meta_ai_key', 'generar imágenes con Meta Muse');
-  const sz = { '9:16': '1024x1536', '16:9': '1536x1024', '1:1': '1024x1024' }[ratioOf(size)] || '1024x1536';
-  const r = await fetch((process.env.META_AI_BASE_URL || 'https://api.meta.ai/v1') + '/images/generations', {
-    method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'muse-image-1.0', prompt: prompt.slice(0, 3800), n: 1, size: sz, response_format: 'b64_json', output_format: 'png' }),
-    signal: AbortSignal.timeout(180000),
-  }).catch(e => { throw new Error(e.name === 'TimeoutError' ? 'Meta Muse tardó demasiado en dibujar la imagen.' : 'No se pudo conectar con Meta Muse: ' + e.message); });
-  const txt = await r.text();
-  if (!r.ok) throw new Error(`Meta Muse (${r.status}): ${apiError(txt)}`);
-  const b64 = JSON.parse(txt).data?.[0]?.b64_json;
-  if (!b64) throw new Error('Meta Muse no devolvió la imagen.');
-  return Buffer.from(b64, 'base64');
-}
-
 const localImage = async (prompt, { size, steps, onProgress }) => (await import('./localmodels.js')).imageLocal(prompt, { size, ...(steps ? { steps } : {}), onProgress });
-const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null }, meta: { fn: metaImage, key: 'meta_ai_key' } };
+const IMAGE_PROVIDERS = { local: { fn: localImage, key: null, local: true }, openai: { fn: openaiImage, key: 'openai_key' }, gemini: { fn: geminiImage, key: 'gemini_key' }, pollinations: { fn: pollinationsImage, key: null } };
 
 /**
  * Genera una imagen con el proveedor elegido en Ajustes; si falla, prueba los demás.
