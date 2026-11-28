@@ -36,7 +36,7 @@ export async function resolveStream(url, onLine = () => {}) {
   let j = null, lastErr = null;
   for (let i = 0; i < 3 && !j; i++) {
     try { j = parseOut((await ytdlp(['-J', url], { stallMs: 90000, timeoutMs: 150000, fullOutput: true, onLine })).out); }
-    catch (e) { lastErr = e; if (/no eres un bot/.test(e.message)) throw e; if (i < 2) await new Promise(r => setTimeout(r, 8000)); }
+    catch (e) { lastErr = e; if (/no eres un bot|cookies de/.test(e.message)) throw e; if (i < 2) await new Promise(r => setTimeout(r, 8000)); }
   }
   if (j) {
     if (j.live_status === 'is_upcoming') throw new Error('El directo aún no ha empezado. Inténtalo cuando esté emitiendo. (400)');
@@ -59,7 +59,7 @@ export async function resolveStream(url, onLine = () => {}) {
   }
   // Último recurso: que yt-dlp elija cualquier formato del directo
   const { out } = await ytdlp(['-g', '-f', 'best[protocol*=m3u8]/best/bv*+ba', url], { stallMs: 90000, timeoutMs: 120000 })
-    .catch(e => { if (/no eres un bot/.test(e.message)) throw e; throw new Error('No se pudo abrir el directo (¿está emitiendo ahora mismo?): ' + (lastErr || e).message.slice(-300)); });
+    .catch(e => { if (/no eres un bot|cookies de/.test(e.message)) throw e; throw new Error('No se pudo abrir el directo (¿está emitiendo ahora mismo?): ' + (lastErr || e).message.slice(-300)); });
   const u = out.trim().split('\n').filter(Boolean)[0];
   if (!u) throw new Error('No se encontró la emisión en directo de ese enlace.');
   return u;

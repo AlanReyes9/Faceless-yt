@@ -16,7 +16,10 @@ const BROWSER_DIRS = process.platform === 'darwin' ? {
 } : process.platform === 'win32' ? {
   firefox: `${AD}\\Mozilla\\Firefox`, chrome: `${LAD}\\Google\\Chrome\\User Data`, edge: `${LAD}\\Microsoft\\Edge\\User Data`, brave: `${LAD}\\BraveSoftware\\Brave-Browser\\User Data`,
 } : { chrome: `${HOME}/.config/google-chrome`, firefox: `${HOME}/.mozilla/firefox`, brave: `${HOME}/.config/BraveSoftware/Brave-Browser` };
-const installedBrowsers = () => Object.entries(BROWSER_DIRS).filter(([, d]) => d && fs.existsSync(d)).map(([b]) => b);
+// Safari guarda las cookies en una carpeta protegida de macOS: solo se usa si la app tiene permiso para leerla
+const canRead = f => { try { fs.closeSync(fs.openSync(f, 'r')); return true; } catch { return false; } };
+const installedBrowsers = () => Object.entries(BROWSER_DIRS).filter(([b, d]) => d && fs.existsSync(d) &&
+  (b !== 'safari' || canRead(`${d}/Data/Library/Cookies/Cookies.binarycookies`))).map(([b]) => b);
 const needsCookies = msg => /not a bot|Sign in to confirm|--cookies|cookies-from-browser|confirm your age|members-only|This video is private|login required/i.test(msg);
 const BROWSER_NAMES = { chrome: 'Chrome', safari: 'Safari', firefox: 'Firefox', edge: 'Edge', brave: 'Brave' };
 
@@ -42,27 +45,52 @@ export async function ytdlp(args, opts = {}) {
   try {
     return await ytdlpOnce(first ? ['--cookies-from-browser', first, ...args] : args, opts);
   } catch (e) {
-    if (e.cancelled || mode !== 'auto' || !needsCookies(e.raw || e.message)) throw cookieHelp(e, mode, first);
-    // Automático: se prueba con las cookies de cada navegador instalado (donde tengas la sesión de YouTube iniciada)
-    for (const b of installedBrowsers().filter(b => b !== first)) {
-      opts.onLine?.(`YouTube pide verificación: probando con las cookies de ${BROWSER_NAMES[b]}…`);
-      try {
-        const r = await ytdlpOnce(['--cookies-from-browser', b, ...args], opts);
-        await setSettings({ ytdlp_cookies_learned: b }).catch(() => {});
-        console.log(`[yt-dlp] funcionó con las cookies de ${b}: se usarán a partir de ahora`);
-        return r;
-      } catch (e2) { if (e2.cancelled) throw e2; console.warn(`[yt-dlp] cookies de ${b}: ${String(e2.raw || e2.message).slice(0, 160)}`); }
+    if (e.cancelled) throw e;
+    const raw = e.raw || e.message;
+    // No se pudieron LEER las cookies de ese navegador (permiso de macOS, llavero, navegador abierto…)
+    if (first && cookieAccessErr(raw)) {
+      if (mode !== 'auto') throw browserHelp(first, raw);
+      await setSettings({ ytdlp_cookies_learned: '' }).catch(() => {});
+      return ytdlpAuto(args, opts, { skip: [first], failed: { [first]: raw } });
     }
-    if (learned) await setSettings({ ytdlp_cookies_learned: '' }).catch(() => {});
-    throw cookieHelp(e, mode, first);
+    if (mode !== 'auto' || !needsCookies(raw)) throw cookieHelp(e, mode, first);
+    return ytdlpAuto(args, opts, { skip: first ? [first] : [], triedPlain: !first, botErr: e });
   }
 }
+/** Automático: sin cookies (si no se probó) y después con las cookies de cada navegador que se pueda leer. */
+async function ytdlpAuto(args, opts, { skip = [], triedPlain = false, botErr = null, failed = {} }) {
+  if (!triedPlain) {
+    try { return await ytdlpOnce(args, opts); }
+    catch (e) { if (e.cancelled) throw e; if (!needsCookies(e.raw || e.message)) throw e; botErr = e; }
+  }
+  for (const b of installedBrowsers().filter(x => !skip.includes(x))) {
+    opts.onLine?.(`YouTube pide verificación: probando con las cookies de ${BROWSER_NAMES[b]}…`);
+    try {
+      const r = await ytdlpOnce(['--cookies-from-browser', b, ...args], opts);
+      await setSettings({ ytdlp_cookies_learned: b }).catch(() => {});
+      console.log(`[yt-dlp] funcionó con las cookies de ${b}: se usarán a partir de ahora`);
+      return r;
+    } catch (e2) { if (e2.cancelled) throw e2; failed[b] = String(e2.raw || e2.message); console.warn(`[yt-dlp] cookies de ${b}: ${failed[b].slice(0, 160)}`); }
+  }
+  throw cookieHelp(botErr || Object.assign(new Error('Sign in to confirm you’re not a bot'), { raw: 'Sign in to confirm you’re not a bot' }), 'auto', null, failed);
+}
+const cookieAccessErr = msg => /Operation not permitted|Permission denied|could not find .*cookies|cookies database|failed to (decrypt|read|find)|keyring|keychain|Secret ?Storage|Safe Storage|unsupported browser|database is locked/i.test(msg);
+/** Qué hacer cuando no se pueden leer las cookies de un navegador concreto. */
+function browserHelp(b, raw) {
+  const name = BROWSER_NAMES[b] || b;
+  const how = b === 'safari' ? 'macOS no deja leer las cookies de Safari sin permiso: ve a Ajustes del Sistema → Privacidad y seguridad → Acceso total al disco, activa «Clippers Pro» y vuelve a abrir la app. O, más fácil, elige Chrome o Firefox en Ajustes → «Cookies del navegador para YouTube».'
+    : b === 'chrome' || b === 'brave' || b === 'edge' ? (process.platform === 'darwin' ? `Cuando macOS pida la contraseña para «${name} Safe Storage», escríbela y pulsa «Permitir siempre».` : `Cierra ${name} del todo y vuelve a intentarlo (con ${name} abierto no se pueden leer sus cookies).`)
+    : 'Abre ese navegador, inicia sesión en YouTube y vuelve a intentarlo.';
+  return Object.assign(new Error(`No se pudieron leer las cookies de ${name}. ${how}`), { raw });
+}
 /** Mensaje claro cuando YouTube exige iniciar sesión / verificar que no eres un bot. */
-function cookieHelp(e, mode, used) {
+function cookieHelp(e, mode, used, failed = {}) {
   if (!needsCookies(e.raw || e.message)) return e;
+  const notes = Object.entries(failed).filter(([, m]) => cookieAccessErr(m)).map(([b]) => b === 'safari' ? 'Safari necesita «Acceso total al disco» para Clippers Pro (Ajustes del Sistema → Privacidad y seguridad)' : `no se pudieron leer las cookies de ${BROWSER_NAMES[b] || b}`);
   const list = installedBrowsers().map(b => BROWSER_NAMES[b]).join(', ') || 'ninguno encontrado';
   return Object.assign(new Error(`YouTube pide verificar que no eres un bot. Abre YouTube en tu navegador (${list}) con tu sesión iniciada y vuelve a intentarlo` +
     `${mode === 'no' ? '; activa también «Cookies del navegador para YouTube» en Ajustes' : used ? ` (se usaron las cookies de ${BROWSER_NAMES[used] || used})` : ''}.` +
+    `${notes.length ? ' Problemas: ' + notes.join('; ') + '.' : ''}` +
     `${process.platform === 'darwin' ? ' Con Chrome, macOS puede pedir tu contraseña para leer sus cookies: acéptalo. Safari necesita dar «Acceso total al disco» a Clippers Pro.' : process.platform === 'win32' ? ' En Windows, Chrome debe estar cerrado para leer sus cookies (Firefox funciona aunque esté abierto).' : ''}`), { raw: e.raw || e.message });
 }
 
