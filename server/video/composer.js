@@ -253,7 +253,21 @@ register('compose.scene', async ({ id, i }, ctx) => {
 
     const frames = Math.ceil(dur * 30);
     let v = kind === 'color' ? `[0:v]setsar=1` : fitFilter(W, H, iw, ih);
-    if (kind === 'image') {
+    // Historias: efecto 2.5D (el personaje se mueve por delante del fondo). Si la imagen no tiene un primer plano claro, movimiento normal.
+    let layers = null;
+    if (kind === 'image' && p.type === 'story' && o.anim !== 'simple') {
+      await updateProject(id, { progress: `Escena ${i + 1} de ${scenes.length}: separando personaje y fondo (2.5D)…` });
+      const { makeLayers } = await import('./parallax.js');
+      const ldir = path.join(WORK_DIR, `${tag}_2d5`); fs.mkdirSync(ldir, { recursive: true }); tmp.push(ldir);
+      layers = await makeLayers(input, ldir, W, H).catch(e => { console.warn('[2.5D] escena', i + 1, e.message); return null; });
+    }
+    if (layers) {
+      const { parallaxFilter } = await import('./parallax.js');
+      args[args.indexOf(input)] = layers.bg;
+      const fgIdx = args.filter(x => x === '-i').length;
+      args.push('-framerate', '30', '-loop', '1', '-i', layers.fg);
+      v = parallaxFilter({ bgIn: '[0:v]', fgIn: `[${fgIdx}:v]`, W, H, frames, mode: i % 4, out: 'pv0' }) + ';[pv0]null';
+    } else if (kind === 'image') {
       // Movimiento de cámara distinto en cada escena (acercar, alejar, desplazar): da vida a las imágenes
       const n = Math.max(1, frames), m = p.type === 'story' ? i % 5 : 0;
       const zp = [
@@ -285,7 +299,7 @@ register('compose.scene', async ({ id, i }, ctx) => {
     if (i + 1 < scenes.length) await enqueue('compose.scene', { id, i: i + 1 });
     else await enqueue('compose.concat', { id });
   } finally {
-    for (const f of tmp) fs.rmSync(f, { force: true });
+    for (const f of tmp) fs.rmSync(f, { recursive: true, force: true });
   }
 }, ({ id }, msg) => updateProject(id, { status: 'error', error: msg, progress: null }));
 

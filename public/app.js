@@ -1684,7 +1684,8 @@ routes.historias = async (_, params) => {
           <button type="button" data-im="settings"><b>⚙ Las de Ajustes</b><small>OpenAI / Gemini (mejor calidad, de pago)</small></button>
         </div></div>
       <div class="row">
-        <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div></div>
+        <div style="flex:1"><label>Subtítulos</label><select name="captionStyle">${opts(CAP_STYLES, 'impacto')}</select></div>
+        <div style="flex:1"><label>Animación de las escenas</label><select name="anim"><option value="2d5">2.5D: el personaje se mueve delante del fondo</option><option value="simple">Simple: zoom y desplazamiento</option></select></div></div>
       <div class="small muted">Las imágenes gratis en la nube tienen un límite (1 imagen cada ~40 s): una historia de 1 min tarda 3-6 min. Con la IA local depende de tu equipo (la primera vez se descarga el modelo, 2 GB).</div>
       <div class="row"><button type="button" class="btn" id="draft">✎ Ver el guion primero</button><button class="btn gold" id="go">🎬 Crear vídeo</button></div>
     </form>
